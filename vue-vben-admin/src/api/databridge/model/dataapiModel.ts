@@ -1,0 +1,147 @@
+import type { DatabridgePageParams } from './commonModel'
+
+/** 数据服务状态（契约 0 枚举 dataApi.status） */
+export type DataApiStatus = 'draft' | 'published'
+
+/** 对外暴露的 HTTP 方法：运行时端点为 GET /ds/{path}，POST 用于参数放 body 的场景 */
+export type DataApiMethod = 'GET' | 'POST'
+
+/** 输出字段类型（契约 1.9 fields[].type） */
+export type DataApiFieldType = 'BIGINT' | 'DECIMAL' | 'VARCHAR' | 'DATE' | 'BOOLEAN'
+
+/** 查询参数类型（契约 1.9 queryParams[].type） */
+export type DataApiQueryType = 'string' | 'number' | 'date' | 'boolean'
+
+export interface DataApiField {
+  name: string
+  type: DataApiFieldType
+}
+
+export interface DataApiQueryParam {
+  name: string
+  type: DataApiQueryType
+  required?: boolean
+}
+
+export interface DataApi {
+  id?: string
+  name: string
+  /** 运行时路径片段：GET /ds/{path} */
+  path: string
+  method?: DataApiMethod
+  datasourceId: string
+  tableName: string
+  fields: DataApiField[]
+  queryParams?: DataApiQueryParam[]
+  authEnabled?: boolean
+  /**
+   * 发布后生成。注意：Mock 阶段的管理端列表 / 详情不做脱敏（内存数据 + 无鉴权），
+   * 因此这里的值与 GET /data-apis/:id/publish 返回的是同一个 key；
+   * 第二阶段接鉴权后应在管理端列表里脱敏，只保留发布响应返回明文。
+   */
+  apiKey?: string | null
+  rateLimitQps?: number
+  /** 精确 IP 或 * 前缀（如 10.0.0.*）列表，空数组表示不限制；不支持 CIDR */
+  ipWhitelist?: string[]
+  status?: DataApiStatus
+  invokeCount?: number
+  errorCount?: number
+  avgLatencyMs?: number
+  createdAt?: string | null
+  updatedAt?: string | null
+  /** 数据源名称，列表页用 /datasources 聚合展示 */
+  datasourceName?: string
+}
+
+/** 创建 / 编辑数据服务的请求体（契约 1.9，invokeCount 等统计字段不回传） */
+export interface DataApiPayload {
+  name: string
+  path: string
+  method: DataApiMethod
+  datasourceId: string
+  tableName: string
+  fields: DataApiField[]
+  queryParams: DataApiQueryParam[]
+  authEnabled: boolean
+  rateLimitQps: number
+  ipWhitelist: string[]
+}
+
+export interface DataApiPageParams extends DatabridgePageParams {
+  status?: DataApiStatus
+  datasourceId?: string
+}
+
+/**
+ * POST /data-apis/:id/publish 返回：契约只保证状态变为 published，
+ * 完整 apiKey 仅此次返回，前端一次性弹窗展示
+ */
+export interface DataApiPublishResult {
+  id?: string
+  status?: DataApiStatus
+  apiKey?: string
+  path?: string
+  method?: DataApiMethod
+}
+
+/**
+ * POST /data-apis/:id/invoke 请求体（管理端代理转发到运行时 /ds/{path}）。
+ * 自定义查询参数用 queryParams 键，后端 controllers/dataapi.controller.js 里与 query 等价。
+ */
+export interface DataApiInvokeParams {
+  page?: number
+  size?: number
+  queryParams?: Recordable
+}
+
+/** 运行时 result 数据结构（契约 1.9 成功响应） */
+export interface DataApiInvokeData {
+  fields?: string[]
+  rows?: any[][]
+  total?: number
+  page?: number
+  size?: number
+}
+
+/** 运行时信封（契约 0 节），管理端代理把它整体放在 body 里透传 */
+export interface DataApiInvokeEnvelope {
+  httpStatus?: number
+  code?: number
+  message?: string
+  result?: DataApiInvokeData
+  timestamp?: number
+}
+
+/**
+ * 调试调用返回：后端（POST /data-apis/:id/invoke）把运行时结果包成
+ * { httpStatus, body: 运行时信封 }，也只透传 result 的实现做兼容，
+ * 因此页面统一用 normalizeInvokeResult 归一。
+ */
+export interface DataApiInvokeResult extends DataApiInvokeData {
+  httpStatus?: number
+  code?: number
+  message?: string
+  result?: DataApiInvokeData
+  body?: DataApiInvokeEnvelope
+}
+
+/** GET /data-apis/:id/stats 的 recentTrend 单项；后端字段名未细化，多键兼容 */
+export interface DataApiTrendItem {
+  date: string
+  count?: number
+  invokeCount?: number
+  success?: number
+  failed?: number
+  errorCount?: number
+  avgLatencyMs?: number
+}
+
+export interface DataApiStats {
+  apiId?: string
+  id?: string
+  name?: string
+  invokeCount: number
+  errorCount: number
+  avgLatencyMs: number
+  recentTrend?: DataApiTrendItem[]
+}

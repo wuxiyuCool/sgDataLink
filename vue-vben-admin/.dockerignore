@@ -1,0 +1,32 @@
+# 依赖与产物（镜像内重新安装/构建）
+node_modules
+dist
+dist-ssr
+*.local
+
+# 版本与工具目录（vue-vben-admin 作为子目录被主仓库跟踪，自身的 .git 也不需要）
+.git
+.github
+.gitignore
+.husky
+.vscode
+.idea
+
+# 日志与测试
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+coverage
+tests
+
+# 构建上下文自身文件
+Dockerfile
+.dockerignore
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+
+# 注意：不要忽略 build/（vite.config.ts 依赖其中的插件脚本）、mock/（VITE_USE_MOCK 开启时构建产物需要）
+# 也不要忽略 .env.production（构建时读取 VITE_GLOB_* 配置）

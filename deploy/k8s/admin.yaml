@@ -1,0 +1,69 @@
+# Node 管理后端（Mock 内存模式，无数据库）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: databridge-admin
+  namespace: databridge
+  labels:
+    app: databridge-admin
+spec:
+  replicas: 1 # Mock 阶段内存存储多副本不共享，第二阶段接 PG 后可扩容
+  selector:
+    matchLabels:
+      app: databridge-admin
+  template:
+    metadata:
+      labels:
+        app: databridge-admin
+    spec:
+      containers:
+        - name: admin
+          image: databridge/admin:mock # 替换为你的镜像仓库地址
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: MEM_MOCK
+              value: "true"
+            - name: PORT
+              value: "3001"
+            - name: ENGINE_BASE_URL
+              value: http://databridge-engine:8080
+            - name: ADMIN_REPORT_URL
+              value: http://databridge-admin:3001/api/v1/engine
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: databridge-admin
+  namespace: databridge
+spec:
+  selector:
+    app: databridge-admin
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+  type: ClusterIP

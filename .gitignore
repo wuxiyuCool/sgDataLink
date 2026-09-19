@@ -1,0 +1,11 @@
+# 第三方克隆（Nunu CLI 生成器仓库，非本项目代码）
+/nunu/
+
+# 本地备份：手写版引擎（已被官方 nunu 模板移植版取代，可随时删除）
+/_backup-databridge-engine-handwritten/
+
+# 构建产物与本机杂物
+*.exe
+storage/logs/
+.DS_Store
+*.local

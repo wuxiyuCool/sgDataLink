@@ -1,0 +1,69 @@
+# DataBridge Mock 版本 —— 一键拉起 3 个服务（不含任何数据库）
+# 使用：docker compose up -d --build
+# 前端 http://localhost:8000  管理后端 http://localhost:3001/api/v1  引擎 http://localhost:8080/health
+
+name: databridge
+
+services:
+  databridge-admin:
+    build:
+      context: ./node-express-boilerplate
+    image: databridge/admin:mock
+    container_name: databridge-admin
+    environment:
+      NODE_ENV: production
+      MEM_MOCK: "true" # 内存 Mock 模式，跳过 MongoDB 连接
+      PORT: "3001"
+      ENGINE_BASE_URL: http://databridge-engine:8080 # Node 下发启停指令的 Go 引擎地址
+      ADMIN_REPORT_URL: http://databridge-admin:3001/api/v1/engine # 引擎回报进度的 Node 地址
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - databridge
+
+  databridge-engine:
+    build:
+      context: ./databridge-engine
+    image: databridge/engine:mock
+    container_name: databridge-engine
+    environment:
+      SERVER_PORT: "8080"
+      GIN_MODE: release
+      NODE_REPORT_URL: http://databridge-admin:3001/api/v1/engine
+      MOCK_TICK_MS: "1000" # 模拟推进节奏，调小可加速演示
+    ports:
+      - "8080:8080"
+    depends_on:
+      databridge-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    networks:
+      - databridge
+
+  databridge-web:
+    build:
+      context: ./vue-vben-admin
+    image: databridge/web:mock
+    container_name: databridge-web
+    ports:
+      - "8000:80" # nginx 托管静态资源并反代 /api 与 /ds（数据服务运行时）-> databridge-admin
+    depends_on:
+      databridge-admin:
+        condition: service_healthy
+    networks:
+      - databridge
+
+networks:
+  databridge:
+    driver: bridge

@@ -1,0 +1,6 @@
+namespace: databridge
+resources:
+  - namespace.yaml
+  - admin.yaml
+  - engine.yaml
+  - web.yaml

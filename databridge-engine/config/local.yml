@@ -1,0 +1,20 @@
+env: local
+http:
+  #  host: 0.0.0.0
+  host: 127.0.0.1
+  port: 8080              # 环境变量 SERVER_PORT 优先（见 pkg/config/env.go）
+engine:
+  # 引擎回报进度/日志的 Node 管理端基址，其后自动拼接 /report 与 /logs
+  node_report_url: http://127.0.0.1:3001/api/v1/engine   # 环境变量 NODE_REPORT_URL 优先
+  mock_tick_ms: 1000                                     # 环境变量 MOCK_TICK_MS 优先，最小 50
+  report_timeout_ms: 3000                                # 单次回报请求超时
+  max_history: 200                                       # 内存中保留的终态实例数量上限
+log:
+  log_level: debug
+  mode: console          #  file or console or both
+  encoding: console      #  json or console
+  log_file_name: "./storage/logs/server.log"
+  max_backups: 30
+  max_age: 7
+  max_size: 1024
+  compress: true

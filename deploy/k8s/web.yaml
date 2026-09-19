@@ -1,0 +1,80 @@
+# Vue 前端（nginx 静态托管 + /api 与 /ds 反代 databridge-admin）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: databridge-web
+  namespace: databridge
+  labels:
+    app: databridge-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: databridge-web
+  template:
+    metadata:
+      labels:
+        app: databridge-web
+    spec:
+      containers:
+        - name: web
+          image: databridge/web:mock
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: databridge-web
+  namespace: databridge
+spec:
+  selector:
+    app: databridge-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP
+---
+# 外部访问入口（开发用 NodePort；生产替换为 Ingress）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: databridge-web
+  namespace: databridge
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: databridge.local # 按环境修改
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: databridge-web
+                port:
+                  name: http

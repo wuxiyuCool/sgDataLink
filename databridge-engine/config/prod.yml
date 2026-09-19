@@ -1,0 +1,19 @@
+env: prod
+http:
+  host: 0.0.0.0        # 容器内必须监听 0.0.0.0（本地调试用 config/local.yml）
+  port: 8080           # 环境变量 SERVER_PORT 优先（docker-compose / k8s 已注入）
+engine:
+  # 引擎回报进度/日志的 Node 管理端基址，其后自动拼接 /report 与 /logs
+  node_report_url: http://databridge-admin:3001/api/v1/engine   # 环境变量 NODE_REPORT_URL 优先
+  mock_tick_ms: 1000                                            # 环境变量 MOCK_TICK_MS 优先，最小 50
+  report_timeout_ms: 3000                                       # 单次回报请求超时
+  max_history: 200                                              # 内存中保留的终态实例数量上限
+log:
+  log_level: info
+  mode: console          #  容器里只走 stdout，由平台采集（file/both 会写 ./storage/logs）
+  encoding: json         #  json or console
+  log_file_name: "./storage/logs/server.log"
+  max_backups: 30
+  max_age: 7
+  max_size: 1024
+  compress: true

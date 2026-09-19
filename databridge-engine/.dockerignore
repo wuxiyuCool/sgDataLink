@@ -1,0 +1,37 @@
+# 构建 databridge-engine 镜像时不需要进入构建上下文的内容
+# 注意：cmd/ internal/ pkg/ api/ config/ go.mod go.sum 必须保留（编译 + 运行期配置）
+
+# VCS / IDE
+.git
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+.idea
+.vscode
+*.swp
+
+# 文档与非运行期文件
+*.md
+scripts/
+LICENSE
+
+# 本地构建产物
+bin/
+dist/
+build/
+vendor/
+coverage.*
+*.test
+*.out
+*.log
+*.pid
+
+# 可执行文件（避免把宿主二进制复制进镜像）
+databridge-engine
+databridge-engine.exe
+server.exe
+
+# 本地环境变量文件（镜像内通过 -e / compose 注入）
+.env
+.env.*

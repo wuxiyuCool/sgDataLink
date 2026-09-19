@@ -1,0 +1,67 @@
+# Go 同步引擎（Mock 模拟执行）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: databridge-engine
+  namespace: databridge
+  labels:
+    app: databridge-engine
+spec:
+  replicas: 1 # 第二阶段可多副本 + 按 instanceId 分片调度
+  selector:
+    matchLabels:
+      app: databridge-engine
+  template:
+    metadata:
+      labels:
+        app: databridge-engine
+    spec:
+      containers:
+        - name: engine
+          image: databridge/engine:mock
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SERVER_PORT
+              value: "8080"
+            - name: GIN_MODE
+              value: release
+            - name: NODE_REPORT_URL
+              value: http://databridge-admin:3001/api/v1/engine
+            - name: MOCK_TICK_MS
+              value: "1000"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: databridge-engine
+  namespace: databridge
+spec:
+  selector:
+    app: databridge-engine
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  type: ClusterIP
