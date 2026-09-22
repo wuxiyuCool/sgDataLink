@@ -23,8 +23,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const isFinalStatus = (status) => FINAL_STATUSES.includes(status);
 
-const getInstanceOrThrow = (id) => {
-  const instance = instanceRepository.getById(id);
+const getInstanceOrThrow = async (id) => {
+  const instance = await instanceRepository.getById(id);
   if (!instance) {
     throw notFound(`任务实例不存在: ${id}`);
   }
@@ -32,41 +32,41 @@ const getInstanceOrThrow = (id) => {
 };
 
 /** GET /task-instances —— 支持 taskId / status / trigger / keyword(taskName) / sort */
-const queryInstances = (filter = {}, options = {}) => {
-  const page = instanceRepository.page({
+const queryInstances = async (filter = {}, options = {}) => {
+  const page = await instanceRepository.page({
     filters: { taskId: filter.taskId, status: filter.status, trigger: filter.trigger, pipelineId: filter.pipelineId },
     keyword: filter.keyword,
     sort: options.sort,
     page: options.page,
     size: options.size,
   });
-  return { ...page, items: page.items.map(withTaskName) };
+  return { ...page, items: await Promise.all(page.items.map(withTaskName)) };
 };
 
 /** GET /tasks/:id/instances —— 某个任务的实例分页 */
-const queryTaskInstances = (taskId, options = {}) => {
-  if (!taskRepository.getById(taskId)) {
+const queryTaskInstances = async (taskId, options = {}) => {
+  if (!(await taskRepository.getById(taskId))) {
     throw notFound(`同步任务不存在: ${taskId}`);
   }
   return queryInstances({ taskId }, options);
 };
 
-/** 实例上补齐 taskName（内存仓储不 join，第二阶段换成 SQL join 后可删） */
-const withTaskName = (instance) => {
+/** 实例上补齐 taskName（内存仓储不 join；mysql 版同样是按 taskId 反查一次任务） */
+const withTaskName = async (instance) => {
   if (instance && !instance.taskName) {
-    const task = taskRepository.getById(instance.taskId);
+    const task = instance.taskId ? await taskRepository.getById(instance.taskId) : null;
     return { ...instance, taskName: task ? task.name : null };
   }
   return instance;
 };
 
 /** GET /task-instances/:id */
-const getInstanceById = (id) => withTaskName(getInstanceOrThrow(id));
+const getInstanceById = async (id) => withTaskName(await getInstanceOrThrow(id));
 
 /** GET /task-instances/:id/logs —— 支持 level / keyword / sort */
-const getInstanceLogs = (id, filter = {}, options = {}) => {
-  const instance = getInstanceOrThrow(id);
-  const page = logRepository.page({
+const getInstanceLogs = async (id, filter = {}, options = {}) => {
+  const instance = await getInstanceOrThrow(id);
+  const page = await logRepository.page({
     filters: { instanceId: instance.id, level: filter.level },
     keyword: filter.keyword,
     sort: options.sort,
@@ -80,8 +80,8 @@ const getInstanceLogs = (id, filter = {}, options = {}) => {
 };
 
 /** GET /task-instances/:id/offsets */
-const getInstanceOffsets = (id, options = {}) => {
-  const instance = getInstanceOrThrow(id);
+const getInstanceOffsets = async (id, options = {}) => {
+  const instance = await getInstanceOrThrow(id);
   return offsetRepository.page({
     filters: { instanceId: instance.id, shardKey: options.shardKey },
     sort: options.sort,
@@ -94,7 +94,7 @@ const getInstanceOffsets = (id, options = {}) => {
  * 引擎回报 / 用户停止共用的状态写入。
  * @param {string} id 实例 id
  * @param {Object} patch 进度字段
- * @returns {Object|null}
+ * @returns {Promise<Object|null>}
  */
 const updateInstance = (id, patch = {}) => instanceRepository.update(id, patch);
 
@@ -125,11 +125,16 @@ const countInstancesByStatus = (instances, status) => instances.filter((item) =>
 /**
  * GET /statistics/overview 响应 result。
  * 今日 / 趋势按实例 startedAt 的 UTC 日期聚合，recentTrend 固定 TREND_DAYS 条且日期升序。
- * @returns {Object} { datasourceTotal, taskTotal, runningInstances, todayTotal, todaySuccess,
+ * @returns {Promise<Object>} { datasourceTotal, taskTotal, runningInstances, todayTotal, todaySuccess,
  *                     todayFailed, todayStopped, recentTrend: [{ date, success, failed }] }
  */
-const getStatisticsOverview = () => {
-  const instances = instanceRepository.list();
+const getStatisticsOverview = async () => {
+  const [instances, datasourceTotal, taskTotal, runningInstances] = await Promise.all([
+    instanceRepository.list(),
+    datasourceRepository.count(),
+    taskRepository.count(),
+    instanceRepository.countByStatus('running'),
+  ]);
   const today = todayUtcDate();
 
   const todayInstances = instances.filter((item) => utcDateOf(item.startedAt) === today);
@@ -144,9 +149,9 @@ const getStatisticsOverview = () => {
   });
 
   return {
-    datasourceTotal: datasourceRepository.count(),
-    taskTotal: taskRepository.count(),
-    runningInstances: instanceRepository.countByStatus('running'),
+    datasourceTotal,
+    taskTotal,
+    runningInstances,
     todayTotal: todayInstances.length,
     todaySuccess: countInstancesByStatus(todayInstances, 'success'),
     todayFailed: countInstancesByStatus(todayInstances, 'failed'),

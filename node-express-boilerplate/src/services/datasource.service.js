@@ -2,7 +2,9 @@
  * 数据源业务层（docs/API.md 第 1.1 节）。
  *
  * 只依赖 repository，不碰 express；password 在响应里永远脱敏为 "***"，
- * 内存中保留明文（mock 连通测试与第二阶段真实建连都要用）。
+ * 仓储里保留明文（连通测试与真实建连都要用）。
+ * 仓储层已双驱动化（memory / mysql），所以本文件所有仓储调用一律 await，
+ * 对外函数统一 async（controller 侧本来就是 catchAsync + await，无需改动）。
  */
 const datasourceRepository = require('../repositories/datasource.repository');
 const taskRepository = require('../repositories/task.repository');
@@ -10,6 +12,8 @@ const taskRepository = require('../repositories/task.repository');
 const pipelineRepository = require('../repositories/pipeline.repository');
 const dataflowRepository = require('../repositories/dataflow.repository');
 const dataApiRepository = require('../repositories/dataapi.repository');
+const config = require('../config/config');
+const mysql = require('../db/mysql');
 const { paramInvalid, notFound, datasourceReferenced } = require('../utils/bizError');
 
 /** 契约：响应中 password 永远脱敏 */
@@ -27,8 +31,8 @@ const isMaskedPassword = (value) => !value || /^\*+$/.test(String(value));
 /** 出参脱敏 */
 const toSafe = (dataSource) => (dataSource ? { ...dataSource, password: MASKED_PASSWORD } : dataSource);
 
-const getDataSourceOrThrow = (id) => {
-  const dataSource = datasourceRepository.getById(id);
+const getDataSourceOrThrow = async (id) => {
+  const dataSource = await datasourceRepository.getById(id);
   if (!dataSource) {
     throw notFound(`数据源不存在: ${id}`);
   }
@@ -36,8 +40,8 @@ const getDataSourceOrThrow = (id) => {
 };
 
 /** 分页列表：keyword / type / status / sort */
-const queryDataSources = (filter = {}, options = {}) => {
-  const result = datasourceRepository.page({
+const queryDataSources = async (filter = {}, options = {}) => {
+  const result = await datasourceRepository.page({
     filters: { type: filter.type, status: filter.status },
     keyword: filter.keyword,
     sort: options.sort,
@@ -48,12 +52,12 @@ const queryDataSources = (filter = {}, options = {}) => {
 };
 
 /** 详情（脱敏） */
-const getDataSourceById = (id) => toSafe(getDataSourceOrThrow(id));
+const getDataSourceById = async (id) => toSafe(await getDataSourceOrThrow(id));
 
 /** 全量列表（不分页），供任务表单的数据源下拉使用 */
-const getAllDataSources = () => datasourceRepository.find({}).map(toSafe);
+const getAllDataSources = async () => (await datasourceRepository.find({})).map(toSafe);
 
-const createDataSource = (body) => {
+const createDataSource = async (body) => {
   if (!body || !body.name) {
     throw paramInvalid('name 必填');
   }
@@ -67,11 +71,11 @@ const createDataSource = (body) => {
   delete payload.id;
   delete payload.createdAt;
   delete payload.updatedAt;
-  return toSafe(datasourceRepository.create(payload));
+  return toSafe(await datasourceRepository.create(payload));
 };
 
-const updateDataSourceById = (id, body = {}) => {
-  const existing = getDataSourceOrThrow(id);
+const updateDataSourceById = async (id, body = {}) => {
+  const existing = await getDataSourceOrThrow(id);
   const patch = { ...body };
   delete patch.id;
   delete patch.createdAt;
@@ -85,33 +89,34 @@ const updateDataSourceById = (id, body = {}) => {
   } else if ('port' in patch) {
     delete patch.port;
   }
-  const updated = datasourceRepository.update(id, { ...existing, ...patch });
+  const updated = await datasourceRepository.update(id, { ...existing, ...patch });
   return toSafe(updated);
 };
 
 /** 删除：被任务 / 管道 / 数据开发 / 数据服务任一引用时 40002 */
-const deleteDataSourceById = (id) => {
-  const existing = getDataSourceOrThrow(id);
-  const referenced = taskRepository
-    .findByDataSource(existing.id)
+const deleteDataSourceById = async (id) => {
+  const existing = await getDataSourceOrThrow(id);
+  const [tasks, pipelines, dataflows, dataApis] = await Promise.all([
+    taskRepository.findByDataSource(existing.id),
+    pipelineRepository.findByDataSource(existing.id),
+    dataflowRepository.findByDataSource(existing.id),
+    dataApiRepository.findByDataSource(existing.id),
+  ]);
+  const referenced = tasks
     .map((task) => `同步任务 ${task.id}(${task.name})`)
-    .concat(
-      pipelineRepository.findByDataSource(existing.id).map((item) => `数据管道 ${item.id}(${item.name})`)
-    )
-    .concat(
-      dataflowRepository.findByDataSource(existing.id).map((item) => `数据开发 ${item.id}(${item.name})`)
-    )
-    .concat(dataApiRepository.findByDataSource(existing.id).map((item) => `数据服务 ${item.id}(${item.name})`));
+    .concat(pipelines.map((item) => `数据管道 ${item.id}(${item.name})`))
+    .concat(dataflows.map((item) => `数据开发 ${item.id}(${item.name})`))
+    .concat(dataApis.map((item) => `数据服务 ${item.id}(${item.name})`));
   if (referenced.length) {
     throw datasourceReferenced(`数据源被其它配置引用，无法删除: ${referenced.join('、')}`);
   }
-  datasourceRepository.delete(existing.id);
+  await datasourceRepository.delete(existing.id);
   return existing;
 };
 
 const randomLatency = (min, max) => Math.floor(min + Math.random() * (max - min));
 
-/** mock 连通测试实现 */
+/** mock 连通测试实现（DB_DRIVER=memory 时所有类型都走这里；mysql 模式下非 mysql 类型也走这里） */
 const mockConnect = (connConfig) => {
   const host = String(connConfig.host || '');
   const name = String(connConfig.name || '');
@@ -138,13 +143,26 @@ const mockConnect = (connConfig) => {
 };
 
 /**
+ * 连通测试分发：
+ * - DB_DRIVER=mysql 且数据源类型是 mysql → 真实建连（mysql2 createConnection + SELECT 1，
+ *   connectTimeout 5s，成功回真实 latencyMs，失败回 { success:false, message:'连接失败(ER_xxx): ...' }）；
+ * - 其余情况（memory 驱动、oracle / postgresql 类型）→ 保持原 mock 规则（10. 网段 / fail 名必定失败）。
+ */
+const connect = async (connConfig) => {
+  if (config.db.driver === 'mysql' && connConfig.type === 'mysql') {
+    return mysql.probeMysqlConnection(connConfig);
+  }
+  return mockConnect(connConfig);
+};
+
+/**
  * POST /datasources/test —— 传入未保存的配置做连通测试。
  * 若携带了已存在的 id 且 password 为脱敏值，则用库里的明文补齐。
  */
-const testConnection = (body = {}) => {
+const testConnection = async (body = {}) => {
   const connConfig = { ...body };
   if (connConfig.id) {
-    const stored = datasourceRepository.getById(connConfig.id);
+    const stored = await datasourceRepository.getById(connConfig.id);
     if (stored) {
       connConfig.name = connConfig.name || stored.name;
       connConfig.type = connConfig.type || stored.type;
@@ -158,13 +176,13 @@ const testConnection = (body = {}) => {
   if (!connConfig.name) throw paramInvalid('name 必填');
   if (!connConfig.type) throw paramInvalid('type 必填');
   if (!connConfig.host) throw paramInvalid('host 必填');
-  return mockConnect(connConfig);
+  return connect(connConfig);
 };
 
 /** POST /datasources/:id/test —— 用已保存配置做连通测试 */
-const testConnectionById = (id) => {
-  const stored = getDataSourceOrThrow(id);
-  return mockConnect(stored);
+const testConnectionById = async (id) => {
+  const stored = await getDataSourceOrThrow(id);
+  return connect(stored);
 };
 
 module.exports = {

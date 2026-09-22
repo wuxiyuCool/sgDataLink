@@ -468,7 +468,9 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 ### 1.11 健康检查
 
-`GET /api/v1/health` → `{ "code": 0, "result": { "status": "ok", "service": "databridge-admin", "mock": true } }`
+`GET /api/v1/health` → `{ "code": 0, "result": { "status": "ok", "service": "databridge-admin", "mock": false, "storage": "mysql|memory", "memoryMode": "mysql://host:port/dataLink" } }`
+
+- `storage`/`mock` 反映**存储层开关**（env `DB_DRIVER=mysql|memory`）；Go 引擎侧始终是模拟器，不受该开关影响。
 
 ---
 
@@ -562,6 +564,16 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 DB 连接） |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效） |
 | databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS` |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
+
+`DB_DRIVER=mysql` 时管理后端把 11 类实体落到同一 MySQL 库的 `databridge_*` 表
+（datasource / sync_task / task_instance / run_log / offset / pipeline / dataflow / data_api /
+data_api_call_day / alert_rule / alert_record + `databridge_id_seq` 取号表），
+启动时逐表 `CREATE TABLE IF NOT EXISTS`（MySQL 5.7+，逐表显式 `utf8mb4 / utf8mb4_unicode_ci`），
+并只在 `databridge_datasource` 为空表时注入上表所列的种子数据；
+接口路径、出入参结构与错误码与 `DB_DRIVER=memory` 完全一致（契约不变），
+差异只有：时间统一按 `YYYY-MM-DDTHH:mm:ss.sssZ` 回显、`POST /datasources/{id,}/test` 对
+`type=mysql` 的数据源改为真实建连测试。滑动窗口限流计数、调度器 `lastTriggerAt`、
+失败重试排程定时器仍是内存态。表清单与启动步骤见 `node-express-boilerplate/README.md` 第 3.1 节。

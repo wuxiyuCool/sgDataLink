@@ -83,7 +83,8 @@ const deleteById = (id) => store.remove(id) || null;
 /** 删除某实例的所有点位（实例被清理时配套使用） */
 const deleteByInstance = (instanceId) => store.removeWhere((item) => item.instanceId === instanceId);
 
-module.exports = {
+/** 内存实现（DB_DRIVER=memory 时生效）；mysql 实现见 ./mysql/offset.store.js */
+const memoryImpl = {
   find,
   page,
   getById,
@@ -99,3 +100,6 @@ module.exports = {
   deleteByInstance,
   clear: store.clear,
 };
+
+// 双驱动门面：DB_DRIVER=mysql 时换成同名异步实现，方法签名统一返回 Promise
+module.exports = require('./facade').pickImpl('offset', memoryImpl);

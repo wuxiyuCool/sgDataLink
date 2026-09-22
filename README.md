@@ -21,6 +21,25 @@
 
 ## 2. 快速启动
 
+### 方式零：一键脚本（Windows，推荐日常开发）
+
+```bat
+start-dev.cmd            :: 三窗口拉起 引擎8080 / 后端3001 / 前端3100（后端模式读 .env 的 DB_DRIVER）
+start-dev.cmd memory     :: 强制内存 mock 模式启动后端（不碰数据库）
+start-dev.cmd mysql      :: 强制 MySQL 持久化模式
+stop-dev.cmd             :: 按端口停掉三个服务
+```
+
+### 存储层开关（MySQL 持久化 ↔ 内存 Mock）
+
+Node 管理后端支持双驱动（仓储门面按 `DB_DRIVER` 选择实现，service 层无感）：
+
+- `DB_DRIVER=mysql`：10 张 `databridge_*` 表真实落库（内网 `10.45.34.222/dataLink`，连接信息在 `node-express-boilerplate/.env` 的 `MYSQL_*`，首次启动自动建表+种子入库）
+- `DB_DRIVER=memory`（默认）：纯内存 + 种子数据，行为与 Mock 阶段一致
+- 后端也可用脚本直接指定：`yarn dev:mysql` / `yarn dev:memory`
+- 当前模式查看：`GET /api/v1/health` 的 `storage` 字段（前端大盘服务状态 Tag 同步展示"MySQL 持久化 / 内存 mock"）
+- 注意：Go 同步引擎在本阶段始终为模拟器（假数据+进度模拟），不受该开关影响
+
 ### 方式一：Docker Compose（推荐，一键）
 
 ```bash

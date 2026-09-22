@@ -66,14 +66,12 @@ const lagDuplicated = (rule, event, nowMs) => {
   return false;
 };
 
-/** 记录数兜底淘汰：内存阶段也要防止长时间运行把告警中心撑爆 */
-const pruneRecords = () => {
-  const total = alertrecordRepository.count();
+/** 记录数兜底淘汰：无论哪种驱动都要防止长时间运行把告警中心撑爆 */
+const pruneRecords = async () => {
+  const total = await alertrecordRepository.count();
   if (total <= MAX_RECORDS) return;
-  alertrecordRepository
-    .find({ sort: 'createdAt:asc' })
-    .slice(0, total - MAX_RECORDS)
-    .forEach((record) => alertrecordRepository.delete(record.id));
+  const stale = (await alertrecordRepository.find({ sort: 'createdAt:asc' })).slice(0, total - MAX_RECORDS);
+  await Promise.all(stale.map((record) => alertrecordRepository.delete(record.id)));
 };
 
 /** 实例归属的目标类型：df- 前缀是数据开发，其余是同步任务（管道走 onPipelineFailed） */
@@ -85,28 +83,29 @@ const targetTypeOf = (instance) => (String((instance && instance.taskId) || '').
  *   condition: 'task_failed'|'pipeline_error'|'lag_over_threshold',
  *   targetType: 'task'|'dataflow'|'pipeline', targetId, targetName, message, lagMs
  * }
+ * @returns {Promise<number>} 写入的告警记录条数
  */
-const fireEvent = (event = {}) => {
+const fireEvent = async (event = {}) => {
   if (!CONDITIONS.includes(event.condition)) {
     logger.warn('alert ignored: unknown condition %s', event.condition);
     return 0;
   }
   const nowMs = Date.now();
-  const rules = alertruleRepository
-    .findEnabled()
+  const enabledRules = await alertruleRepository.findEnabled();
+  const rules = enabledRules
     .filter((rule) => scopeMatches(rule, event.targetType))
     .filter((rule) => conditionMatches(rule, event))
     .filter((rule) => !lagDuplicated(rule, event, nowMs));
 
   if (!rules.length) return 0;
 
-  const created = [];
+  const writes = [];
   rules.forEach((rule) => {
     const channels = Array.isArray(rule.channels) ? rule.channels : [];
     // 规则没配通道时仍写一条 channel='none' 的记录，否则告警中心看不到这次触发
     const targets = channels.length ? channels : [{ type: 'none', webhook: null }];
     targets.forEach((channel) => {
-      created.push(
+      writes.push(
         alertrecordRepository.create({
           ruleId: rule.id,
           ruleName: rule.name,
@@ -131,7 +130,8 @@ const fireEvent = (event = {}) => {
     );
   });
 
-  pruneRecords();
+  const created = await Promise.all(writes);
+  await pruneRecords();
   return created.length;
 };
 
@@ -168,8 +168,8 @@ const onPipelineLag = (pipeline, lagMs) =>
 
 /** ---- 管理端读写：/alert-rules CRUD 与 /alert-records 查询、标记已读 ---- */
 
-const getRuleOrThrow = (id) => {
-  const rule = alertruleRepository.getById(id);
+const getRuleOrThrow = async (id) => {
+  const rule = await alertruleRepository.getById(id);
   if (!rule) throw notFound(`告警规则不存在: ${id}`);
   return rule;
 };
@@ -185,7 +185,7 @@ const queryRules = (filter = {}, options = {}) =>
 
 const getRuleById = (id) => getRuleOrThrow(id);
 
-const createRule = (body = {}) => {
+const createRule = async (body = {}) => {
   const payload = pick(body, ['name', 'scope', 'conditions', 'thresholdLagMs', 'channels', 'enabled', 'remark']);
   if (!payload.name) throw paramInvalid('name 必填');
   if (!Array.isArray(payload.conditions) || !payload.conditions.length) {
@@ -196,8 +196,8 @@ const createRule = (body = {}) => {
   return alertruleRepository.create({ scope: 'all', thresholdLagMs: 5000, channels: [], ...payload });
 };
 
-const updateRuleById = (id, body = {}) => {
-  const existing = getRuleOrThrow(id);
+const updateRuleById = async (id, body = {}) => {
+  const existing = await getRuleOrThrow(id);
   const payload = pick(body, ['name', 'scope', 'conditions', 'thresholdLagMs', 'channels', 'enabled', 'remark']);
   if ('name' in payload && !payload.name) throw paramInvalid('name 必填');
   const conditions = payload.conditions || existing.conditions;
@@ -209,9 +209,9 @@ const updateRuleById = (id, body = {}) => {
   return alertruleRepository.update(id, payload);
 };
 
-const deleteRuleById = (id) => {
-  const existing = getRuleOrThrow(id);
-  alertruleRepository.delete(existing.id);
+const deleteRuleById = async (id) => {
+  const existing = await getRuleOrThrow(id);
+  await alertruleRepository.delete(existing.id);
   return existing;
 };
 
@@ -232,15 +232,15 @@ const queryRecords = (filter = {}, options = {}) =>
   });
 
 /** GET /alert-records/:id */
-const getRecordById = (id) => {
-  const record = alertrecordRepository.getById(id);
+const getRecordById = async (id) => {
+  const record = await alertrecordRepository.getById(id);
   if (!record) throw notFound(`告警记录不存在: ${id}`);
   return record;
 };
 
 /** PATCH /alert-records/:id/read */
-const markRecordRead = (id) => {
-  const existing = getRecordById(id);
+const markRecordRead = async (id) => {
+  const existing = await getRecordById(id);
   return alertrecordRepository.markRead(existing.id);
 };
 

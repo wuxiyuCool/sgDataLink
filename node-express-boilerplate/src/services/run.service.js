@@ -8,8 +8,10 @@
  * 两个领域的 service 各自 `registerRunner()` 后把 start/stop/getProgress 转出去，
  * 调度器（scheduler.service）与失败重试只需要面对 registry，不必各写一遍。
  *
- * 【第二阶段替换点】start 里「预写实例 + 调引擎 + 回滚」换成事务化的调度记录即可，
- * 对外函数签名保持不变。
+ * 【第二阶段：MySQL 驱动】仓储调用全部 await：
+ * start 是「写实例 → 刷 lastStatus → 下发引擎」三段，MySQL 下已不再是一个内存事务，
+ * 引擎拒绝时按原逻辑反向回滚（删实例 + 删点位 + 还原状态）；
+ * 真正的跨表事务（同一 connection 里 commit/rollback）留到引擎换成真实调度时再接。
  */
 const config = require('../config/config');
 const logger = require('../config/logger');
@@ -40,7 +42,7 @@ const TRIGGERS = ['manual', 'cron', 'retry'];
 /** kind -> descriptor */
 const runners = new Map();
 
-/** 排程中的重试定时器，进程退出时统一 clear */
+/** 排程中的重试定时器，进程退出时统一 clear（保持内存态，不落库） */
 const pendingTimers = new Set();
 
 const toInt = (value, fallback = 0) => {
@@ -49,8 +51,8 @@ const toInt = (value, fallback = 0) => {
 };
 
 /** 源/目标库摘要（引擎快照里的 endpoint 结构） */
-const endpointOf = (dataSourceId) => {
-  const ds = datasourceRepository.getById(dataSourceId) || {};
+const endpointOf = async (dataSourceId) => {
+  const ds = (await datasourceRepository.getById(dataSourceId)) || {};
   return { id: ds.id, type: ds.type, database: ds.database };
 };
 
@@ -88,14 +90,14 @@ const resolveTotalRows = (record) => toInt(record.totalRows, DEFAULT_TOTAL_ROWS)
  *   resolveSyncMode(record), buildSnapshot(record, instanceId, totalRows),
  *   instanceExtra(record, options)
  * }
- * @returns {Object} { start, stop, getProgress }
+ * @returns {Object} { start, stop, getProgress, getByIdOrThrow }
  */
 const registerRunner = (descriptor) => {
   const { kind, label, repository, resultIdKey = 'taskId', resolveSyncMode, buildSnapshot, instanceExtra } = descriptor;
   if (!kind || !repository) throw new Error('registerRunner: kind / repository 必填');
 
-  const getByIdOrThrow = (id) => {
-    const record = repository.getById(id);
+  const getByIdOrThrow = async (id) => {
+    const record = await repository.getById(id);
     if (!record) throw notFound(`${label}不存在: ${id}`);
     return record;
   };
@@ -107,16 +109,16 @@ const registerRunner = (descriptor) => {
   const start = async (id, options = {}) => {
     const trigger = TRIGGERS.includes(options.trigger) ? options.trigger : 'manual';
     const retryAttempt = Math.max(toInt(options.retryAttempt, 0), 0);
-    const record = getByIdOrThrow(id);
+    const record = await getByIdOrThrow(id);
     if (record.enabled === false) {
       throw paramInvalid(`${label}已禁用，无法启动: ${record.id}`);
     }
-    if (record.lastStatus === 'running' || instanceRepository.findRunningByTask(record.id)) {
+    if (record.lastStatus === 'running' || (await instanceRepository.findRunningByTask(record.id))) {
       throw duplicateStart(`${label}已在运行中，请勿重复启动: ${record.id}`);
     }
 
     const totalRows = resolveTotalRows(record);
-    const instance = instanceRepository.create({
+    const instance = await instanceRepository.create({
       // dataflow 复用 taskId 承载 dataflowId（契约 1.8：progress 结构里键名仍是 taskId）
       taskId: record.id,
       taskName: record.name,
@@ -137,15 +139,17 @@ const registerRunner = (descriptor) => {
 
     const previousStatus = record.lastStatus;
     const previousRunAt = record.lastRunAt;
-    repository.update(record.id, { lastStatus: 'running', lastRunAt: instance.startedAt });
+    await repository.update(record.id, { lastStatus: 'running', lastRunAt: instance.startedAt });
 
     try {
-      await engineClient.startTask(buildSnapshot(record, instance.id, totalRows));
+      await engineClient.startTask(await buildSnapshot(record, instance.id, totalRows));
     } catch (err) {
       logger.warn('engine start rejected (%s %s), rollback instance %s: %s', kind, record.id, instance.id, err.message);
-      instanceRepository.delete(instance.id);
-      offsetRepository.deleteByInstance(instance.id);
-      repository.update(record.id, { lastStatus: previousStatus, lastRunAt: previousRunAt });
+      await Promise.all([
+        instanceRepository.delete(instance.id),
+        offsetRepository.deleteByInstance(instance.id),
+        repository.update(record.id, { lastStatus: previousStatus, lastRunAt: previousRunAt }),
+      ]);
       throw err;
     }
 
@@ -157,8 +161,8 @@ const registerRunner = (descriptor) => {
    * 引擎侧已无该实例（40401）时按「已停止」处理，只更新本地状态。
    */
   const stop = async (id) => {
-    const record = getByIdOrThrow(id);
-    const instance = instanceRepository.findRunningByTask(record.id);
+    const record = await getByIdOrThrow(id);
+    const instance = await instanceRepository.findRunningByTask(record.id);
     if (!instance) {
       throw paramInvalid(`${label}当前没有运行中的实例，无法停止: ${record.id}`);
     }
@@ -170,12 +174,12 @@ const registerRunner = (descriptor) => {
       logger.warn('engine has no instance %s, mark it stopped locally', instance.id);
     }
 
-    const stopped = instanceRepository.update(instance.id, {
+    const stopped = await instanceRepository.update(instance.id, {
       status: 'stopped',
       finishedAt: nowIso(),
       message: '用户手动停止',
     });
-    repository.update(record.id, { lastStatus: 'stopped' });
+    await repository.update(record.id, { lastStatus: 'stopped' });
     return {
       [resultIdKey]: record.id,
       instanceId: instance.id,
@@ -184,10 +188,11 @@ const registerRunner = (descriptor) => {
   };
 
   /** 进度聚合视图：状态 + 进度 + 读写行数 + 当前 offset（键名统一 taskId） */
-  const getProgress = (id) => {
-    const record = getByIdOrThrow(id);
-    const instance = instanceRepository.findLatestByTask(record.id);
+  const getProgress = async (id) => {
+    const record = await getByIdOrThrow(id);
+    const instance = await instanceRepository.findLatestByTask(record.id);
     if (!instance) {
+      const fallbackOffset = (await offsetRepository.findLatestByTask(record.id)) || {};
       return {
         taskId: record.id,
         instanceId: null,
@@ -196,19 +201,16 @@ const registerRunner = (descriptor) => {
         totalRows: 0,
         readRows: 0,
         writeRows: 0,
-        currentOffset: (offsetRepository.findLatestByTask(record.id) || {}).offsetValue || null,
+        currentOffset: fallbackOffset.offsetValue || null,
         rateRowsPerSec: 0,
         startedAt: null,
         finishedAt: null,
         message: null,
       };
     }
-    const offset = offsetRepository.findLatestByInstance(instance.id);
+    const offset = await offsetRepository.findLatestByInstance(instance.id);
     const elapsedSec = instance.startedAt
-      ? Math.max(
-          (new Date(instance.finishedAt || nowIso()).getTime() - new Date(instance.startedAt).getTime()) / 1000,
-          0
-        )
+      ? Math.max((new Date(instance.finishedAt || nowIso()).getTime() - new Date(instance.startedAt).getTime()) / 1000, 0)
       : 0;
     const computedRate = elapsedSec > 0 ? Math.round((instance.readRows || 0) / elapsedSec) : 0;
     return {
@@ -241,31 +243,41 @@ const listRunners = () => Array.from(runners.values());
 /**
  * 按记录 id 找它属于哪种可运行体（task-2001 → task，df-7501 → dataflow）。
  * 引擎回报只带一个 taskId，靠这里反查归属，避免在回报里塞类型字段。
+ * @returns {Promise<Object|null>} registry 条目
  */
-const findRunnerByRecordId = (id) => {
+const findRunnerByRecordId = async (id) => {
   if (!id) return null;
-  return listRunners().find((entry) => entry.repository.getById(id)) || null;
+  const entries = listRunners();
+  // eslint-disable-next-line no-restricted-syntax
+  for (const entry of entries) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await entry.repository.getById(id)) return entry;
+  }
+  return null;
 };
 
 /** 引擎回报刷 lastStatus（task / dataflow 通用） */
-const syncRunStatus = (recordId, status, runAt) => {
-  const entry = findRunnerByRecordId(recordId);
+const syncRunStatus = async (recordId, status, runAt) => {
+  const entry = await findRunnerByRecordId(recordId);
   if (!entry) {
     logger.warn('engine report for unknown runnable %s, ignored', recordId);
     return null;
   }
-  const record = entry.repository.getById(recordId);
   const patch = { lastStatus: status };
   if (runAt) patch.lastRunAt = runAt;
   return entry.repository.update(recordId, patch);
 };
 
 /** 供调度器遍历：所有 kind 下的可调度记录 */
-const listSchedulableRecords = () =>
-  listRunners().reduce((acc, entry) => {
-    const records = entry.repository.list ? entry.repository.list() : entry.repository.find({});
-    return acc.concat(records.map((record) => ({ kind: entry.kind, label: entry.label, record })));
-  }, []);
+const listSchedulableRecords = async () => {
+  const groups = await Promise.all(
+    listRunners().map(async (entry) => {
+      const records = entry.repository.list ? await entry.repository.list() : await entry.repository.find({});
+      return records.map((record) => ({ kind: entry.kind, label: entry.label, record }));
+    })
+  );
+  return groups.reduce((acc, group) => acc.concat(group), []);
+};
 
 const clearTimer = (timer) => {
   clearTimeout(timer);
@@ -285,21 +297,25 @@ const pendingRetryCount = () => pendingTimers.size;
  * 任务/画布 retryCount>0 且该实例链上已重试次数 < retryCount 时，
  * 等 retryIntervalSec 秒后以 trigger=retry 重新下发，并写「第 N 次重试」INFO 日志。
  *
+ * 定时器与「已排程」状态刻意保持内存态：重启后未触发的重试不续命，
+ * 语义与内存版一致，也不会让 DB 成为重启后自动下发任务的来源。
+ *
  * @param {Object} instance 刚回报 failed 的实例
- * @returns {boolean} 是否成功排程
+ * @returns {Promise<boolean>} 是否成功排程
  */
-const scheduleRetry = (instance) => {
+const scheduleRetry = async (instance) => {
   if (!instance || !instance.taskId) return false;
-  const entry = findRunnerByRecordId(instance.taskId);
+  const entry = await findRunnerByRecordId(instance.taskId);
   if (!entry) return false;
-  const record = entry.repository.getById(instance.taskId);
+  const record = await entry.repository.getById(instance.taskId);
+  if (!record) return false;
   const retryCount = toInt(record.retryCount, 0);
   const alreadyTried = toInt(instance.retryAttempt, 0);
   if (retryCount <= 0 || alreadyTried >= retryCount) return false;
 
   const nextAttempt = alreadyTried + 1;
   const waitSec = Math.max(toInt(record.retryIntervalSec, 0), 0);
-  logRepository.create({
+  await logRepository.create({
     instanceId: instance.id,
     taskId: instance.taskId,
     level: 'INFO',
@@ -310,34 +326,35 @@ const scheduleRetry = (instance) => {
   const timer = setTimeout(() => {
     pendingTimers.delete(timer);
     // 排程到触发的这段时间里可能已被人工启动 / 已删除，这里全部重新查一遍
-    const current = entry.repository.getById(instance.taskId);
-    if (!current) {
-      logger.warn('retry aborted: %s 已被删除', instance.taskId);
-      return;
-    }
-    if (current.lastStatus === 'running' || instanceRepository.findRunningByTask(current.id)) {
-      logger.warn('retry skipped: %s 已在运行中', current.id);
-      return;
-    }
-    entry.api
-      .start(current.id, { trigger: 'retry', retryAttempt: nextAttempt })
-      .then((result) => {
-        logRepository.create({
+    const run = async () => {
+      const current = await entry.repository.getById(instance.taskId);
+      if (!current) {
+        logger.warn('retry aborted: %s 已被删除', instance.taskId);
+        return;
+      }
+      if (current.lastStatus === 'running' || (await instanceRepository.findRunningByTask(current.id))) {
+        logger.warn('retry skipped: %s 已在运行中', current.id);
+        return;
+      }
+      try {
+        const result = await entry.api.start(current.id, { trigger: 'retry', retryAttempt: nextAttempt });
+        await logRepository.create({
           instanceId: result.instanceId,
           taskId: current.id,
           level: 'INFO',
           message: `第 ${nextAttempt} 次重试启动（trigger=retry）`,
         });
-      })
-      .catch((err) => {
+      } catch (err) {
         logger.warn('retry %d failed for %s: %s', nextAttempt, current.id, err.message);
-        logRepository.create({
+        await logRepository.create({
           instanceId: instance.id,
           taskId: current.id,
           level: 'WARN',
           message: `第 ${nextAttempt} 次重试下发失败: ${err.message}`,
         });
-      });
+      }
+    };
+    run().catch((err) => logger.error('retry tick error for %s: %s', instance.taskId, err.message));
   }, waitSec * 1000);
 
   // unref：不能让排程中的重试阻止进程退出

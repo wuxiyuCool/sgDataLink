@@ -33,17 +33,17 @@ const DEFAULT_BATCH_SIZE = 1000;
 
 const isFinalStatus = (status) => FINAL_STATUSES.includes(status);
 
-const getPipelineOrThrow = (id) => {
-  const pipeline = pipelineRepository.getById(id);
+const getPipelineOrThrow = async (id) => {
+  const pipeline = await pipelineRepository.getById(id);
   if (!pipeline) {
     throw notFound(`数据管道不存在: ${id}`);
   }
   return pipeline;
 };
 
-const assertDataSourceExists = (id, label) => {
+const assertDataSourceExists = async (id, label) => {
   if (!id) throw paramInvalid(`${label} 必填`);
-  if (!datasourceRepository.getById(id)) {
+  if (!(await datasourceRepository.getById(id))) {
     throw paramInvalid(`${label} 对应的数据源不存在: ${id}`);
   }
 };
@@ -72,10 +72,10 @@ const normalizeBody = (body = {}) => {
 };
 
 /** 管道定义校验：名称 / 两端数据源 / 至少一张同步对象 */
-const assertDefinition = (payload) => {
+const assertDefinition = async (payload) => {
   if (!payload.name) throw paramInvalid('name 必填');
-  assertDataSourceExists(payload.sourceId, 'sourceId');
-  assertDataSourceExists(payload.targetId, 'targetId');
+  await assertDataSourceExists(payload.sourceId, 'sourceId');
+  await assertDataSourceExists(payload.targetId, 'targetId');
   if (!Array.isArray(payload.syncObjects) || !payload.syncObjects.length) {
     throw paramInvalid('syncObjects 至少需要一个同步对象（如 APP_USER.T_ORDER）');
   }
@@ -93,9 +93,9 @@ const queryPipelines = (filter = {}, options = {}) =>
 
 const getPipelineById = (id) => getPipelineOrThrow(id);
 
-const createPipeline = (body) => {
+const createPipeline = async (body) => {
   const payload = normalizeBody(body);
-  assertDefinition(payload);
+  await assertDefinition(payload);
   return pipelineRepository.create({
     ddlPolicy: 'ignore',
     ...payload,
@@ -105,43 +105,51 @@ const createPipeline = (body) => {
   });
 };
 
-const updatePipelineById = (id, body) => {
-  const existing = getPipelineOrThrow(id);
+const updatePipelineById = async (id, body) => {
+  const existing = await getPipelineOrThrow(id);
   assertNotRunning(existing, '编辑');
   const payload = normalizeBody(body);
   const merged = { ...existing, ...payload };
   if ('name' in payload && !payload.name) throw paramInvalid('name 必填');
-  if (payload.sourceId !== undefined) assertDataSourceExists(payload.sourceId, 'sourceId');
-  if (payload.targetId !== undefined) assertDataSourceExists(payload.targetId, 'targetId');
-  if (payload.syncObjects !== undefined) assertDefinition(merged);
+  if (payload.sourceId !== undefined) await assertDataSourceExists(payload.sourceId, 'sourceId');
+  if (payload.targetId !== undefined) await assertDataSourceExists(payload.targetId, 'targetId');
+  if (payload.syncObjects !== undefined) await assertDefinition(merged);
   return pipelineRepository.update(id, payload);
 };
 
-const deletePipelineById = (id) => {
-  const existing = getPipelineOrThrow(id);
+const deletePipelineById = async (id) => {
+  const existing = await getPipelineOrThrow(id);
   assertNotRunning(existing, '删除');
-  pipelineRepository.delete(existing.id);
+  await pipelineRepository.delete(existing.id);
   return existing;
 };
 
 /** 下发给 Go 引擎的 cdc 快照（字段见 docs/API.md 第 1.7 / 2 节） */
-const buildEngineSnapshot = (pipeline, instanceId) => ({
-  instanceId,
-  pipelineId: pipeline.id,
-  // 管道不属于任何同步任务：cdc 回报靠 pipelineId 归属，taskId 恒为 null
-  taskId: null,
-  syncMode: 'cdc',
-  syncObjects: pipeline.syncObjects || [],
-  source: runService.endpointOf(pipeline.sourceId),
-  target: runService.endpointOf(pipeline.targetId),
-  batchSize: Number(pipeline.batchSize) || DEFAULT_BATCH_SIZE,
-  failureRate: runService.resolveFailureRate(pipeline),
-  reportUrl: config.engine.reportUrl,
-});
+const buildEngineSnapshot = async (pipeline, instanceId) => {
+  const [source, target] = await Promise.all([
+    runService.endpointOf(pipeline.sourceId),
+    runService.endpointOf(pipeline.targetId),
+  ]);
+  return {
+    instanceId,
+    pipelineId: pipeline.id,
+    // 管道不属于任何同步任务：cdc 回报靠 pipelineId 归属，taskId 恒为 null
+    taskId: null,
+    syncMode: 'cdc',
+    syncObjects: pipeline.syncObjects || [],
+    source,
+    target,
+    batchSize: Number(pipeline.batchSize) || DEFAULT_BATCH_SIZE,
+    failureRate: runService.resolveFailureRate(pipeline),
+    reportUrl: config.engine.reportUrl,
+  };
+};
 
 /** 当前运行中的实例（没有则 null） */
-const findRunningInstance = (pipeline) =>
-  pipeline.runningInstanceId ? instanceRepository.getById(pipeline.runningInstanceId) : null;
+const findRunningInstance = async (pipeline) => {
+  if (!pipeline || !pipeline.runningInstanceId) return null;
+  return instanceRepository.getById(pipeline.runningInstanceId);
+};
 
 /**
  * 启动管道：校验 → 预写 inst- 实例（syncMode=cdc）→ 运行态清零并置 running → 引擎下发 cdc 快照；
@@ -151,16 +159,16 @@ const findRunningInstance = (pipeline) =>
  * @returns {Promise<{pipelineId, instanceId, status}>}
  */
 const startPipeline = async (id, options = {}) => {
-  const pipeline = getPipelineOrThrow(id);
+  const pipeline = await getPipelineOrThrow(id);
   if (pipeline.enabled === false) {
     throw paramInvalid(`管道已禁用，无法启动: ${pipeline.id}`);
   }
-  if (pipeline.status === 'running' || findRunningInstance(pipeline)) {
+  if (pipeline.status === 'running' || (await findRunningInstance(pipeline))) {
     throw duplicateStart(`管道已在运行中，请勿重复启动: ${pipeline.id}`);
   }
-  assertDefinition({ ...pipeline, name: pipeline.name });
+  await assertDefinition({ ...pipeline, name: pipeline.name });
 
-  const instance = instanceRepository.create({
+  const instance = await instanceRepository.create({
     // 管道实例不属于任何同步任务，靠 pipelineId 归属（契约 1.4）
     taskId: null,
     pipelineId: pipeline.id,
@@ -181,7 +189,7 @@ const startPipeline = async (id, options = {}) => {
   });
 
   const rollback = pick(pipeline, ['status', 'runningInstanceId', 'lastError', 'startedAt']);
-  pipelineRepository.update(pipeline.id, {
+  await pipelineRepository.update(pipeline.id, {
     status: 'running',
     runningInstanceId: instance.id,
     lastError: null,
@@ -194,12 +202,14 @@ const startPipeline = async (id, options = {}) => {
   });
 
   try {
-    await engineClient.startPipeline(buildEngineSnapshot(pipeline, instance.id));
+    await engineClient.startPipeline(await buildEngineSnapshot(pipeline, instance.id));
   } catch (err) {
     logger.warn('engine start rejected for pipeline %s, rollback instance %s: %s', pipeline.id, instance.id, err.message);
-    instanceRepository.delete(instance.id);
-    offsetRepository.deleteByInstance(instance.id);
-    pipelineRepository.update(pipeline.id, { ...rollback, changeRows: 0, currentQps: 0, lagMs: 0, cdcPosition: null });
+    await Promise.all([
+      instanceRepository.delete(instance.id),
+      offsetRepository.deleteByInstance(instance.id),
+      pipelineRepository.update(pipeline.id, { ...rollback, changeRows: 0, currentQps: 0, lagMs: 0, cdcPosition: null }),
+    ]);
     throw err;
   }
 
@@ -212,8 +222,8 @@ const startPipeline = async (id, options = {}) => {
  * @returns {Promise<{pipelineId, instanceId, status}>}
  */
 const stopPipeline = async (id) => {
-  const pipeline = getPipelineOrThrow(id);
-  const instance = findRunningInstance(pipeline);
+  const pipeline = await getPipelineOrThrow(id);
+  const instance = await findRunningInstance(pipeline);
   if (!instance) {
     throw paramInvalid(`管道当前没有运行中的实例，无法停止: ${pipeline.id}`);
   }
@@ -225,13 +235,13 @@ const stopPipeline = async (id) => {
     logger.warn('engine has no instance %s, mark it stopped locally', instance.id);
   }
 
-  const stopped = instanceRepository.update(instance.id, {
+  const stopped = await instanceRepository.update(instance.id, {
     status: 'stopped',
     finishedAt: nowIso(),
     message: '用户停止管道',
   });
   // changeRows / cdcPosition 保留最后一次值，qps 与延迟归零（已经不在跑了）
-  pipelineRepository.update(pipeline.id, {
+  await pipelineRepository.update(pipeline.id, {
     status: 'stopped',
     runningInstanceId: null,
     currentQps: 0,
@@ -246,8 +256,8 @@ const stopPipeline = async (id) => {
 };
 
 /** GET /pipelines/:id/status —— 实时状态（数据全部来自管道记录的运行态字段） */
-const getPipelineStatus = (id) => {
-  const pipeline = getPipelineOrThrow(id);
+const getPipelineStatus = async (id) => {
+  const pipeline = await getPipelineOrThrow(id);
   return {
     pipelineId: pipeline.id,
     instanceId: pipeline.runningInstanceId || null,
@@ -267,9 +277,9 @@ const getPipelineStatus = (id) => {
  * 引擎回报（带 pipelineId）刷管道运行态与终态，由 engineReport.service 调用。
  * @param {Object} pipeline 管道记录（回报前的快照）
  * @param {Object} payload  引擎回报体
- * @returns {{ updated: Object, becameFailed: boolean, becameTerminal: boolean }}
+ * @returns {Promise<{ updated: Object, becameFailed: boolean, becameTerminal: boolean }>}
  */
-const applyEngineReport = (pipeline, payload = {}) => {
+const applyEngineReport = async (pipeline, payload = {}) => {
   const status = payload.status || pipeline.status;
   const patch = { lastReportAt: nowIso() };
 
@@ -293,7 +303,7 @@ const applyEngineReport = (pipeline, payload = {}) => {
     if (becameFailed) patch.lastError = payload.message || '管道同步失败';
   }
 
-  const updated = pipelineRepository.update(pipeline.id, patch);
+  const updated = await pipelineRepository.update(pipeline.id, patch);
   return { updated: updated || pipeline, becameFailed, becameTerminal };
 };
 

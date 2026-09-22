@@ -52,8 +52,7 @@ const getById = (id) => store.get(id);
 const count = () => store.size();
 
 /** 运行时按 path 查（契约 GET /ds/{path}）：同名 path 取最早创建的一条 */
-const findByPath = (path) =>
-  find({ filters: { path }, sort: 'createdAt:asc' })[0] || null;
+const findByPath = (path) => find({ filters: { path }, sort: 'createdAt:asc' })[0] || null;
 
 /** 是否引用了某个数据源，供数据源删除的 40002 校验 */
 const findByDataSource = (dataSourceId) => list().filter((item) => item.datasourceId === dataSourceId);
@@ -133,7 +132,8 @@ const recordCall = (id, { latencyMs = 0, ok = true, date } = {}) => {
 /** 某 API 的按天调用日志（升序副本），用于 stats 的 recentTrend */
 const getCallLog = (id) => (callLogs.get(String(id)) || []).map((item) => ({ ...item }));
 
-module.exports = {
+/** 内存实现（DB_DRIVER=memory 时生效）；mysql 实现见 ./mysql/dataapi.store.js */
+const memoryImpl = {
   MAX_CALL_LOG_ENTRIES,
   list,
   find,
@@ -152,3 +152,6 @@ module.exports = {
     store.clear();
   },
 };
+
+// 双驱动门面：DB_DRIVER=mysql 时换成同名异步实现，方法签名统一返回 Promise
+module.exports = require('./facade').pickImpl('dataapi', memoryImpl);

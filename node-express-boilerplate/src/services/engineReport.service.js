@@ -40,13 +40,13 @@ const assertStatus = (status) => {
 };
 
 /** 运行体（同步任务 / 数据开发）状态跟随实例回报刷新（running / 终态） */
-const syncRunStatus = (taskId, status, finishedAt) => {
-  const entry = runService.findRunnerByRecordId(taskId);
+const syncRunStatus = async (taskId, status, finishedAt) => {
+  const entry = await runService.findRunnerByRecordId(taskId);
   if (!entry) {
     logger.warn('engine report for unknown runnable %s, ignored', taskId);
     return null;
   }
-  const record = entry.repository.getById(taskId);
+  const record = (await entry.repository.getById(taskId)) || {};
   const patch = { lastStatus: status };
   if (taskInstanceService.isFinalStatus(status)) {
     patch.lastRunAt = record.lastRunAt || finishedAt || nowIso();
@@ -58,21 +58,21 @@ const syncRunStatus = (taskId, status, finishedAt) => {
  * cdc 管道回报（契约 1.4：带 pipelineId / currentQps / lagMs / cdcPosition，progress 恒 0）。
  * 刷管道运行态，并在进入终态时判定 pipeline_error、之后判定 lag_over_threshold。
  */
-const handlePipelineReport = (pipelineId, payload, status) => {
-  const pipeline = pipelineRepository.getById(pipelineId);
+const handlePipelineReport = async (pipelineId, payload, status) => {
+  const pipeline = await pipelineRepository.getById(pipelineId);
   if (!pipeline) {
     logger.warn('engine report for unknown pipeline %s, ignored', pipelineId);
     return;
   }
-  const { becameFailed } = pipelineService.applyEngineReport(pipeline, { ...payload, status });
-  const fresh = pipelineRepository.getById(pipelineId);
+  const { becameFailed } = await pipelineService.applyEngineReport(pipeline, { ...payload, status });
+  const fresh = await pipelineRepository.getById(pipelineId);
 
   if (becameFailed) {
-    alertService.onPipelineFailed(fresh, payload.message || (fresh && fresh.lastError));
+    await alertService.onPipelineFailed(fresh, payload.message || (fresh && fresh.lastError));
   }
   // 延迟超阈值：引擎每 tick 都会回报，alert.service 内部按「同管道 + 同规则 60s」去重
   if (fresh && toInt(fresh.lagMs) > 0) {
-    alertService.onPipelineLag(fresh, fresh.lagMs);
+    await alertService.onPipelineLag(fresh, fresh.lagMs);
   }
 };
 
@@ -81,14 +81,14 @@ const handlePipelineReport = (pipelineId, payload, status) => {
  * @param {Object} payload { instanceId, taskId, pipelineId, status, progress, totalRows, readRows,
  *                           writeRows, currentOffset, rateRowsPerSec, currentQps, lagMs, cdcPosition,
  *                           changeRows, trigger, message }
- * @returns {{ accepted: true }}
+ * @returns {Promise<{ accepted: true }>}
  */
-const reportProgress = (payload = {}) => {
+const reportProgress = async (payload = {}) => {
   if (!payload.instanceId) {
     throw paramInvalid('instanceId 必填');
   }
   assertStatus(payload.status);
-  const instance = taskInstanceService.getInstanceOrThrow(payload.instanceId);
+  const instance = await taskInstanceService.getInstanceOrThrow(payload.instanceId);
   const status = payload.status || instance.status;
   // 管道归属：回报优先，其次看实例创建时写下的 pipelineId
   const pipelineId = payload.pipelineId || instance.pipelineId || null;
@@ -112,10 +112,10 @@ const reportProgress = (payload = {}) => {
   } else {
     patch.finishedAt = null;
   }
-  const updated = taskInstanceService.updateInstance(instance.id, patch) || { ...instance, ...patch };
+  const updated = (await taskInstanceService.updateInstance(instance.id, patch)) || { ...instance, ...patch };
 
   if (payload.currentOffset) {
-    offsetRepository.upsert({
+    await offsetRepository.upsert({
       taskId,
       instanceId: instance.id,
       shardKey: payload.shardKey || 'default',
@@ -124,15 +124,15 @@ const reportProgress = (payload = {}) => {
   }
 
   if (pipelineId) {
-    handlePipelineReport(pipelineId, payload, status);
+    await handlePipelineReport(pipelineId, payload, status);
   } else if (taskId) {
-    syncRunStatus(taskId, status, patch.finishedAt);
+    await syncRunStatus(taskId, status, patch.finishedAt);
   }
 
   // 首次进入终态才写终结日志与后续动作，避免同一终态被重复回报时刷屏
   const justFinal = isFinal && instance.status !== status;
   if (justFinal) {
-    logRepository.create({
+    await logRepository.create({
       instanceId: instance.id,
       taskId,
       level: status === 'failed' ? 'ERROR' : 'INFO',
@@ -145,9 +145,9 @@ const reportProgress = (payload = {}) => {
 
   if (justFinal && status === 'failed' && !pipelineId && taskId) {
     // 1) 告警：condition=task_failed（数据开发实例同样按 task_failed 处理，只是 targetType=dataflow）
-    alertService.onInstanceFailed({ ...instance, ...patch }, payload.message);
+    await alertService.onInstanceFailed({ ...instance, ...patch }, payload.message);
     // 2) 契约 1.6 失败重试：retryCount>0 且链上已重试次数未用满时，延后 retryIntervalSec 秒重下
-    const scheduled = runService.scheduleRetry(updated);
+    const scheduled = await runService.scheduleRetry(updated);
     if (!scheduled) {
       logger.debug('no retry scheduled for instance %s (retryCount used up or not configured)', instance.id);
     }
@@ -166,16 +166,16 @@ const toIso = (value) => {
 /**
  * POST /engine/logs
  * @param {Object} payload { instanceId, logs: [{ level, message }] }
- * @returns {{ accepted: number }}
+ * @returns {Promise<{ accepted: number }>}
  */
-const ingestLogs = (payload = {}) => {
+const ingestLogs = async (payload = {}) => {
   if (!payload.instanceId) {
     throw paramInvalid('instanceId 必填');
   }
   if (!Array.isArray(payload.logs)) {
     throw paramInvalid('logs 必须是数组');
   }
-  const instance = taskInstanceService.getInstanceOrThrow(payload.instanceId);
+  const instance = await taskInstanceService.getInstanceOrThrow(payload.instanceId);
   const items = payload.logs
     .filter((item) => item && item.message)
     .map((item) => ({
@@ -185,7 +185,7 @@ const ingestLogs = (payload = {}) => {
       message: String(item.message),
       createdAt: toIso(item.createdAt || item.timestamp),
     }));
-  const created = logRepository.createMany(items);
+  const created = await logRepository.createMany(items);
   logger.debug('engine logs accepted: %d for %s', created.length, instance.id);
   return { accepted: created.length };
 };

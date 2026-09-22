@@ -39,8 +39,7 @@ const getById = (id) => store.get(id);
 const count = () => store.size();
 
 /** 某任务的全部实例，按开始时间倒序 */
-const findByTask = (taskId, status) =>
-  find({ filters: status ? { taskId, status } : { taskId }, sort: 'startedAt:desc' });
+const findByTask = (taskId, status) => find({ filters: status ? { taskId, status } : { taskId }, sort: 'startedAt:desc' });
 
 /** 某任务最近一次实例（用于 /tasks/:id/progress 聚合视图） */
 const findLatestByTask = (taskId) => findByTask(taskId)[0] || null;
@@ -84,10 +83,10 @@ const deleteById = (id) => store.remove(id) || null;
  * 按状态统计实例数量（运维大盘 GET /statistics/overview 用）。
  * @param {string} [status] 省略则统计全部实例
  */
-const countByStatus = (status) =>
-  filterList(list(), { filters: status ? { status } : {} }).length;
+const countByStatus = (status) => filterList(list(), { filters: status ? { status } : {} }).length;
 
-module.exports = {
+/** 内存实现（DB_DRIVER=memory 时生效）；mysql 实现见 ./mysql/instance.store.js */
+const memoryImpl = {
   list,
   find,
   page,
@@ -102,3 +101,6 @@ module.exports = {
   findRunningByTask,
   clear: store.clear,
 };
+
+// 双驱动门面：DB_DRIVER=mysql 时换成同名异步实现，方法签名统一返回 Promise
+module.exports = require('./facade').pickImpl('instance', memoryImpl);

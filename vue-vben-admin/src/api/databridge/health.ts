@@ -8,6 +8,9 @@ export interface HealthResult {
   status: 'ok' | string
   service: string
   mock?: boolean
+  /** 存储层模式：mysql | memory */
+  storage?: string
+  memoryMode?: string
   version?: string
   uptime?: number
 }

@@ -442,8 +442,11 @@ Contributions are more than welcome! Please check out the [contributing guide](C
 ## DataBridge Mock 模式启动
 
 本仓库在 hagopj13 脚手架内扩展了 DataBridge 管理后端（`docs/API.md` 第 1 节）。
-Mock 阶段**不连接任何数据库**：数据全部放在 `src/repositories/` 的内存仓储里，
-进程重启即回到种子状态。接口前缀 `/api/v1`，默认端口 `3001`。
+仓储层是**双驱动**的：`DB_DRIVER=memory`（默认，即 Mock 阶段）不连接任何数据库，
+数据全在 `src/repositories/` 的内存仓储里，进程重启即回到种子状态；
+`DB_DRIVER=mysql` 走 `src/repositories/mysql/*.store.js` 的真实落库（建表见 `src/db/schema.sql`，
+只有内存态的部分是滑动窗口限流计数、调度器 `lastTriggerAt`、失败重试排程定时器）。
+接口前缀 `/api/v1`，默认端口 `3001`。
 
 ### 1. 前置 .env 变量清单
 
@@ -457,6 +460,13 @@ Mock 阶段**不连接任何数据库**：数据全部放在 `src/repositories/`
 | `ENGINE_BASE_URL` | 否 | `http://127.0.0.1:8080` | Go 同步引擎地址，start/stop 指令下发前缀 |
 | `ADMIN_REPORT_URL` | 否 | `http://127.0.0.1:3001/api/v1/engine` | 引擎回报进度的地址（容器里写服务名，如 `http://databridge-admin:3001/api/v1/engine`） |
 | `ENGINE_TIMEOUT_MS` | 否 | `5000` | 调用引擎的超时 |
+| `DB_DRIVER` | 否 | `memory` | 仓储驱动：`memory` = 内存 Mock；`mysql` = 落库到 `databridge_*` 表 |
+| `MYSQL_HOST` | `DB_DRIVER=mysql` 时必填 | `''` | MySQL 主机 |
+| `MYSQL_PORT` | 否 | `3306` | MySQL 端口 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | `DB_DRIVER=mysql` 时必填 | `''` | 账号密码 |
+| `MYSQL_DATABASE` | 否 | `dataLink` | 库名（表统一 `databridge_` 前缀，见第 3.1 节） |
+| `MYSQL_CONNECTION_LIMIT` | 否 | `10` | 连接池大小 |
+| `MYSQL_CONNECT_TIMEOUT_MS` | 否 | `10000` | 建连超时 |
 | `MONGODB_URL` | 否 | `''` | **MEM_MOCK=true 时留空**；只有 `MEM_MOCK=false` 走原 MongoDB 模式才需要 |
 | `JWT_SECRET` | 否 | `databridge-mock-secret` | DataBridge 新路由 Mock 阶段不鉴权，仅脚手架自带 `/auth` `/users` 需要 |
 | `JWT_*`、`SMTP_*`、`EMAIL_FROM` | 否 | 见 config | 脚手架原有变量，mock 模式用不到 |
@@ -466,7 +476,7 @@ Mock 阶段**不连接任何数据库**：数据全部放在 `src/repositories/`
 运行 `yarn dev` 前 `node_modules` 需已具备（Node **>= 18**，`engineClient` 使用全局 `fetch`）：
 
 - 运行时：`express`、`joi`、`http-status`、`winston`、`morgan`、`helmet`、`cors`、`compression`、
-  `dotenv`、`passport`、`passport-jwt`、`jsonwebtoken`、`mongoose`、`express-mongo-sanitize`、
+  `dotenv`、`passport`、`passport-jwt`、`jsonwebtoken`、`mongoose`、`mysql2`、`express-mongo-sanitize`、
   `express-rate-limit`、`xss-clean`、`bcryptjs`、`nodemailer`、`moment`、`validator`、
   `swagger-jsdoc`、`swagger-ui-express`、`cross-env`、`pm2`
 - 开发期：`nodemon`（`yarn dev` 需要）、`eslint`、`prettier`、`jest`、`supertest`、`node-mocks-http`、`faker`
@@ -494,6 +504,47 @@ Docker（镜像构建时才在容器里安装生产依赖）：
 docker build -t databridge-admin:mock .
 docker run --rm -p 3001:3001 -e ENGINE_BASE_URL=http://host.docker.internal:8080 databridge-admin:mock
 ```
+
+### 3.1 MySQL 模式启动（`DB_DRIVER=mysql`）
+
+依赖 `mysql2`（已在 `package.json`），库要求 **MySQL 5.7+**（用到 JSON 列）。
+目标库默认字符集若是 `utf8`，本项目的建表语句会**逐表显式**声明
+`CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`，不需要改库级默认值。
+
+```bash
+# .env（或环境变量）里设置：
+#   DB_DRIVER=mysql
+#   MYSQL_HOST=10.45.34.222  MYSQL_PORT=3306
+#   MYSQL_USER=root  MYSQL_PASSWORD=123456  MYSQL_DATABASE=dataLink
+#   MEM_MOCK=true          # 仍然保持「不连 MongoDB」，两者互不影响
+yarn dev
+```
+
+`src/index.js` 在 mysql 驱动下的装配顺序：
+建池 → 逐表 `CREATE TABLE IF NOT EXISTS`（`src/db/schema.sql` + `src/db/init.js`）
+→ **列定义与 information_schema 比对**（schema.sql 与仓储列声明漂移时直接起不来，避免运行期才报 Unknown column）
+→ 初始化 ID 序列 → `databridge_datasource` 为空表才注入种子 → 启动调度器 → listen；
+退出时 `shutdownScheduling()` + `pool.end()`。
+
+表清单（全部 `databridge_` 前缀，`id` 沿用 `ds-1001` 式字符串主键）：
+
+| 表 | 承载 | 关键列 |
+|------|------|--------|
+| `databridge_datasource` | 契约 1.1 数据源 | `type`、`status`、`created_at` 索引 |
+| `databridge_sync_task` | 契约 1.2 同步任务 | `field_mappings` JSON、`schedule_cron`、`last_status` |
+| `databridge_task_instance` | 契约 1.3/1.4 运行实例（task / dataflow / cdc 共用） | `task_id`、`pipeline_id`、`status`、`started_at`、`trigger_type` |
+| `databridge_run_log` | 契约 1.3 实例日志 | `(instance_id, created_at)` 复合索引，每实例留最近 500 条 |
+| `databridge_offset` | 契约 1.2/1.4 同步点位 | `(task_id, instance_id, shard_key)` 三元 upsert |
+| `databridge_pipeline` | 契约 1.7 数据管道 | `sync_objects` JSON + 运行态列（`change_rows`/`current_qps`/`lag_ms`/`cdc_position`） |
+| `databridge_dataflow` | 契约 1.8 数据开发画布 | `nodes`、`edges` JSON |
+| `databridge_data_api` | 契约 1.9 数据服务定义 | `fields`/`query_params`/`ip_whitelist` JSON、`invoke_count` 等统计列 |
+| `databridge_data_api_call_day` | 1.9 的按天调用计数（替代内存 Map，供 `stats` 的 `recentTrend`） | `(api_id, date)` 唯一 |
+| `databridge_alert_rule` | 契约 1.10 告警规则 | `conditions`、`channels` JSON |
+| `databridge_alert_record` | 契约 1.10 告警记录 | `is_read`（`read` 是 MySQL 关键字）、`created_at` 索引 |
+| `databridge_id_seq` | ID 序列（复刻内存 store 的 prefix + 自增） | `id_prefix`、`next_val`，`LAST_INSERT_ID(next_val+1)` 原子取号 |
+
+每张业务表另有 `extra` JSON 列（存放未建列的扩展字段，读出并回对象）与隐藏自增列 `seq`
+（还原内存版「按插入序遍历」的语义）。
 
 ### 4. 已实现接口
 
@@ -525,7 +576,9 @@ todayFailed, todayStopped, recentTrend: [{ date, success, failed }] }`；今日�
 数据服务运行时另有 `40101` 未提供 API Key、`40102` API Key 无效、`40301` IP 不在白名单、
 `42901` 超过限流 QPS、`40404` 服务不存在或未发布（HTTP 状态码分别为 401/401/403/429/404，
 映射表在 `src/config/errorCodes.js`）。
-数据源 `password` 响应中恒为 `"***"`；mock 连通测试规则：`host` 以 `10.` 开头或名称含 `fail` 即返回失败。
+数据源 `password` 响应中恒为 `"***"`；连通测试规则：`DB_DRIVER=mysql` 且数据源 `type=mysql` 时
+用 `mysql2` 真实建连（`SELECT 1`，5s 超时，`latencyMs` 是实测值，失败返回 `{ success:false, message:'连接失败(ER_xxx)…' }`）；
+其余情况（memory 驱动、oracle / postgresql 类型）仍是 mock 规则：`host` 以 `10.` 开头或名称含 `fail` 即返回失败。
 
 ### 5. 任务对象字段（对标 FineDataLink）
 
@@ -580,13 +633,24 @@ todayFailed, todayStopped, recentTrend: [{ date, success, failed }] }`；今日�
 
 ### 7. 分层与第二阶段替换点
 
-`routes/v1/*.route.js`（HTTP 装配）→ `controllers/*`（仅出入参）→ `services/*`（业务）→
-`repositories/*`（存储）。所有 DataBridge 仓储都是内存实现，接 PostgreSQL 时只替换
-`src/repositories/*.repository.js` 的内部实现（保持 `find/page/getById/create/update/delete` 签名），
-service / controller 不动。新路由当前不挂 `auth`，第二阶段在 route 文件里的 `TODO` 处补上即可。
+`routes/v1/*.route.js`（HTTP 装配）→ `controllers/*`（仅出入参）→ `services/*`（业务，全异步）→
+`repositories/*.repository.js`（门面）→ `memoryStore` 内存实现 或 `repositories/mysql/*.store.js`。
 
-第二阶段与本批增量相关的几处：`getStatisticsOverview()` 换成 SQL 聚合（`COUNT(*)` + `GROUP BY date(started_at)`），
-返回结构不变；`run.service.js` 的「预写实例 + 下发引擎 + 回滚」换成事务化调度记录；
+门面只有一个决策点：`src/repositories/facade.js` 的 `pickImpl(name, memoryImpl)` 按 `config.db.driver`
+选实现，并把两边方法统一包成 Promise（内存版同步返回对象这件事被门面吃掉，
+service 层因此只需要一律 `await`，不存在两套写法）。
+新增/修改仓储方法时的约束：内存实现与 `mysql/<name>.store.js` **必须同名同返回结构**，
+`seed.js` 依赖这一点才能在两种驱动下复用同一份种子实体。
+
+MySQL 侧的公共内核是 `src/repositories/mysql/sqlStore.js`（`defineStore`）：
+列类型归一（STRICT 模式下空串写 INT、ISO('Z') 串写 DATETIME 都会报错）、
+`extra` JSON 兜未建列字段、`seq` 还原插入序、`LAST_INSERT_ID(next_val+1)` 原子取号、
+SQL 表达不了的过滤（函数条件 / 嵌套字段 / 未建列键）自动回退成
+「整表 + `memoryStore.filterList/queryList`」以保证语义一致。
+
+第二阶段还剩的替换点：`getStatisticsOverview()` 的趋势可换成 `GROUP BY date(started_at)` SQL 聚合
+（当前是全表实例 + 内存归桶，与内存版同口径）；`run.service.js` 的「预写实例 + 下发引擎 + 回滚」
+换成同一连接内的事务化调度记录（现在失败回滚是反向 SQL，不是事务）；
 告警投递从写 `channelResult='mock-sent'` 换成真实机器人调用；数据血缘从实时聚合换成血缘表查询；
 `fieldMappings[].transform` 则下发给 Go 引擎执行转换。
 
@@ -614,7 +678,7 @@ service / controller 不动。新路由当前不挂 `auth`，第二阶段在 rou
 | 位置 | 文件 |
 |------|------|
 | cron 匹配 | `src/utils/cronMatcher.js`（纯函数 `matchesCron(cron, dateUTC)` / `isSupportedCron(cron)`） |
-| 调度器 | `src/services/scheduler.service.js`（仅 `MEM_MOCK` 下由 `src/index.js` 调 `startScheduler()`） |
+| 调度器 | `src/services/scheduler.service.js`（`MEM_MOCK` 或 `DB_DRIVER=mysql` 时由 `src/index.js` 调 `startScheduler()`；异步扫描带重入保护，`lastTriggerAt` 保持内存态） |
 | 运行编排 | `src/services/run.service.js`（task 与 dataflow 共用的 start/stop/progress + `scheduleRetry`） |
 | 接入点 | `src/services/engineReport.service.js`（`failed` 回报 → 告警 + 重试排程） |
 

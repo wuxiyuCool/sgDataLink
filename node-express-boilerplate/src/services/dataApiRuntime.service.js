@@ -101,10 +101,13 @@ const buildResult = (api, query = {}) => {
 /**
  * 网关主流程：校验 + 出数据 + 记统计（延迟用 performance.now 实测）。
  * 被拒的请求同样计入 invokeCount / errorCount，因为「确实有人打过来了」。
+ * 统计写入是 await 的（mysql 驱动下要落库），但失败只记 WARN ——
+ * 不能让一次统计写失败把已经算好的数据行或原本的业务错误码换掉。
  * @param {Object} api dataApi 记录（必须已发布）
  * @param {Object} ctx { apiKey, ip, query }
+ * @returns {Promise<Object>} 1.9 的成功响应 result
  */
-const serve = (api, ctx = {}) => {
+const serve = async (api, ctx = {}) => {
   const started = performance.now();
   const query = ctx.query || {};
   let ok = true;
@@ -116,16 +119,20 @@ const serve = (api, ctx = {}) => {
     throw err;
   } finally {
     const latencyMs = Math.round((performance.now() - started) * 100) / 100;
-    dataApiRepository.recordCall(api.id, { latencyMs, ok });
-    logger.debug('data api %s(%s) served ok=%s in %sms', api.id, api.path, ok, latencyMs);
+    try {
+      await dataApiRepository.recordCall(api.id, { latencyMs, ok });
+      logger.debug('data api %s(%s) served ok=%s in %sms', api.id, api.path, ok, latencyMs);
+    } catch (err) {
+      logger.warn('data api %s recordCall failed: %s', api.id, err.message);
+    }
   }
 };
 
 /**
  * 运行时入口：GET /ds/:path。path 不存在或未发布 → 404 / 40404（不暴露是否存在，统一文案）。
  */
-const invokeByPath = (path, ctx = {}) => {
-  const api = dataApiRepository.findByPath(path);
+const invokeByPath = async (path, ctx = {}) => {
+  const api = await dataApiRepository.findByPath(path);
   if (!api || api.status !== 'published') {
     throw dataApiNotFound(`数据服务不存在或未发布: /ds/${path}`);
   }
@@ -133,8 +140,8 @@ const invokeByPath = (path, ctx = {}) => {
 };
 
 /** 管理端「调试」入口：按 id 走同一套网关逻辑 */
-const invokeById = (id, ctx = {}) => {
-  const api = dataApiRepository.getById(id);
+const invokeById = async (id, ctx = {}) => {
+  const api = await dataApiRepository.getById(id);
   if (!api) throw dataApiNotFound(`数据服务不存在: ${id}`);
   if (api.status !== 'published') throw dataApiNotFound(`数据服务未发布，无法调用: ${api.path}`);
   return serve(api, ctx);

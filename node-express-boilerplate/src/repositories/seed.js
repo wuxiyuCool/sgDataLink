@@ -1,12 +1,18 @@
 /**
- * DataBridge Mock 种子数据。
+ * DataBridge 种子数据 —— 「双驱动种子实体生成器」。
  *
- * 仅在 MEM_MOCK=true 时由 src/index.js 调用，保证前端一打开就有列表 / 详情 / 进度 / 日志 / 点位可看。
- * ID 完全由仓储的自增序列生成，因此落库结果就是契约示例里的
- * ds-1001..ds-1003、task-2001..task-2002、inst-3001..、log-5001..、ofs-6001..
- * （docs/API.md 第 0 节「ID 为字符串（mock 用自增前缀）」）。
+ * 这里只描述「要注入哪些实体」，不关心落到内存还是落到 MySQL：
+ * 所有写入都走 src/repositories 的门面对象（DB_DRIVER 决定具体实现），
+ * 所以同一份种子在两种驱动下产出同样的 ID 与同样的字段
+ * （ds-1001..ds-1003、task-2001..、inst-3001..、log-5001..、ofs-6001..、
+ *  pipe-7001、df-7501、api-8001、ar-9001、rec-9501..）。
  *
- * 【第二阶段替换点】接入真实数据库后本文件只保留 e2e / 演示环境用，生产不注入。
+ * 调用点（src/index.js）：
+ * - DB_DRIVER=memory：启动即注入（原行为，只是改成 await）；
+ * - DB_DRIVER=mysql ：建表后若 databridge_datasource 是空表才注入一次，
+ *                     有数据就跳过（幂等，重启不会重复插）。
+ *
+ * 只有 MEM_MOCK=false 且 DB_DRIVER=memory（即走脚手架的 MongoDB 分支）时不注入。
  */
 const config = require('../config/config');
 const logger = require('../config/logger');
@@ -21,6 +27,7 @@ const dataApiRepository = require('./dataapi.repository');
 const alertruleRepository = require('./alertrule.repository');
 const alertrecordRepository = require('./alertrecord.repository');
 
+/** 三类数据源：10.x 网段与名字含 fail 的按 mock 规则必定连不上 */
 const datasources = [
   {
     name: '生产Oracle',
@@ -110,24 +117,106 @@ const incrementalTaskMappings = [
   },
 ];
 
-/**
- * 注入种子数据（幂等：已有数据则跳过）。
- * @returns {boolean} 是否执行了注入
- */
-const seedMockData = () => {
-  if (!config.memMock) {
-    logger.info('seed skipped: not in memory-mock mode');
-    return false;
-  }
-  if (datasourceRepository.count() > 0 || taskRepository.count() > 0) {
-    return false;
-  }
+/** GET /data-apis/:id/stats 的 recentTrend 铺底：3 个历史日的调用次数与错误数 */
+const callTrend = [
+  { daysAgo: 3, count: 24, errors: 1 },
+  { daysAgo: 1, count: 40, errors: 1 },
+  { daysAgo: 0, count: 12, errors: 0 },
+];
 
-  const createdDatasources = datasources.map((item) => datasourceRepository.create(item));
+/**
+ * 种子点位（ofs-6001..）。引用了上面创建的实例 id，所以在 seedEntities 里逐条写入。
+ * 覆盖三种演示形态：running 实例的 default 分片、成功全量实例的两个 shard、增量实例的位点。
+ */
+const seedOffsets = (running, fullSucceeded, incSucceeded, incFailed, fullTask, incrementalTask) => [
+  {
+    taskId: fullTask.id,
+    instanceId: running.id,
+    shardKey: 'default',
+    offsetValue: 'UPDATE_TIME=2026-09-18T12:00:00Z/ROWID=aaa',
+    updatedAt: '2026-09-19T01:05:00Z',
+  },
+  {
+    taskId: fullTask.id,
+    instanceId: fullSucceeded.id,
+    shardKey: 'shard-01',
+    offsetValue: 'ROWID=AAAKYmAAEAAAf7XAA1',
+    updatedAt: '2026-09-18T01:06:00Z',
+  },
+  {
+    taskId: fullTask.id,
+    instanceId: fullSucceeded.id,
+    shardKey: 'shard-02',
+    offsetValue: 'ROWID=AAAKYmAAEAAAf7XAA2',
+    updatedAt: '2026-09-18T01:08:00Z',
+  },
+  {
+    taskId: incrementalTask.id,
+    instanceId: incSucceeded.id,
+    shardKey: 'default',
+    offsetValue: 'UPDATE_TIME=2026-09-18T21:59:00Z',
+    updatedAt: '2026-09-18T22:03:20Z',
+  },
+  {
+    taskId: incrementalTask.id,
+    instanceId: incFailed.id,
+    shardKey: 'default',
+    offsetValue: 'UPDATE_TIME=2026-09-17T21:58:00Z',
+    updatedAt: '2026-09-17T22:04:10Z',
+  },
+];
+
+/** 'YYYY-MM-DD'（UTC，相对今天） */
+const utcDateDaysAgo = (daysAgo) => new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+/** 每个种子实体的仓储依赖集中传入，便于单测替换 */
+const repositories = {
+  datasourceRepository,
+  taskRepository,
+  instanceRepository,
+  logRepository,
+  offsetRepository,
+  pipelineRepository,
+  dataflowRepository,
+  dataApiRepository,
+  alertruleRepository,
+  alertrecordRepository,
+};
+
+/**
+ * 生成并写入全部种子实体（内存 / MySQL 通用）。
+ *
+ * 写入顺序刻意保持串行：内存版是同步执行所以天然有序，
+ * mysql 版每条都要 await 取号，并发下发会让 ID 与前缀顺序对不上
+ * （文档示例锚定 ds-1001..ds-1003、api-8001，前端与验收脚本都按这些 id 走）。
+ *
+ * @param {Object} repos 十个仓储门面对象
+ * @returns {Promise<Object>} 各表写入后的记录数
+ */
+const seedEntities = async (repos) => {
+  const {
+    datasourceRepository: datasourceRepo,
+    taskRepository: tasks,
+    instanceRepository: instances,
+    logRepository: logs,
+    offsetRepository: offsets,
+    pipelineRepository: pipelines,
+    dataflowRepository: dataflows,
+    dataApiRepository: dataApis,
+    alertruleRepository: alertRules,
+    alertrecordRepository: alertRecords,
+  } = repos;
+
+  const createdDatasources = [];
+  // eslint-disable-next-line no-restricted-syntax, no-await-in-loop
+  for (const item of datasources) {
+    // eslint-disable-next-line no-await-in-loop
+    createdDatasources.push(await datasourceRepo.create(item));
+  }
   const sourceOracleDs = createdDatasources[0];
   const targetMysqlDs = createdDatasources[1];
 
-  const fullTask = taskRepository.create({
+  const fullTask = await tasks.create({
     name: '订单表全量同步',
     syncMode: 'full',
     sourceId: sourceOracleDs.id,
@@ -138,7 +227,7 @@ const seedMockData = () => {
     batchSize: 1000,
     incrementalColumn: null,
     fieldMappings: fullTaskMappings,
-    // 调度配置（对标 FDL）：Mock 阶段仅存储回显，不会真正按 cron 触发
+    // 调度配置（对标 FDL）：由 services/scheduler.service.js 真实按 cron 触发
     scheduleCron: '0 0 2 * * ?',
     retryCount: 3,
     retryIntervalSec: 60,
@@ -151,7 +240,7 @@ const seedMockData = () => {
     remark: '全量演示任务：当前有一次 running 实例，编辑/删除会返回 40003，重复启动返回 40901',
   });
 
-  const incrementalTask = taskRepository.create({
+  const incrementalTask = await tasks.create({
     name: '订单明细增量同步',
     syncMode: 'incremental',
     sourceId: sourceOracleDs.id,
@@ -162,7 +251,7 @@ const seedMockData = () => {
     batchSize: 500,
     incrementalColumn: 'UPDATE_TIME',
     fieldMappings: incrementalTaskMappings,
-    // 每天 01:30 触发（Mock 阶段不生效）；重试 5 次、间隔 120s，用于演示字段回显
+    // 每天 01:30 触发；重试 5 次、间隔 120s，用于演示字段回显
     scheduleCron: '0 30 1 * * ?',
     retryCount: 5,
     retryIntervalSec: 120,
@@ -176,7 +265,7 @@ const seedMockData = () => {
   });
 
   // running 实例（与 docs/API.md 第 1.2 节 progress 示例一致）
-  const runningInstance = instanceRepository.create({
+  const runningInstance = await instances.create({
     taskId: fullTask.id,
     taskName: fullTask.name,
     syncMode: 'full',
@@ -193,7 +282,7 @@ const seedMockData = () => {
     message: null,
   });
 
-  const succeedFullInstance = instanceRepository.create({
+  const succeedFullInstance = await instances.create({
     taskId: fullTask.id,
     taskName: fullTask.name,
     syncMode: 'full',
@@ -209,7 +298,7 @@ const seedMockData = () => {
     message: 'mock 全量同步完成',
   });
 
-  const succeedIncInstance = instanceRepository.create({
+  const succeedIncInstance = await instances.create({
     taskId: incrementalTask.id,
     taskName: incrementalTask.name,
     syncMode: 'incremental',
@@ -225,7 +314,7 @@ const seedMockData = () => {
     message: 'mock 增量同步完成，位点已推进',
   });
 
-  const failedIncInstance = instanceRepository.create({
+  const failedIncInstance = await instances.create({
     taskId: incrementalTask.id,
     taskName: incrementalTask.name,
     syncMode: 'incremental',
@@ -241,7 +330,7 @@ const seedMockData = () => {
     message: 'ORA-01555: snapshot too old (mock)',
   });
 
-  const logs = [
+  await logs.createMany([
     {
       instanceId: runningInstance.id,
       taskId: fullTask.id,
@@ -305,49 +394,22 @@ const seedMockData = () => {
       message: 'batch 63/100 failed: ORA-01555: snapshot too old (mock)',
       createdAt: '2026-09-17T22:04:10Z',
     },
-  ];
-  logRepository.createMany(logs);
+  ]);
 
-  const offsets = [
-    {
-      taskId: fullTask.id,
-      instanceId: runningInstance.id,
-      shardKey: 'default',
-      offsetValue: 'UPDATE_TIME=2026-09-18T12:00:00Z/ROWID=aaa',
-      updatedAt: '2026-09-19T01:05:00Z',
-    },
-    {
-      taskId: fullTask.id,
-      instanceId: succeedFullInstance.id,
-      shardKey: 'shard-01',
-      offsetValue: 'ROWID=AAAKYmAAEAAAf7XAA1',
-      updatedAt: '2026-09-18T01:06:00Z',
-    },
-    {
-      taskId: fullTask.id,
-      instanceId: succeedFullInstance.id,
-      shardKey: 'shard-02',
-      offsetValue: 'ROWID=AAAKYmAAEAAAf7XAA2',
-      updatedAt: '2026-09-18T01:08:00Z',
-    },
-    {
-      taskId: incrementalTask.id,
-      instanceId: succeedIncInstance.id,
-      shardKey: 'default',
-      offsetValue: 'UPDATE_TIME=2026-09-18T21:59:00Z',
-      updatedAt: '2026-09-18T22:03:20Z',
-    },
-    {
-      taskId: incrementalTask.id,
-      instanceId: failedIncInstance.id,
-      shardKey: 'default',
-      offsetValue: 'UPDATE_TIME=2026-09-17T21:58:00Z',
-      updatedAt: '2026-09-17T22:04:10Z',
-    },
-  ];
-  offsets.forEach((item) => offsetRepository.create(item));
+  // eslint-disable-next-line no-restricted-syntax, no-await-in-loop
+  for (const item of seedOffsets(
+    runningInstance,
+    succeedFullInstance,
+    succeedIncInstance,
+    failedIncInstance,
+    fullTask,
+    incrementalTask
+  )) {
+    // eslint-disable-next-line no-await-in-loop
+    await offsets.create(item);
+  }
 
-  // ==================== 以下为 FineDataLink 对标的四个新模块（docs/API.md 1.7~1.10）====================
+  // ==================== 以下为 FineDataLink 对标的四个模块（docs/API.md 1.7~1.10）====================
 
   /**
    * 数据管道（1.7）：一条 running 的 cdc 演示管道。
@@ -355,7 +417,7 @@ const seedMockData = () => {
    * 引擎每 tick 回报会覆盖它们；这里给的是契约示例值。
    * lagMs=820 低于种子规则 ar-9001 的阈值 5000，所以启动后不会立刻刷告警。
    */
-  const pipeline = pipelineRepository.create({
+  const pipeline = await pipelines.create({
     name: '订单库实时镜像',
     sourceId: sourceOracleDs.id,
     targetId: targetMysqlDs.id,
@@ -377,7 +439,7 @@ const seedMockData = () => {
   });
 
   // 管道实例 id 直接取契约 1.7 示例值 inst-3101，便于前端对照（cdc 无进度，totalRows 为 null）
-  instanceRepository.create({
+  await instances.create({
     id: pipeline.runningInstanceId,
     taskId: null,
     pipelineId: pipeline.id,
@@ -396,7 +458,7 @@ const seedMockData = () => {
   });
 
   // 数据开发（1.8）：与契约示例完全一致的五节点画布（input → filter → join → validate → output）
-  dataflowRepository.create({
+  await dataflows.create({
     name: '订单宽表加工',
     nodes: [
       { id: 'n1', type: 'input', name: '读Oracle T_ORDER', config: { datasourceId: sourceOracleDs.id, table: 'T_ORDER' } },
@@ -428,7 +490,7 @@ const seedMockData = () => {
   });
 
   // 数据服务（1.9）：一条已发布、带 apiKey 的查询服务；apiKey 是演示固定值，重新发布会换真随机 key
-  const dataApi = dataApiRepository.create({
+  const dataApi = await dataApis.create({
     name: '订单查询服务',
     path: 'order-query',
     method: 'GET',
@@ -446,43 +508,43 @@ const seedMockData = () => {
     rateLimitQps: 20,
     ipWhitelist: [],
     status: 'published',
-    invokeCount: 138,
-    errorCount: 2,
-    avgLatencyMs: 14,
+    invokeCount: 0,
+    errorCount: 0,
+    avgLatencyMs: 0,
     publishedAt: '2026-09-05T02:00:00Z',
     remark: '调用方式：GET /ds/order-query?page=1&size=20，Header X-API-Key: dk-9f3a...',
     createdAt: '2026-09-01T08:50:00Z',
   });
 
   /**
-   * 给 GET /data-apis/:id/stats 的 recentTrend 铺底（按 UTC 日期计数的内存日志）。
+   * 给 GET /data-apis/:id/stats 的 recentTrend 铺底（按 UTC 日期计数的调用日志）。
    * 累加完再把统计字段回写成契约示例值，保证列表页数字与文档一致。
    */
-  [
-    { daysAgo: 3, count: 24, errors: 1 },
-    { daysAgo: 1, count: 40, errors: 1 },
-    { daysAgo: 0, count: 12, errors: 0 },
-  ].forEach((day) => {
-    const date = new Date(Date.now() - day.daysAgo * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const calls = [];
+  callTrend.forEach((day) => {
+    const date = utcDateDaysAgo(day.daysAgo);
     for (let index = 0; index < day.count; index += 1) {
-      dataApiRepository.recordCall(dataApi.id, { latencyMs: 10 + (index % 9), ok: index >= day.count - day.errors, date });
+      calls.push({ latencyMs: 10 + (index % 9), ok: index >= day.count - day.errors, date });
     }
   });
-  dataApiRepository.update(dataApi.id, { invokeCount: 138, errorCount: 2, avgLatencyMs: 14 });
+  // memory 驱动下这些调用按顺序执行完（门面包装的同步实现不会让出事件循环）；
+  // mysql 驱动下每条都是原子 UPDATE + 按天 upsert，顺序无关
+  await Promise.all(calls.map((call) => dataApis.recordCall(dataApi.id, call)));
+  await dataApis.update(dataApi.id, { invokeCount: 138, errorCount: 2, avgLatencyMs: 14 });
 
   // 告警规则（1.10）+ 两条历史记录（一条已读、一条未读，便于演示 read 筛选与 PATCH）
-  const alertRule = alertruleRepository.create({
+  const alertRule = await alertRules.create({
     name: '同步失败钉钉告警',
     scope: 'all',
     conditions: ['task_failed', 'pipeline_error', 'lag_over_threshold'],
     thresholdLagMs: 5000,
     channels: [{ type: 'dingtalk', webhook: 'https://oapi.dingtalk.com/robot/send?access_token=MOCK' }],
     enabled: true,
-    remark: 'Mock 阶段只写 alert-record（channelResult=mock-sent），不发真实 webhook',
+    remark: '只写 alert-record（channelResult=mock-sent），不发真实 webhook',
     createdAt: '2026-09-01T09:00:00Z',
   });
 
-  alertrecordRepository.createMany([
+  await alertRecords.createMany([
     {
       ruleId: alertRule.id,
       ruleName: alertRule.name,
@@ -511,23 +573,65 @@ const seedMockData = () => {
     },
   ]);
 
+  const counts = {
+    datasources: await datasourceRepo.count(),
+    tasks: await tasks.count(),
+    instances: await instances.count(),
+    logs: await logs.count(),
+    offsets: await offsets.count(),
+    pipelines: await pipelines.count(),
+    dataflows: await dataflows.count(),
+    dataApis: await dataApis.count(),
+    alertRules: await alertRules.count(),
+    alertRecords: await alertRecords.count(),
+  };
+  return { created: createdDatasources.length, ...counts };
+};
+
+/** 是否已注入过种子（数据源或任务非空即认为已注入，幂等保护） */
+const hasSeedData = async () => {
+  const [datasourceCount, taskCount] = await Promise.all([datasourceRepository.count(), taskRepository.count()]);
+  return datasourceCount > 0 || taskCount > 0;
+};
+
+/**
+ * 注入种子数据（幂等：已有数据则跳过）。
+ * @returns {Promise<boolean>} 是否执行了注入
+ */
+const seedMockData = async () => {
+  if (!config.memMock && config.db.driver !== 'mysql') {
+    logger.info('seed skipped: not in memory-mock mode and driver is %s', config.db.driver);
+    return false;
+  }
+  if (await hasSeedData()) {
+    logger.info('seed skipped: databridge already has data (driver=%s)', config.db.driver);
+    return false;
+  }
+
+  const result = await seedEntities(repositories);
   logger.info(
-    'seed data injected: %d datasources, %d tasks, %d instances, %d logs, %d offsets, ' +
+    'seed data injected (driver=%s): %d datasources, %d tasks, %d instances, %d logs, %d offsets, ' +
       '%d pipelines, %d dataflows, %d data-apis, %d alert-rules, %d alert-records',
-    datasourceRepository.count(),
-    taskRepository.count(),
-    instanceRepository.count(),
-    logRepository.count(),
-    offsetRepository.count(),
-    pipelineRepository.count(),
-    dataflowRepository.count(),
-    dataApiRepository.count(),
-    alertruleRepository.count(),
-    alertrecordRepository.count()
+    config.db.driver,
+    result.datasources,
+    result.tasks,
+    result.instances,
+    result.logs,
+    result.offsets,
+    result.pipelines,
+    result.dataflows,
+    result.dataApis,
+    result.alertRules,
+    result.alertRecords
   );
   return true;
 };
 
 module.exports = {
+  datasources,
+  fullTaskMappings,
+  incrementalTaskMappings,
+  seedEntities,
   seedMockData,
+  hasSeedData,
 };

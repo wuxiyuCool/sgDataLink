@@ -19,21 +19,21 @@ const runService = require('./run.service');
  * 从 Mock 阶段起是真实行为：scheduleCron 由 services/scheduler.service.js 每秒扫描触发，
  * retryCount / retryIntervalSec 由 run.service.scheduleRetry 在收到 failed 回报后执行。
  */
-const DEFAULT_SCHEDULE = runService.DEFAULT_SCHEDULE;
+const { DEFAULT_SCHEDULE } = runService;
 
-const getTaskOrThrow = (id) => {
-  const task = taskRepository.getById(id);
+const getTaskOrThrow = async (id) => {
+  const task = await taskRepository.getById(id);
   if (!task) {
     throw notFound(`同步任务不存在: ${id}`);
   }
   return task;
 };
 
-const assertDataSourceExists = (id, label) => {
+const assertDataSourceExists = async (id, label) => {
   if (!id) {
     throw paramInvalid(`${label} 必填`);
   }
-  if (!datasourceRepository.getById(id)) {
+  if (!(await datasourceRepository.getById(id))) {
     throw paramInvalid(`${label} 对应的数据源不存在: ${id}`);
   }
 };
@@ -89,14 +89,14 @@ const queryTasks = (filter = {}, options = {}) =>
 /** 详情（含 fieldMappings） */
 const getTaskById = (id) => getTaskOrThrow(id);
 
-const createTask = (body) => {
+const createTask = async (body) => {
   const payload = normalizeBody(body);
   if (!payload.name) throw paramInvalid('name 必填');
   const syncMode = payload.syncMode || 'full';
   assertIncrementalColumn(syncMode, payload.incrementalColumn);
-  assertDataSourceExists(payload.sourceId, 'sourceId');
-  assertDataSourceExists(payload.targetId, 'targetId');
-  const task = taskRepository.create({
+  await assertDataSourceExists(payload.sourceId, 'sourceId');
+  await assertDataSourceExists(payload.targetId, 'targetId');
+  const task = await taskRepository.create({
     writeMode: 'insert',
     batchSize: 1000,
     fieldMappings: [],
@@ -110,24 +110,23 @@ const createTask = (body) => {
   return task;
 };
 
-const updateTaskById = (id, body) => {
-  const existing = getTaskOrThrow(id);
+const updateTaskById = async (id, body) => {
+  const existing = await getTaskOrThrow(id);
   assertNotRunning(existing, '编辑');
   const payload = normalizeBody(body);
   const syncMode = payload.syncMode || existing.syncMode;
-  const incrementalColumn =
-    payload.incrementalColumn === undefined ? existing.incrementalColumn : payload.incrementalColumn;
+  const incrementalColumn = payload.incrementalColumn === undefined ? existing.incrementalColumn : payload.incrementalColumn;
   assertIncrementalColumn(syncMode, incrementalColumn);
-  if (payload.sourceId !== undefined) assertDataSourceExists(payload.sourceId, 'sourceId');
-  if (payload.targetId !== undefined) assertDataSourceExists(payload.targetId, 'targetId');
+  if (payload.sourceId !== undefined) await assertDataSourceExists(payload.sourceId, 'sourceId');
+  if (payload.targetId !== undefined) await assertDataSourceExists(payload.targetId, 'targetId');
   if (payload.enabled !== undefined) payload.enabled = Boolean(payload.enabled);
   return taskRepository.update(id, payload);
 };
 
-const deleteTaskById = (id) => {
-  const existing = getTaskOrThrow(id);
+const deleteTaskById = async (id) => {
+  const existing = await getTaskOrThrow(id);
   assertNotRunning(existing, '删除');
-  taskRepository.delete(existing.id);
+  await taskRepository.delete(existing.id);
   return existing;
 };
 
@@ -136,18 +135,20 @@ const deleteTaskById = (id) => {
  * 注意：scheduleCron / retryCount / retryIntervalSec 由 Node 侧的调度器与重试逻辑消费，
  * 不进快照；fieldMappings[].transform 是转换组件占位，Mock 阶段也不参与引擎执行。
  */
-const buildEngineSnapshot = (task, instanceId, totalRows) =>
-  runService.baseSnapshot(task, instanceId, {
+const buildEngineSnapshot = async (task, instanceId, totalRows) => {
+  const [source, target] = await Promise.all([runService.endpointOf(task.sourceId), runService.endpointOf(task.targetId)]);
+  return runService.baseSnapshot(task, instanceId, {
     syncMode: task.syncMode,
     totalRows,
-    source: runService.endpointOf(task.sourceId),
-    target: runService.endpointOf(task.targetId),
+    source,
+    target,
     extra: {
       sourceTable: task.sourceTable,
       targetTable: task.targetTable,
       writeMode: task.writeMode || 'insert',
     },
   });
+};
 
 /** task 这一种「可运行体」的注册：start / stop / progress 的编排在 run.service 里 */
 const runApi = runService.registerRunner({

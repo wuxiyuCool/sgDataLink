@@ -80,7 +80,8 @@ const update = (id, patch = {}) => {
 
 const deleteById = (id) => store.remove(id) || null;
 
-module.exports = {
+/** 内存实现（DB_DRIVER=memory 时生效）；mysql 实现见 ./mysql/pipeline.store.js */
+const memoryImpl = {
   list,
   find,
   page,
@@ -93,3 +94,6 @@ module.exports = {
   findRunning,
   clear: store.clear,
 };
+
+// 双驱动门面：DB_DRIVER=mysql 时换成同名异步实现，方法签名统一返回 Promise
+module.exports = require('./facade').pickImpl('pipeline', memoryImpl);

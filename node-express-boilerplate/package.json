@@ -13,6 +13,8 @@
   "scripts": {
     "start": "pm2 start ecosystem.config.json --no-daemon",
     "dev": "cross-env NODE_ENV=development nodemon src/index.js",
+    "dev:memory": "cross-env NODE_ENV=development DB_DRIVER=memory nodemon src/index.js",
+    "dev:mysql": "cross-env NODE_ENV=development DB_DRIVER=mysql nodemon src/index.js",
     "test": "jest -i --colors --verbose --detectOpenHandles",
     "test:watch": "jest -i --watchAll",
     "coverage": "jest -i --coverage",
@@ -64,6 +66,7 @@
     "moment": "^2.24.0",
     "mongoose": "^5.7.7",
     "morgan": "^1.9.1",
+    "mysql2": "^3.24.4",
     "nodemailer": "^6.3.1",
     "passport": "^0.4.0",
     "passport-jwt": "^4.0.0",

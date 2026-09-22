@@ -241,7 +241,8 @@
     const data = unref(health)
     if (!data) return { text: '未知', color: 'default' }
     if (data.status === 'ok') {
-      return { text: `${data.service}${data.mock ? '（mock）' : ''}`, color: 'success' }
+      const mode = data.storage ? `（${data.storage === 'mysql' ? 'MySQL 持久化' : '内存 mock'}）` : data.mock ? '（mock）' : ''
+      return { text: `${data.service}${mode}`, color: 'success' }
     }
     return { text: data.status || '异常', color: 'error' }
   })

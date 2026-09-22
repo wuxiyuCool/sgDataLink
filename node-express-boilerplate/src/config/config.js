@@ -13,6 +13,18 @@ const envVarsSchema = Joi.object()
       .valid('true', 'false')
       .default('true')
       .description('run with in-memory repositories and skip MongoDB entirely'),
+    // DataBridge 持久层驱动：memory = 纯内存 mock（默认），mysql = 真实落库
+    DB_DRIVER: Joi.string()
+      .valid('memory', 'mysql')
+      .default('memory')
+      .description('repository driver: memory (mock) | mysql'),
+    MYSQL_HOST: Joi.string().allow('').default('').description('mysql host'),
+    MYSQL_PORT: Joi.number().default(3306).description('mysql port'),
+    MYSQL_USER: Joi.string().allow('').default('').description('mysql user'),
+    MYSQL_PASSWORD: Joi.string().allow('').default('').description('mysql password'),
+    MYSQL_DATABASE: Joi.string().allow('').default('dataLink').description('mysql schema'),
+    MYSQL_CONNECTION_LIMIT: Joi.number().default(10).description('mysql pool size'),
+    MYSQL_CONNECT_TIMEOUT_MS: Joi.number().default(10000).description('mysql connect timeout'),
     MONGODB_URL: Joi.string().allow('').default('').description('Mongo DB url (empty in memory-mock mode)'),
     JWT_SECRET: Joi.string().default('databridge-mock-secret').description('JWT secret key'),
     JWT_ACCESS_EXPIRATION_MINUTES: Joi.number().default(30).description('minutes after which access tokens expire'),
@@ -50,6 +62,20 @@ module.exports = {
   // DataBridge mock 开关：true 时 src/index.js 跳过 mongoose.connect，直接 listen
   // （兼容 docs/API.md 第 4 节里的别名 MOCK=true）
   memMock: envVars.MEM_MOCK === 'true' || process.env.MOCK === 'true',
+  // 持久层驱动：memory（默认，纯内存 mock）| mysql（src/repositories/mysql 落库）
+  db: {
+    driver: envVars.DB_DRIVER || 'memory',
+    isMysql: () => (envVars.DB_DRIVER || 'memory') === 'mysql',
+    mysql: {
+      host: envVars.MYSQL_HOST,
+      port: envVars.MYSQL_PORT,
+      user: envVars.MYSQL_USER,
+      password: envVars.MYSQL_PASSWORD,
+      database: envVars.MYSQL_DATABASE,
+      connectionLimit: envVars.MYSQL_CONNECTION_LIMIT,
+      connectTimeoutMs: envVars.MYSQL_CONNECT_TIMEOUT_MS,
+    },
+  },
   engine: {
     baseUrl: envVars.ENGINE_BASE_URL,
     reportUrl: envVars.ADMIN_REPORT_URL,

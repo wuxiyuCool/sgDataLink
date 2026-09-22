@@ -1,9 +1,9 @@
 /**
  * 数据血缘图聚合（docs/API.md 第 1.10 节 GET /lineage/graph）。
  *
- * 内存阶段没有血缘表：整张图由数据源 / 同步任务 / 数据管道 / 数据开发 / 数据服务
+ * 没有独立血缘表：整张图由数据源 / 同步任务 / 数据管道 / 数据开发 / 数据服务
  * 五类定义实时推导（表节点用 `{datasourceId}:{table}` 作为稳定 id，便于去重与前端高亮）。
- * 第二阶段换成 FDL 那样落库的血缘表时，只需要把本文件的聚合逻辑改成一次 SQL 查询。
+ * 仓储双驱动后这里是 5 类定义的并发读取 + 内存聚合（mysql 驱动下按 id 反查数据源名称）。
  *
  * 方向约定：数据源 → 表 → 运行体 → 目标表 →（下游）数据服务。
  */
@@ -37,9 +37,9 @@ const createGraph = () => {
   };
 
   /** 数据源 + 它下面的一张表（幂等，重复调用只补链不重复建点） */
-  const addTable = (datasourceId, table) => {
+  const addTable = async (datasourceId, table) => {
     if (!datasourceId || !table) return null;
-    const datasource = datasourceRepository.getById(datasourceId);
+    const datasource = await datasourceRepository.getById(datasourceId);
     addNode(datasourceId, 'datasource', datasource ? datasource.name : datasourceId);
     const id = tableNodeId(datasourceId, table);
     addNode(id, 'table', table);
@@ -59,56 +59,76 @@ const bareTableName = (object) => {
 
 /**
  * 生成全图 { nodes, edges }。
- * @returns {{ nodes: Array, edges: Array }}
+ * @returns {Promise<{ nodes: Array, edges: Array }>}
  */
-const buildLineageGraph = () => {
+const buildLineageGraph = async () => {
   const graph = createGraph();
   const { addNode, addEdge, addTable } = graph;
 
+  const [datasources, tasks, pipelines, dataflows, dataApis] = await Promise.all([
+    datasourceRepository.list(),
+    taskRepository.find({}),
+    pipelineRepository.find({}),
+    dataflowRepository.find({}),
+    dataApiRepository.find({}),
+  ]);
+
   // 没有任何任务/管道引用也要露出数据源，方便前端画布展示「孤岛源」
-  datasourceRepository.list().forEach((datasource) => addNode(datasource.id, 'datasource', datasource.name));
+  datasources.forEach((datasource) => addNode(datasource.id, 'datasource', datasource.name));
 
   // ---- 同步任务：源表 → 任务 → 目标表 ----
-  taskRepository.find({}).forEach((task) => {
-    const source = addTable(task.sourceId, task.sourceTable);
+  // eslint-disable-next-line no-restricted-syntax
+  for (const task of tasks) {
+    // eslint-disable-next-line no-await-in-loop
+    const source = await addTable(task.sourceId, task.sourceTable);
     addNode(task.id, 'task', task.name);
-    const target = addTable(task.targetId, task.targetTable);
+    // eslint-disable-next-line no-await-in-loop
+    const target = await addTable(task.targetId, task.targetTable);
     if (source) addEdge(source, task.id);
     if (target) addEdge(task.id, target);
-  });
+  }
 
   // ---- 数据管道：整库镜像的每个对象都是 源表 → 管道 → 同名目标表 ----
-  pipelineRepository.find({}).forEach((pipeline) => {
+  // eslint-disable-next-line no-restricted-syntax
+  for (const pipeline of pipelines) {
     addNode(pipeline.id, 'pipeline', pipeline.name);
-    (pipeline.syncObjects || []).forEach((object) => {
+    // eslint-disable-next-line no-restricted-syntax
+    for (const object of pipeline.syncObjects || []) {
       const tableName = bareTableName(object);
-      const source = addTable(pipeline.sourceId, object);
-      const target = addTable(pipeline.targetId, tableName);
+      // eslint-disable-next-line no-await-in-loop
+      const source = await addTable(pipeline.sourceId, object);
+      // eslint-disable-next-line no-await-in-loop
+      const target = await addTable(pipeline.targetId, tableName);
       if (source) addEdge(source, pipeline.id);
       if (target) addEdge(pipeline.id, target);
-    });
-  });
+    }
+  }
 
   // ---- 数据开发：按画布 nodes 里的 input / output 生成链（中间转换节点不进血缘） ----
-  dataflowRepository.find({}).forEach((dataflow) => {
+  // eslint-disable-next-line no-restricted-syntax
+  for (const dataflow of dataflows) {
     addNode(dataflow.id, 'dataflow', dataflow.name);
     const nodes = dataflow.nodes || [];
-    nodes.forEach((node) => {
+    // eslint-disable-next-line no-restricted-syntax
+    for (const node of nodes) {
       const config = (node && node.config) || {};
-      if (!config.datasourceId || !config.table) return;
-      const table = addTable(config.datasourceId, config.table);
-      if (!table) return;
+      if (!config.datasourceId || !config.table) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const table = await addTable(config.datasourceId, config.table);
+      if (!table) continue;
       if (node.type === 'input') addEdge(table, dataflow.id);
       else if (node.type === 'output') addEdge(dataflow.id, table);
-    });
-  });
+    }
+  }
 
   // ---- 数据服务：读哪张表就挂在该表节点下游 ----
-  dataApiRepository.find({}).forEach((api) => {
+  // eslint-disable-next-line no-restricted-syntax
+  for (const api of dataApis) {
     addNode(api.id, 'dataapi', api.name);
-    const table = addTable(api.datasourceId, api.tableName);
+    // eslint-disable-next-line no-await-in-loop
+    const table = await addTable(api.datasourceId, api.tableName);
     if (table) addEdge(table, api.id);
-  });
+  }
 
   return { nodes: graph.nodes, edges: graph.edges };
 };

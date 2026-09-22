@@ -19,8 +19,8 @@ const { ERROR_CODES, BIZ_CODE_BY_HTTP_STATUS } = require('../config/errorCodes')
 /** apiKey 前缀（契约示例 `dk-9f3a...`），后面接 32 位随机 hex */
 const API_KEY_PREFIX = 'dk-';
 
-const getOrThrow = (id) => {
-  const api = dataApiRepository.getById(id);
+const getOrThrow = async (id) => {
+  const api = await dataApiRepository.getById(id);
   if (!api) throw notFound(`数据服务不存在: ${id}`);
   return api;
 };
@@ -47,18 +47,18 @@ const normalizeBody = (body = {}) => {
 };
 
 /** 定义校验：名称 / 路径唯一 / 数据源存在 / 至少一个返回字段（runtime 出数要按字段生成） */
-const assertDefinition = (payload, self) => {
+const assertDefinition = async (payload, self) => {
   if (!payload.name) throw paramInvalid('name 必填');
   if (!payload.path) throw paramInvalid('path 必填（对外地址是 /ds/{path}）');
   if (!payload.tableName) throw paramInvalid('tableName 必填');
   if (!payload.datasourceId) throw paramInvalid('datasourceId 必填');
-  if (!datasourceRepository.getById(payload.datasourceId)) {
+  if (!(await datasourceRepository.getById(payload.datasourceId))) {
     throw paramInvalid(`datasourceId 对应的数据源不存在: ${payload.datasourceId}`);
   }
   if (!Array.isArray(payload.fields) || !payload.fields.length) {
     throw paramInvalid('fields 至少需要一个返回字段');
   }
-  const occupied = dataApiRepository.findByPath(payload.path);
+  const occupied = await dataApiRepository.findByPath(payload.path);
   if (occupied && (!self || occupied.id !== self.id)) {
     throw paramInvalid(`path 已被数据服务 ${occupied.id} 占用: ${payload.path}`);
   }
@@ -76,9 +76,9 @@ const queryDataApis = (filter = {}, options = {}) =>
 
 const getDataApiById = (id) => getOrThrow(id);
 
-const createDataApi = (body) => {
+const createDataApi = async (body) => {
   const payload = normalizeBody(body);
-  assertDefinition(payload);
+  await assertDefinition(payload);
   return dataApiRepository.create({
     method: 'GET',
     queryParams: [],
@@ -94,20 +94,20 @@ const createDataApi = (body) => {
   });
 };
 
-const updateDataApiById = (id, body) => {
-  const existing = getOrThrow(id);
+const updateDataApiById = async (id, body) => {
+  const existing = await getOrThrow(id);
   const payload = normalizeBody(body);
   if ('name' in payload && !payload.name) throw paramInvalid('name 必填');
   if (Object.keys(payload).length) {
-    assertDefinition({ ...existing, ...payload }, existing);
+    await assertDefinition({ ...existing, ...payload }, existing);
   }
   // running 语义：已发布的 API 改 path 会让旧地址立刻 404，这里只做提示性的重复校验（见 assertDefinition）
   return dataApiRepository.update(id, payload);
 };
 
-const deleteDataApiById = (id) => {
-  const existing = getOrThrow(id);
-  dataApiRepository.delete(existing.id);
+const deleteDataApiById = async (id) => {
+  const existing = await getOrThrow(id);
+  await dataApiRepository.delete(existing.id);
   runtime.rateWindow.reset(existing.id);
   return existing;
 };
@@ -119,8 +119,8 @@ const generateApiKey = () => `${API_KEY_PREFIX}${crypto.randomBytes(16).toString
  * POST /data-apis/:id/publish —— 发布：生成（或保留）apiKey 并置 published。
  * 已发布时重复调用视为幂等：沿用原 key，避免把外部已接入的调用方打断。
  */
-const publishDataApi = (id) => {
-  const existing = getOrThrow(id);
+const publishDataApi = async (id) => {
+  const existing = await getOrThrow(id);
   const apiKey = existing.apiKey || generateApiKey();
   return dataApiRepository.update(id, {
     status: 'published',
@@ -130,8 +130,8 @@ const publishDataApi = (id) => {
 };
 
 /** POST /data-apis/:id/unpublish —— 下线：状态回 draft，运行时立刻 404（key 保留便于再发布） */
-const unpublishDataApi = (id) => {
-  const existing = getOrThrow(id);
+const unpublishDataApi = async (id) => {
+  const existing = await getOrThrow(id);
   runtime.rateWindow.reset(existing.id);
   return dataApiRepository.update(id, { status: 'draft' });
 };
@@ -145,15 +145,15 @@ const unpublishDataApi = (id) => {
  * @param {Object} input { query, apiKey, ip }
  * @returns {{ httpStatus: number, body: Object }}
  */
-const invokeDataApi = (id, input = {}) => {
-  const record = dataApiRepository.getById(id);
+const invokeDataApi = async (id, input = {}) => {
+  const record = await dataApiRepository.getById(id);
   const ctx = {
     apiKey: input.apiKey === undefined && record ? record.apiKey : input.apiKey,
     ip: input.ip,
     query: input.query || {},
   };
   try {
-    const result = runtime.invokeById(id, ctx);
+    const result = await runtime.invokeById(id, ctx);
     return { httpStatus: 200, body: envelope(result) };
   } catch (err) {
     const httpStatus = err.statusCode || 500;
@@ -171,15 +171,18 @@ const invokeDataApi = (id, input = {}) => {
 
 /**
  * GET /data-apis/:id/stats —— 调用统计。
- * recentTrend 与运维大盘同口径（UTC 日期、固定最近 7 天），数据来自内存调用日志。
+ * recentTrend 与运维大盘同口径（UTC 日期、固定最近 7 天），
+ * 数据来自仓储的按天调用日志（内存版是模块级 Map，mysql 版是 databridge_data_api_call_day 表）。
  * 趋势项键名与顶层保持一致：{ date, count, errorCount, avgLatencyMs }
  * （仓储内部日志桶用的是 errors，这里出参统一改成 errorCount，避免前端两套命名）。
  */
-const getStats = (id) => {
-  const api = getOrThrow(id);
-  const buckets = dataApiRepository.getCallLog(id);
+const getStats = async (id) => {
+  const api = await getOrThrow(id);
+  const buckets = await dataApiRepository.getCallLog(id);
   const trendMap = new Map(
-    taskInstanceService.recentDates().map((date) => [date, { date, count: 0, errorCount: 0, avgLatencyMs: 0, latencySum: 0 }])
+    taskInstanceService
+      .recentDates()
+      .map((date) => [date, { date, count: 0, errorCount: 0, avgLatencyMs: 0, latencySum: 0 }])
   );
   buckets.forEach((bucket) => {
     const item = trendMap.get(bucket.date);

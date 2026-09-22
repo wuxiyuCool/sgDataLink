@@ -12,10 +12,20 @@ services:
     container_name: databridge-admin
     environment:
       NODE_ENV: production
-      MEM_MOCK: "true" # 内存 Mock 模式，跳过 MongoDB 连接
+      MEM_MOCK: "true" # 不连 MongoDB（内存模式下也不连任何库；DB_DRIVER=mysql 时该值仅表示跳过 mongoose）
       PORT: "3001"
       ENGINE_BASE_URL: http://databridge-engine:8080 # Node 下发启停指令的 Go 引擎地址
       ADMIN_REPORT_URL: http://databridge-admin:3001/api/v1/engine # 引擎回报进度的 Node 地址
+      # 持久层驱动：memory = 纯内存 Mock（重启回到种子）；mysql = 落库到 databridge_* 表
+      DB_DRIVER: memory
+      # 用 mysql 驱动时改成你的内网 MySQL（本项目验收库示例：10.45.34.222:3306/dataLink）
+      # 表由容器启动时逐表 CREATE TABLE IF NOT EXISTS 建好，空表才注入一次种子数据。
+      MYSQL_HOST: 10.45.34.222 # ← 换成实际内网 MySQL 地址（compose 网络外的库需可达）
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: "" # 请用 secret / .env 注入，不要把口令写进仓库
+      MYSQL_DATABASE: dataLink
+      MYSQL_CONNECTION_LIMIT: "10"
     ports:
       - "3001:3001"
     healthcheck:

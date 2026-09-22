@@ -18,10 +18,10 @@ const runService = require('./run.service');
 /** 画布组件清单（契约 1.8 节点 type 枚举） */
 const NODE_TYPES = ['input', 'output', 'filter', 'transform', 'join', 'union', 'sql', 'json_parse', 'validate'];
 
-const DEFAULT_SCHEDULE = runService.DEFAULT_SCHEDULE;
+const { DEFAULT_SCHEDULE } = runService;
 
-const getOrThrow = (id) => {
-  const dataflow = dataflowRepository.getById(id);
+const getOrThrow = async (id) => {
+  const dataflow = await dataflowRepository.getById(id);
   if (!dataflow) {
     throw notFound(`数据开发流程不存在: ${id}`);
   }
@@ -34,9 +34,9 @@ const assertNotRunning = (dataflow, action) => {
   }
 };
 
-const assertDataSourceExists = (id, label) => {
+const assertDataSourceExists = async (id, label) => {
   if (!id) throw paramInvalid(`${label} 必填`);
-  if (!datasourceRepository.getById(id)) {
+  if (!(await datasourceRepository.getById(id))) {
     throw paramInvalid(`${label} 对应的数据源不存在: ${id}`);
   }
 };
@@ -76,14 +76,16 @@ const assertCanvas = (nodes = [], edges = []) => {
 };
 
 /** input / output 节点必须带数据源与表名，否则 run 时拼不出引擎快照 */
-const assertEndpointConfig = (nodes) => {
-  nodes.forEach((node) => {
-    if (node.type !== 'input' && node.type !== 'output') return;
+const assertEndpointConfig = async (nodes) => {
+  // eslint-disable-next-line no-restricted-syntax
+  for (const node of nodes) {
+    if (node.type !== 'input' && node.type !== 'output') continue;
     const config = node.config || {};
     if (!config.datasourceId) throw paramInvalid(`${node.type} 节点 ${node.id} 缺少 config.datasourceId`);
     if (!config.table) throw paramInvalid(`${node.type} 节点 ${node.id} 缺少 config.table`);
-    assertDataSourceExists(config.datasourceId, `${node.type} 节点 ${node.id} 的 config.datasourceId`);
-  });
+    // eslint-disable-next-line no-await-in-loop
+    await assertDataSourceExists(config.datasourceId, `${node.type} 节点 ${node.id} 的 config.datasourceId`);
+  }
 };
 
 const normalizeBody = (body = {}) => {
@@ -115,13 +117,13 @@ const queryDataflows = (filter = {}, options = {}) =>
 
 const getDataflowById = (id) => getOrThrow(id);
 
-const createDataflow = (body) => {
+const createDataflow = async (body) => {
   const payload = normalizeBody(body);
   if (!payload.name) throw paramInvalid('name 必填');
   const { nodes } = payload;
   const edges = payload.edges || [];
   assertCanvas(nodes, edges);
-  assertEndpointConfig(nodes);
+  await assertEndpointConfig(nodes);
   return dataflowRepository.create({
     ...DEFAULT_SCHEDULE,
     ...payload,
@@ -132,8 +134,8 @@ const createDataflow = (body) => {
   });
 };
 
-const updateDataflowById = (id, body) => {
-  const existing = getOrThrow(id);
+const updateDataflowById = async (id, body) => {
+  const existing = await getOrThrow(id);
   assertNotRunning(existing, '编辑');
   const payload = normalizeBody(body);
   if ('name' in payload && !payload.name) throw paramInvalid('name 必填');
@@ -141,7 +143,7 @@ const updateDataflowById = (id, body) => {
   const edges = payload.edges === undefined ? existing.edges : payload.edges;
   if (payload.nodes || payload.edges) {
     assertCanvas(nodes, edges);
-    assertEndpointConfig(nodes);
+    await assertEndpointConfig(nodes);
     payload.nodes = nodes;
     payload.edges = edges;
   }
@@ -149,10 +151,10 @@ const updateDataflowById = (id, body) => {
   return dataflowRepository.update(id, payload);
 };
 
-const deleteDataflowById = (id) => {
-  const existing = getOrThrow(id);
+const deleteDataflowById = async (id) => {
+  const existing = await getOrThrow(id);
   assertNotRunning(existing, '删除');
-  dataflowRepository.delete(existing.id);
+  await dataflowRepository.delete(existing.id);
   return existing;
 };
 
@@ -168,8 +170,12 @@ const resolveEndpoints = (dataflow) => {
  * 引擎快照：画布 run 复用 full 模式（契约 1.8「run 时由引擎按 full 模式模拟执行」）。
  * taskId 位置放 dataflowId —— 引擎不区分二者，回报时按实例的 taskId 反查归属。
  */
-const buildEngineSnapshot = (dataflow, instanceId, totalRows) => {
+const buildEngineSnapshot = async (dataflow, instanceId, totalRows) => {
   const { input, output } = resolveEndpoints(dataflow);
+  const [source, target] = await Promise.all([
+    runService.endpointOf(input.config.datasourceId),
+    runService.endpointOf(output.config.datasourceId),
+  ]);
   return runService.baseSnapshot(
     {
       ...dataflow,
@@ -180,8 +186,8 @@ const buildEngineSnapshot = (dataflow, instanceId, totalRows) => {
     {
       syncMode: 'full',
       totalRows,
-      source: runService.endpointOf(input.config.datasourceId),
-      target: runService.endpointOf(output.config.datasourceId),
+      source,
+      target,
       extra: {
         sourceTable: input.config.table,
         targetTable: output.config.table,

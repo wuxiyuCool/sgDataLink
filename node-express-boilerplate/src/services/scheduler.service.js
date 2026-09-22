@@ -1,7 +1,7 @@
 /**
- * Node 内置定时调度器（docs/API.md 第 1.6 节，Mock 阶段即为真实行为）。
+ * Node 内置定时调度器（docs/API.md 第 1.6 节）。
  *
- * 只在 MEM_MOCK 模式下启动（src/index.js 的 mock 分支调 startScheduler），
+ * 在 memory 与 mysql 两种驱动下都会启动（src/index.js 调 startScheduler），
  * 每秒扫一遍所有「enabled 且配了 scheduleCron」的同步任务与数据开发流程
  * （两者的调度字段同构，可调度清单来自 services/run.service.js 的 registry），
  * 命中 cron 且同一条记录距上次触发超过 60s、当前没有 running 实例时，
@@ -10,6 +10,10 @@
  * running 中跳过会记 WARN（契约 1.6 明确要求）；表达式不属于支持的 6 位 Quartz 子集时
  * 只 WARN 一次，避免每秒刷屏。进程退出时 stopScheduler 清掉 interval，配合
  * run.service.cancelPendingRetries 一起保证不会把 Node 挂住。
+ *
+ * 仓储双驱动后扫描是异步的：用 scanning 标记做「同一时刻只有一轮在扫」，
+ * 上一轮没扫完（DB 抖动 / 引擎慢）就跳过这一轮，避免把引擎刷爆。
+ * lastTriggerAt（cron 最小间隔）与 warnedCrons 保持内存态，不落库。
  */
 const logger = require('../config/logger');
 const config = require('../config/config');
@@ -25,6 +29,9 @@ const MIN_TRIGGER_GAP_MS = 60 * 1000;
 
 let timer = null;
 
+/** 上一轮扫描是否还没结束（异步扫描的重入保护） */
+let scanning = false;
+
 /** `${kind}:${id}` -> 最近一次 cron 触发时间戳 */
 const lastTriggerAt = new Map();
 
@@ -34,12 +41,14 @@ const warnedCrons = new Set();
 /**
  * 扫描一次（导出纯函数式入口，便于单测直接传 now）。
  * @param {Date} [now] 判定时刻
- * @returns {Array<Promise>} 本轮已下发的启动 Promise
+ * @returns {Promise<Array>} 本轮已下发的启动 Promise
  */
-const scanOnce = (now = new Date()) => {
+const scanOnce = async (now = new Date()) => {
   const pending = [];
-  runService.listSchedulableRecords().forEach(({ kind, label, record }) => {
-    if (record.enabled === false || !record.scheduleCron) return;
+  const records = await runService.listSchedulableRecords();
+  // eslint-disable-next-line no-restricted-syntax
+  for (const { kind, label, record } of records) {
+    if (record.enabled === false || !record.scheduleCron) continue;
     const key = `${kind}:${record.id}`;
 
     if (!cronMatcher.isSupportedCron(record.scheduleCron)) {
@@ -52,48 +61,56 @@ const scanOnce = (now = new Date()) => {
           record.scheduleCron
         );
       }
-      return;
+      continue;
     }
-    if (!cronMatcher.matchesCron(record.scheduleCron, now)) return;
+    if (!cronMatcher.matchesCron(record.scheduleCron, now)) continue;
 
     const previous = lastTriggerAt.get(key) || 0;
-    if (now.getTime() - previous < MIN_TRIGGER_GAP_MS) return;
+    if (now.getTime() - previous < MIN_TRIGGER_GAP_MS) continue;
 
-    if (record.lastStatus === 'running' || instanceRepository.findRunningByTask(record.id)) {
+    // eslint-disable-next-line no-await-in-loop
+    const running = await instanceRepository.findRunningByTask(record.id);
+    if (record.lastStatus === 'running' || running) {
       logger.warn('%s %s 正在运行中，本次定时触发跳过', label, record.id);
-      return;
+      continue;
     }
 
     lastTriggerAt.set(key, now.getTime());
     const runner = runService.getRunner(kind);
     if (!runner || !runner.api) {
       logger.warn('schedule skipped: 未注册的运行体 %s', kind);
-      return;
+      continue;
     }
     logger.info('cron trigger: %s %s (cron=%s)', label, record.id, record.scheduleCron);
+    // eslint-disable-next-line no-await-in-loop
     pending.push(
       runner.api.start(record.id, { trigger: 'cron' }).catch((err) => {
         // 引擎不可达 / 并发启动等情况不影响调度器存活，只记日志
         logger.warn('cron start failed for %s: %s', record.id, err.message);
       })
     );
-  });
+  }
   return pending;
 };
 
-/** 启动调度器（仅 MEM_MOCK 模式；重复调用幂等） */
+/** 调度器是否应在本进程启用（memory mock 模式与 mysql 驱动模式都要跑调度） */
+const schedulingEnabled = () => config.memMock || config.db.driver === 'mysql';
+
+/** 启动调度器（memory / mysql 驱动；重复调用幂等） */
 const startScheduler = () => {
-  if (!config.memMock) {
-    logger.info('scheduler not started: memory-mock mode is off');
+  if (!schedulingEnabled()) {
+    logger.info('scheduler not started: neither memory-mock nor mysql driver is enabled');
     return false;
   }
   if (timer) return true;
   timer = setInterval(() => {
-    try {
-      scanOnce(new Date());
-    } catch (err) {
-      logger.error('scheduler tick error: %s', err.message);
-    }
+    if (scanning) return;
+    scanning = true;
+    scanOnce(new Date())
+      .catch((err) => logger.error('scheduler tick error: %s', err.message))
+      .then(() => {
+        scanning = false;
+      });
   }, TICK_MS);
   // 调度器不应该阻止进程退出
   if (typeof timer.unref === 'function') timer.unref();
