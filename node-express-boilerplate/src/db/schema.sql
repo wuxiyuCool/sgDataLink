@@ -212,6 +212,8 @@ CREATE TABLE IF NOT EXISTS `databridge_data_api` (
   `table_name`      VARCHAR(128) NULL,
   `fields`          JSON         NULL COMMENT '返回字段定义',
   `query_params`    JSON         NULL,
+  `sql_mode`        VARCHAR(16)  NULL COMMENT '1.9.2 builder | custom',
+  `custom_sql`      TEXT         NULL COMMENT '1.9.2 自定义只读 SQL（:name 占位符，值一律绑定）',
   `auth_enabled`    TINYINT(1)   NULL,
   `api_key`         VARCHAR(128) NULL,
   `rate_limit_qps`  INT          NULL,

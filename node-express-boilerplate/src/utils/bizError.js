@@ -56,6 +56,9 @@ const rateLimitExceeded = (message) => bizError(ERROR_CODES.RATE_LIMIT_EXCEEDED,
 /** 40404 数据服务路径不存在或未发布 */
 const dataApiNotFound = (message) => bizError(ERROR_CODES.DATA_API_NOT_FOUND, message);
 
+/** 50003 Data API 真实查询失败（目标库连接/SQL 报错） */
+const dataQueryFailed = (message) => bizError(ERROR_CODES.DATA_QUERY_FAILED, message);
+
 module.exports = {
   ERROR_CODES,
   bizError,
@@ -71,4 +74,5 @@ module.exports = {
   ipNotWhitelisted,
   rateLimitExceeded,
   dataApiNotFound,
+  dataQueryFailed,
 };

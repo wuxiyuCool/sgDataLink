@@ -41,6 +41,9 @@ const store = defineStore({
     tableName: {},
     fields: { type: 'json' },
     queryParams: { type: 'json' },
+    /** 1.9.2：builder（拼 SELECT）| custom（执行 customSql） */
+    sqlMode: {},
+    customSql: { type: 'text' },
     authEnabled: { type: 'bool' },
     apiKey: {},
     rateLimitQps: { type: 'int' },
@@ -96,6 +99,8 @@ const create = async (data) => {
     method: 'GET',
     fields: [],
     queryParams: [],
+    sqlMode: 'builder',
+    customSql: null,
     authEnabled: true,
     apiKey: null,
     rateLimitQps: 20,

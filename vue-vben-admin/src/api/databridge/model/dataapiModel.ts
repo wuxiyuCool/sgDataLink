@@ -6,11 +6,41 @@ export type DataApiStatus = 'draft' | 'published'
 /** 对外暴露的 HTTP 方法：运行时端点为 GET /ds/{path}，POST 用于参数放 body 的场景 */
 export type DataApiMethod = 'GET' | 'POST'
 
-/** 输出字段类型（契约 1.9 fields[].type） */
-export type DataApiFieldType = 'BIGINT' | 'DECIMAL' | 'VARCHAR' | 'DATE' | 'BOOLEAN'
+/** 输出字段类型：builder 模式从 meta/columns 自动带出真实数据库类型（NUMBER / VARCHAR2 等），契约示例枚举仅作提示 */
+export type DataApiFieldType = 'BIGINT' | 'DECIMAL' | 'VARCHAR' | 'DATE' | 'BOOLEAN' | (string & {})
 
-/** 查询参数类型（契约 1.9 queryParams[].type） */
-export type DataApiQueryType = 'string' | 'number' | 'date' | 'boolean'
+/** 查询参数类型（契约 1.9.2 queryParams[].type）：list 调用时传逗号分隔字符串 */
+export type DataApiQueryType = 'string' | 'number' | 'date' | 'list'
+
+/** SQL 配置模式（契约 1.9.2 sqlMode）：builder 按 tableName+fields 拼 SELECT，custom 执行 customSql */
+export type DataApiSqlMode = 'builder' | 'custom'
+
+/** GET /data-apis/meta/tables 返回单项（契约 1.9.1） */
+export interface MetaTable {
+  name: string
+  comment?: string | null
+}
+
+/** GET /data-apis/meta/columns 返回单项（契约 1.9.1） */
+export interface MetaColumn {
+  name: string
+  /** 数据库真实类型（NUMBER / VARCHAR2 / DATE 等），builder 模式勾中后原样带入 fields[].type */
+  type: string
+  nullable?: boolean
+  comment?: string | null
+}
+
+/** GET /data-apis/meta/tables 请求参数（契约 1.9.1） */
+export interface DataApiMetaTablesParams {
+  datasourceId: string
+  keyword?: string
+}
+
+/** GET /data-apis/meta/columns 请求参数（契约 1.9.1） */
+export interface DataApiMetaColumnsParams {
+  datasourceId: string
+  tableName: string
+}
 
 export interface DataApiField {
   name: string
@@ -31,6 +61,10 @@ export interface DataApi {
   method?: DataApiMethod
   datasourceId: string
   tableName: string
+  /** SQL 配置模式（契约 1.9.2），缺省视为 builder */
+  sqlMode?: DataApiSqlMode
+  /** custom 模式执行的 SQL；:name 占位符与 queryParams 按名绑定，仅允许只读语句 */
+  customSql?: string | null
   fields: DataApiField[]
   queryParams?: DataApiQueryParam[]
   authEnabled?: boolean
@@ -60,6 +94,10 @@ export interface DataApiPayload {
   method: DataApiMethod
   datasourceId: string
   tableName: string
+  /** SQL 配置模式（契约 1.9.2），不传时后端按 builder 处理 */
+  sqlMode?: DataApiSqlMode
+  /** 仅 custom 模式提交；builder 模式省略该键 */
+  customSql?: string | null
   fields: DataApiField[]
   queryParams: DataApiQueryParam[]
   authEnabled: boolean

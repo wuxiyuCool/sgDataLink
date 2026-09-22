@@ -18,6 +18,8 @@ const ERROR_CODES = {
   DATA_API_NOT_FOUND: 40404,
   ENGINE_UNAVAILABLE: 50001,
   ENGINE_REJECTED: 50002,
+  /** Data API 真实查询失败（目标库连接/SQL 报错），docs/API.md 1.9 */
+  DATA_QUERY_FAILED: 50003,
   INTERNAL_ERROR: 50000,
 };
 
@@ -36,6 +38,7 @@ const HTTP_STATUS_BY_CODE = {
   50000: 500,
   50001: 502,
   50002: 502,
+  50003: 502,
 };
 
 /**

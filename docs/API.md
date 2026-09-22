@@ -93,7 +93,7 @@
 { "success": true, "latencyMs": 42, "message": "mock 连接成功" }
 ```
 
-mock 规则：`host` 以 `10.` 开头或名称含 `fail` 时返回失败，否则成功（便于前端演示两种结果）。
+连通测试行为按存储驱动区分：`DB_DRIVER=mysql`（真实模式）时 mysql 类型走 mysql2 真实握手，oracle/postgresql 走真实 TCP 可达探测（账号校验二阶段接驱动后补全）；`DB_DRIVER=memory`（演示模式）时保留 mock 规则：`host` 以 `10.` 开头或名称含 `fail` 返回失败，否则成功。
 
 ### 1.2 同步任务 `/tasks`
 
@@ -425,7 +425,54 @@ Header: X-API-Key: dk-9f3a...   （authEnabled=true 时必需）
 
 - 成功：`{ "code": 0, "message": "success", "result": { "fields": ["ID","AMOUNT"], "rows": [[1, 99.5]], "total": 57, "page": 1, "size": 20 } }`
 - 错误：401 `{code:40101}` 未提供 API Key / 40102 无效 Key；403 `{code:40301}` IP 不在白名单；429 `{code:42901}` 超过限流 QPS；404 `{code:40404}` 未发布或路径不存在。
-- Mock 行为：按 tableName+fields 生成确定性伪随机行（同一 page 结果稳定），支持 `limit/page/size`；每次调用累加 invokeCount/延迟统计；限流用内存滑动窗口按 `rateLimitQps` 真实拦截。
+- 数据来源按驱动模式：`DB_DRIVER=mysql`（真实模式）→ **按绑定数据源真实查询**（mysql 用 mysql2、oracle 用 oracledb thin 纯 JS 驱动，ROWNUM 分页兼容 11g+；表名/字段名走标识符白名单校验，queryParams 过滤值绑定传参防注入；查询失败返回 502 `{code:50003}` 并透传真实数据库错误如 ORA-00904）；`DB_DRIVER=memory`（演示模式）→ 按 tableName+fields 生成确定性伪随机行。两种模式均支持 `limit/page/size`，每次调用累加 invokeCount/延迟统计，限流用内存滑动窗口按 `rateLimitQps` 真实拦截。postgresql 真实查询二阶段接入。
+
+#### 1.9.1 元数据浏览（配置期辅助）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/data-apis/meta/tables?datasourceId=xxx&keyword=` | 列出该数据源可查表（真实模式查 information_schema / ALL_TABLES；memory 模式返回内置演示表） |
+| GET | `/data-apis/meta/columns?datasourceId=xxx&tableName=yyy` | 列出表字段 |
+
+响应 `result`：
+
+```json
+// tables
+[ { "name": "IR_CM_MEASURE", "comment": "计量单" } ]
+// columns
+[ { "name": "SID", "type": "NUMBER", "nullable": false, "comment": "主键" } ]
+```
+
+错误：40401 数据源不存在；50003 元数据查询失败（透传真实库错误）。Oracle 元数据按 `owner = 数据源 username 大写` 过滤；`tableName` 必须过标识符白名单，查询本身全绑定参数。
+
+#### 1.9.2 自定义 SQL 模式
+
+数据服务对象新增字段：
+
+```json
+{
+  "sqlMode": "builder",
+  "customSql": "SELECT sid, ms_bill_id, amount FROM ir_cm_measure WHERE status = :status AND created >= TO_DATE(:startTime,'YYYY-MM-DD HH24:MI:SS') AND org_id IN (:orgIds)",
+  "queryParams": [
+    { "name": "status", "type": "string", "required": true },
+    { "name": "startTime", "type": "date", "required": false },
+    { "name": "orgIds", "type": "list", "required": true }
+  ]
+}
+```
+
+- `sqlMode`：`builder`（默认，按 tableName+fields 拼 SELECT）| `custom`（执行 customSql）。
+- 运行时（custom）：请求 query 参数按 `queryParams[].type` 处理后**一律绑定变量注入**，绝不拼进 SQL 字符串：
+  - `string/number` → 标量绑定；`:name` 占位符 mysql 驱动转 `?`（按出现顺序），oracle 原生 `:name`。
+  - `date` → 按字符串绑定，格式转换交给 SQL 内的 `TO_DATE/STR_TO_DATE`（由编写者显式声明，避免时区歧义）。
+  - `list` → 值为逗号分隔字符串或重复参数；展开为 `IN (:orgIds__0,:orgIds__1,…)` 逐元素绑定，**元素上限 1000**（Oracle IN 限制），空列表报 40001。
+- **安全红线（服务端强制校验 customSql）**：
+  1. 规范化后必须以 `SELECT` 或 `WITH` 开头；禁止多语句（去尾分号后仍含 `;` 拒绝）。
+  2. 关键字黑名单（词边界匹配）：`INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|MERGE|EXECUTE|CALL|BEGIN|LOCK|RENAME`；`UNION` 允许（仍为只读）。
+  3. 行数硬上限：外层再套 ROWNUM/LIMIT `MAX_SIZE(500)`；驱动调用超时 10s（oracle `connection.callTimeout`，mysql 计时销毁）。
+  4. 凭据不出后端：元数据与查询都经服务端用存储的数据源连接执行；错误消息透传数据库原文但不含连接串/密码。
+  5. builder 模式沿用表名/列名标识符白名单 + 值绑定；两种模式的过滤值都不参与 SQL 文本拼接。
+- 保存时（POST/PUT）即校验 customSql 与 queryParams 一致性（custom 模式下 customSql 必填、占位符集合 ⊆ queryParams），违规 40001。
 
 ### 1.10 任务运维补充
 

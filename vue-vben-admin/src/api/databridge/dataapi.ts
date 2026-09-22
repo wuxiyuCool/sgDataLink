@@ -4,14 +4,20 @@ import type {
   DataApi,
   DataApiInvokeParams,
   DataApiInvokeResult,
+  DataApiMetaColumnsParams,
+  DataApiMetaTablesParams,
   DataApiPageParams,
   DataApiPayload,
   DataApiPublishResult,
   DataApiStats,
+  MetaColumn,
+  MetaTable,
 } from './model/dataapiModel'
 
 enum Api {
   DataApi = '/data-apis',
+  MetaTables = '/data-apis/meta/tables',
+  MetaColumns = '/data-apis/meta/columns',
 }
 
 /**
@@ -79,4 +85,20 @@ export function invokeDataApiApi(id: string, data: DataApiInvokeParams) {
  */
 export function getDataApiStatsApi(id: string) {
   return databridgeHttp.get<DataApiStats>({ url: `${Api.DataApi}/${id}/stats` })
+}
+
+/**
+ * @description: 元数据浏览：列出数据源可查表（契约 1.9.1）。
+ * 真实模式查 information_schema / ALL_TABLES，memory 模式返回内置演示表；
+ * 数据源不存在 40401，元数据查询失败 50003（透传真实库错误）。
+ */
+export function getMetaTablesApi(params: DataApiMetaTablesParams) {
+  return databridgeHttp.get<MetaTable[]>({ url: Api.MetaTables, params })
+}
+
+/**
+ * @description: 元数据浏览：列出表字段（契约 1.9.1），tableName 需过标识符白名单（后端强制）。
+ */
+export function getMetaColumnsApi(params: DataApiMetaColumnsParams) {
+  return databridgeHttp.get<MetaColumn[]>({ url: Api.MetaColumns, params })
 }

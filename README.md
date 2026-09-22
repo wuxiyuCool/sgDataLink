@@ -86,7 +86,10 @@ yarn dev                # vite 代理 /api/v1 -> http://127.0.0.1:3001
 - **数据开发（ETL 画布）**：LogicFlow 画布（`@logicflow/core`，含 JSON 编辑降级模式）拖拽编排 input/filter/join/transform/sql/json_parse/validate/output 节点，保存 nodes/edges JSON；`run` 时取首尾 input/output 拼快照交引擎按 full 模拟执行。
 
 ### 数据服务（Data API）
-表一键发布为 REST API：管理端 CRUD + publish/unpublish（生成 apiKey）+ 调试（invoke 代理 + curl 命令生成）+ 调用统计（7 日趋势）。运行时 `GET /ds/{path}` 的 **X-API-Key 鉴权、IP 白名单、滑动窗口 QPS 限流为真实逻辑**，数据行按 tableName+fields 确定性伪随机生成。
+表一键发布为 REST API：管理端 CRUD + publish/unpublish（生成 apiKey）+ 调试（invoke 代理 + curl 命令生成）+ 调用统计（7 日趋势）。运行时 `GET /ds/{path}` 的 **X-API-Key 鉴权、IP 白名单、滑动窗口 QPS 限流为真实逻辑**。
+- **配置期元数据驱动**：选数据源后实时拉取真实表名（`/data-apis/meta/tables`）与字段（`/meta/columns`，MySQL information_schema / Oracle ALL_TABLES+ALL_TAB_COLUMNS），勾选字段即输出列。
+- **两种 SQL 模式**：builder（选表勾字段自动拼 SELECT）/ custom（自定义 SQL，`:name` 绑定变量；`list` 类型自动展开 Oracle `IN` 逐元素绑定、上限 1000；时间用 `TO_DATE(:t,...)` 显式声明）。
+- **安全**（契约 1.9.2 红线，服务端强制）：仅允许单条 SELECT/WITH（注释与字符串字面量经掩码解析，不误杀不放过）；DML/DDL 关键字词边界黑名单；一切用户输入只走绑定参数，表/列名过标识符白名单；行数上限 500、查询超时 10s；错误透传数据库原文但不含连接凭据。
 
 ### 运维监控
 - **任务监控大盘**：`/statistics/overview` 统计卡 + 7 日成败趋势图 + 运行实例 3s 轮询进度（Progress/读写行数/QPS）。

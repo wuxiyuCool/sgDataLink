@@ -1,7 +1,7 @@
 <template>
   <PageWrapper
     title="数据源管理"
-    content="维护 DataBridge 的源端/目标端数据源；mock 规则：host 以 10. 开头或名称含 fail 时连通测试必然失败"
+    content="维护 DataBridge 的源端/目标端数据源；连通测试：mysql 类型真实握手，oracle/postgresql 真实 TCP 探测（memory 演示模式下才使用 mock 规则）"
   >
     <Card :bordered="false" class="mb-3">
       <Form ref="searchFormRef" :model="query" layout="inline" @finish="handleSearch">

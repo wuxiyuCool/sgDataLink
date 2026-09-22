@@ -13,6 +13,7 @@ const pipelineRepository = require('../repositories/pipeline.repository');
 const dataflowRepository = require('../repositories/dataflow.repository');
 const dataApiRepository = require('../repositories/dataapi.repository');
 const config = require('../config/config');
+const netProbe = require('../db/netProbe');
 const mysql = require('../db/mysql');
 const { paramInvalid, notFound, datasourceReferenced } = require('../utils/bizError');
 
@@ -144,13 +145,16 @@ const mockConnect = (connConfig) => {
 
 /**
  * 连通测试分发：
- * - DB_DRIVER=mysql 且数据源类型是 mysql → 真实建连（mysql2 createConnection + SELECT 1，
- *   connectTimeout 5s，成功回真实 latencyMs，失败回 { success:false, message:'连接失败(ER_xxx): ...' }）；
- * - 其余情况（memory 驱动、oracle / postgresql 类型）→ 保持原 mock 规则（10. 网段 / fail 名必定失败）。
+ * - DB_DRIVER=mysql（真实模式）：mysql 类型 → mysql2 真实建连握手；oracle / postgresql → 真实 TCP 探测
+ *   （账号校验待二阶段接驱动）。不再使用 mock 规则，真实内网库可正常配置。
+ * - DB_DRIVER=memory（演示模式）：所有类型走 mock 规则（10. 网段 / fail 名必定失败），仅供前端演示。
  */
 const connect = async (connConfig) => {
-  if (config.db.driver === 'mysql' && connConfig.type === 'mysql') {
-    return mysql.probeMysqlConnection(connConfig);
+  if (config.db.driver === 'mysql') {
+    if (connConfig.type === 'mysql') {
+      return mysql.probeMysqlConnection(connConfig);
+    }
+    return netProbe.probeTcp({ host: connConfig.host, port: connConfig.port, timeoutMs: 5000 });
   }
   return mockConnect(connConfig);
 };

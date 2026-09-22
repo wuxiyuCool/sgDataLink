@@ -14,10 +14,22 @@
  */
 const { performance } = require('perf_hooks');
 const logger = require('../config/logger');
+const config = require('../config/config');
+const dataQuery = require('../db/dataQuery');
+const sqlGuard = require('../db/sqlGuard');
 const dataApiRepository = require('../repositories/dataapi.repository');
+const datasourceRepository = require('../repositories/datasource.repository');
 const { generateRows } = require('../utils/mockRows');
 const { createRateWindow } = require('../utils/rateWindow');
-const { dataApiNotFound, apiKeyMissing, apiKeyInvalid, ipNotWhitelisted, rateLimitExceeded } = require('../utils/bizError');
+const {
+  dataApiNotFound,
+  apiKeyMissing,
+  apiKeyInvalid,
+  ipNotWhitelisted,
+  rateLimitExceeded,
+  dataQueryFailed,
+  paramInvalid,
+} = require('../utils/bizError');
 
 /** 契约：apiKey 走 X-API-Key 头，也允许 query 里带 apiKey（方便浏览器直接试） */
 const API_KEY_HEADER = 'x-api-key';
@@ -91,10 +103,68 @@ const assertAccessible = (api, ctx) => {
   }
 };
 
-/** 1.9 的成功响应 result：{ fields: ['ID','AMOUNT'], rows: [[...]], total, page, size } */
-const buildResult = (api, query = {}) => {
+/** custom 模式的请求参数归一（契约 1.9.2）：
+ * 只按 api.queryParams 声明取 query 里的原始值（express 对重复参数给数组，list 类型正好用得上），
+ * 再过 sqlGuard.coerceValue 做类型校验；**值始终是绑定变量，不进 SQL 文本**。
+ * 必填缺失 → 40001；类型不合法 → sqlGuard 抛的 40001（自带 bizCode/statusCode，直接透出）。
+ * @returns {Array<{name:string,type:string,value:*}>}
+ */
+const resolveCustomParams = (api, query = {}) => {
+  const declared = Array.isArray(api.queryParams) ? api.queryParams : [];
+  return declared
+    .filter((p) => p && p.name)
+    .map((p) => {
+      const raw = query[p.name];
+      const missing = raw === undefined || raw === '' || (Array.isArray(raw) && !raw.length);
+      if (missing) {
+        if (p.required) throw paramInvalid(`缺少必填参数 ${p.name}`);
+        return { name: p.name, type: p.type, value: null };
+      }
+      return { name: p.name, type: p.type, value: sqlGuard.coerceValue(p.type, raw) };
+    });
+};
+
+/** 演示模式下 custom SQL 通常没配 fields：从 SELECT 列表取列名当演示列（只影响 mock 出数） */
+const deriveMockFields = (api) => {
+  const declared = (Array.isArray(api.fields) ? api.fields : []).filter((f) => f && f.name);
+  if (declared.length) return declared;
+  const list = String(api.customSql || '').match(/^\s*SELECT\s+([\s\S]{1,2000}?)\s+FROM\b/i);
+  const names = list
+    ? list[1]
+        .split(',')
+        .map((item) => item.trim().split(/\s+AS\s+/i).pop().trim().replace(/^[`[]|[`]\]$/g, ''))
+        .filter((name) => /^[A-Za-z_][A-Za-z0-9_$]{0,63}$/.test(name))
+        .slice(0, 20)
+    : [];
+  return names.length ? names.map((name) => ({ name, type: 'VARCHAR(64)' })) : [{ name: 'COL_1', type: 'VARCHAR(64)' }];
+};
+
+/** 1.9 的成功响应 result：{ fields: ['ID','AMOUNT'], rows: [[...]], total, page, size }
+ * DB_DRIVER=mysql（真实模式）→ 按绑定数据源真实查询（mysql2 / oracledb thin）；
+ * DB_DRIVER=memory（演示模式）→ 确定性 mock 行。
+ * sqlMode=custom（1.9.2）→ 真实模式走 dataQuery.queryCustom（只读 SQL + 绑定变量），演示模式仍出 mock 行。
+ */
+const buildResult = async (api, query = {}) => {
   const { page, size } = resolvePaging(query);
-  const { fields, rows, total } = generateRows({ tableName: api.tableName, fields: api.fields || [], page, size });
+  const isCustom = api.sqlMode === 'custom';
+  if (!config.db.isMysql()) {
+    const fields = isCustom ? deriveMockFields(api) : api.fields || [];
+    const { rows, total } = generateRows({ tableName: api.tableName || api.path, fields, page, size });
+    return { fields: fields.map((f) => f.name), rows, total, page, size };
+  }
+  const ds = await datasourceRepository.getById(api.datasourceId);
+  if (!ds) throw dataQueryFailed(`绑定的数据源不存在: ${api.datasourceId}`);
+  if (isCustom) {
+    const params = resolveCustomParams(api, query);
+    const result = await dataQuery.queryCustom(ds, { sql: api.customSql, params, page, size });
+    return { fields: result.fields, rows: result.rows, total: result.total, page, size };
+  }
+  // builder：过滤条件只接受 api.queryParams 声明过的 key，值绑定传参（防注入见 dataQuery）
+  const declared = Array.isArray(api.queryParams) ? api.queryParams : [];
+  const filters = declared
+    .filter((p) => p && p.name && query[p.name] !== undefined && query[p.name] !== '')
+    .map((p) => ({ column: p.name, value: query[p.name] }));
+  const { fields, rows, total } = await dataQuery.query(ds, { tableName: api.tableName, fields: api.fields || [], filters, page, size });
   return { fields, rows, total, page, size };
 };
 
@@ -113,9 +183,11 @@ const serve = async (api, ctx = {}) => {
   let ok = true;
   try {
     assertAccessible(api, { ...ctx, query });
-    return buildResult(api, query);
+    return await buildResult(api, query);
   } catch (err) {
     ok = false;
+    // 带 bizCode 的（鉴权/限流/未发布等）原样抛出；驱动层抛出的连接/SQL 错误统一包装为 50003
+    if (!err.bizCode) throw dataQueryFailed(`真实查询失败(${api.datasourceId} ${err.code || err.errorNum || ''}): ${err.message}`);
     throw err;
   } finally {
     const latencyMs = Math.round((performance.now() - started) * 100) / 100;
@@ -156,6 +228,8 @@ module.exports = {
   clientIpOf,
   ipAllowed,
   resolvePaging,
+  resolveCustomParams,
+  deriveMockFields,
   buildResult,
   assertAccessible,
   serve,

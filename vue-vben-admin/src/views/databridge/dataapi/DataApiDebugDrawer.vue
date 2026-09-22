@@ -20,6 +20,14 @@
         {{ api?.authEnabled === false ? '关闭' : '开启（需 X-API-Key）' }}
       </DescriptionsItem>
       <DescriptionsItem label="限流">{{ api?.rateLimitQps ?? '-' }} QPS</DescriptionsItem>
+      <DescriptionsItem label="SQL 模式">
+        <Tag :color="api?.sqlMode === 'custom' ? 'geekblue' : 'default'">
+          {{ getSqlModeLabel(api?.sqlMode) }}
+        </Tag>
+      </DescriptionsItem>
+      <DescriptionsItem v-if="api?.sqlMode === 'custom'" label="自定义 SQL" :span="2">
+        <pre class="json-pre sql-echo">{{ api?.customSql || '-' }}</pre>
+      </DescriptionsItem>
     </Descriptions>
 
     <Card :bordered="false" size="small" class="mb-3">
@@ -35,11 +43,39 @@
         </FormItem>
       </Form>
       <Form v-if="queryParams.length" layout="inline" class="mt-2">
-        <FormItem v-for="param in queryParams" :key="param.name" :label="param.name">
+        <!-- 按契约 1.9.2 的 queryParams[].type 渲染输入控件；list 原样传逗号分隔串，后端逐元素绑定 -->
+        <FormItem
+          v-for="param in queryParams"
+          :key="param.name"
+          :required="!!param.required"
+          :label="param.name"
+        >
+          <InputNumber
+            v-if="param.type === 'number'"
+            v-model:value="paramValues[param.name]"
+            :style="{ width: '160px' }"
+            placeholder="数值"
+          />
+          <DatePicker
+            v-else-if="param.type === 'date'"
+            v-model:value="paramValues[param.name]"
+            show-time
+            value-format="YYYY-MM-DD HH:mm:ss"
+            :style="{ width: '210px' }"
+            placeholder="YYYY-MM-DD HH:mm:ss"
+          />
+          <Tooltip v-else-if="param.type === 'list'" title="多个值用英文逗号分隔，如 A,B,C；后端展开为 IN (...) 逐元素绑定，上限 1000 个">
+            <Input
+              v-model:value="paramValues[param.name]"
+              :style="{ width: '200px' }"
+              placeholder="逗号分隔，如 A,B,C"
+            />
+          </Tooltip>
           <Input
+            v-else
             v-model:value="paramValues[param.name]"
             :placeholder="`${param.type}${param.required ? '（必填）' : ''}`"
-            style="width: 160px"
+            :style="{ width: '160px' }"
           />
         </FormItem>
       </Form>
@@ -113,6 +149,7 @@
     Alert,
     Button,
     Card,
+    DatePicker,
     Descriptions,
     Drawer,
     Empty,
@@ -123,6 +160,7 @@
     Table,
     Tabs,
     Tag,
+    Tooltip,
   } from 'ant-design-vue'
   import { useMessage } from '/@/hooks/web/useMessage'
   import { copyTextToClipboard } from '/@/hooks/web/useCopyToClipboard'
@@ -138,6 +176,7 @@
     buildCurlCommand,
     DATA_RUNTIME_BASE,
     getRuntimeUrl,
+    getSqlModeLabel,
     normalizeInvokeResult,
     toInvokeTableData,
   } from './dataapi.data'
@@ -223,7 +262,8 @@
       costMs.value = null
       Object.keys(paramValues).forEach((key) => delete paramValues[key])
       queryParams.value.forEach((param) => {
-        paramValues[param.name] = ''
+        // number 用 null 让 InputNumber 显示占位符；date 走 valueFormat 直接绑字符串
+        paramValues[param.name] = param.type === 'number' ? null : ''
       })
     },
   )
@@ -307,5 +347,10 @@
     border: 1px solid #f0f0f0;
     border-radius: 4px;
     font-size: 12px;
+  }
+
+  .sql-echo {
+    max-height: 120px;
+    white-space: pre-wrap;
   }
 </style>

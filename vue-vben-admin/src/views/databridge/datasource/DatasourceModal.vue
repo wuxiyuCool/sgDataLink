@@ -17,7 +17,7 @@
       :wrapper-col="{ span: 16 }"
     >
       <FormItem label="数据源名称" name="name">
-        <Input v-model:value="formState.name" placeholder="例如：生产Oracle（名称含 fail 时 mock 连通测试必然失败）" />
+        <Input v-model:value="formState.name" placeholder="例如：生产Oracle" />
       </FormItem>
       <FormItem label="类型" name="type">
         <Select
@@ -28,7 +28,7 @@
         />
       </FormItem>
       <FormItem label="主机地址" name="host">
-        <Input v-model:value="formState.host" placeholder="例如：10.0.0.11（以 10. 开头 mock 连通测试必然失败）" />
+        <Input v-model:value="formState.host" placeholder="例如：10.45.34.90" />
       </FormItem>
       <FormItem label="端口" name="port">
         <InputNumber v-model:value="formState.port" :min="1" :max="65535" style="width: 100%" />

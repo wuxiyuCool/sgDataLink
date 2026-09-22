@@ -63,6 +63,8 @@ const create = (data) => {
     method: 'GET',
     fields: [],
     queryParams: [],
+    sqlMode: 'builder',
+    customSql: null,
     authEnabled: true,
     apiKey: null,
     rateLimitQps: 20,

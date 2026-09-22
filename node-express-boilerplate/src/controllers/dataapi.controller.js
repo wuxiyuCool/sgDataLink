@@ -79,6 +79,21 @@ const getDataApiStats = catchAsync(async (req, res) => {
   ok(res, result);
 });
 
+/**
+ * GET /data-apis/meta/tables?datasourceId=&keyword= —— 1.9.1 表清单。
+ * 真实模式查 information_schema / ALL_TABLES，演示模式返回内置表；数据源不存在 40401。
+ */
+const listMetaTables = catchAsync(async (req, res) => {
+  const result = await dataApiService.listMetaTables(pick(req.query, ['datasourceId', 'keyword']));
+  ok(res, result);
+});
+
+/** GET /data-apis/meta/columns?datasourceId=&tableName= —— 1.9.1 列清单 */
+const listMetaColumns = catchAsync(async (req, res) => {
+  const result = await dataApiService.listMetaColumns(pick(req.query, ['datasourceId', 'tableName']));
+  ok(res, result);
+});
+
 module.exports = {
   getDataApis,
   getDataApi,
@@ -89,4 +104,6 @@ module.exports = {
   unpublishDataApi,
   invokeDataApi,
   getDataApiStats,
+  listMetaTables,
+  listMetaColumns,
 };

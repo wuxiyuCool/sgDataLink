@@ -91,31 +91,67 @@ const loadActualColumns = async (tables) => {
 };
 
 /**
- * 校验每张表都包含 store 声明的列（缺列抛错，多列只告警）。
- * @throws {Error} 表不存在或缺列
+ * 仓储列类型 -> 兜底 DDL 类型。
+ * schema.sql 是权威定义（长度/字符集更精确），这里只在「旧库缺新列」时补一个可空列，
+ * 保证升级（如 1.9.2 给 databridge_data_api 加 sql_mode / custom_sql）不需要人工跑迁移。
+ */
+const FALLBACK_COLUMN_TYPES = {
+  str: 'VARCHAR(255)',
+  text: 'TEXT',
+  json: 'JSON',
+  int: 'BIGINT',
+  num: 'DOUBLE',
+  bool: 'TINYINT(1)',
+  datetime: 'DATETIME(3)',
+};
+
+/**
+ * 校验每张表都包含 store 声明的列：表不存在直接抛错；
+ * 缺列时补一次 ALTER TABLE ADD COLUMN（可空，不影响既有行），补不上才算失败。
+ * 多出的列只告警 —— 内存版没有 schema，允许库里留额外列。
+ * @throws {Error} 表不存在或补列失败
  */
 const validateColumns = async () => {
   const entries = SCHEMA_SPECS.map((spec) => ({
     table: spec.table,
     expected: Object.values(spec.columns)
-      .map((column) => column.col.toLowerCase())
-      .concat(['extra', 'seq']),
+      .map((column) => ({ col: column.col.toLowerCase(), type: column.type }))
+      // extra / seq 是 sqlStore 的公共列（seq 是自增主键），缺失不能自动补，只能报错
+      .concat([{ col: 'extra', type: 'json' }, { col: 'seq', type: null }]),
   }));
   const actual = await loadActualColumns(entries.map((entry) => entry.table).concat(SEQ_TABLE));
   const problems = [];
-  entries.forEach(({ table, expected }) => {
+  // eslint-disable-next-line no-restricted-syntax
+  for (const { table, expected } of entries) {
     const columns = actual[table.toLowerCase()];
     if (!columns) {
       problems.push(`表 ${table} 不存在`);
-      return;
+      // eslint-disable-next-line no-continue
+      continue;
     }
-    const missing = expected.filter((column) => !columns.includes(column));
-    if (missing.length) problems.push(`表 ${table} 缺少列: ${missing.join(', ')}`);
-    const extraColumns = columns.filter((column) => !expected.includes(column));
+    const missing = expected.filter((column) => !columns.includes(column.col));
+    // eslint-disable-next-line no-restricted-syntax
+    for (const column of missing) {
+      const ddlType = FALLBACK_COLUMN_TYPES[column.type];
+      if (!ddlType) {
+        problems.push(`表 ${table} 缺少列 ${column.col}`);
+        // eslint-disable-next-line no-continue
+        continue;
+      }
+      try {
+        // 表名 / 列名均来自本仓库内的 store 定义（不接受外部输入），标识符按 ` 包裹
+        // eslint-disable-next-line no-await-in-loop
+        await db.run(`ALTER TABLE \`${table}\` ADD COLUMN \`${column.col}\` ${ddlType} NULL`);
+        logger.warn('table %s missing column %s -> added as %s', table, column.col, ddlType);
+      } catch (err) {
+        problems.push(`表 ${table} 缺少列 ${column.col} 且自动补列失败: ${err.message}`);
+      }
+    }
+    const extraColumns = columns.filter((column) => !expected.some((item) => item.col === column));
     if (extraColumns.length) {
       logger.warn('table %s has columns not declared by the store: %s', table, extraColumns.join(', '));
     }
-  });
+  }
   if (problems.length) {
     throw new Error(`MySQL 表结构与仓储列定义不一致：\n  - ${problems.join('\n  - ')}`);
   }

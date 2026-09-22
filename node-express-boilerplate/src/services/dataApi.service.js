@@ -8,6 +8,9 @@
  */
 const crypto = require('crypto');
 const pick = require('../utils/pick');
+const config = require('../config/config');
+const dataQuery = require('../db/dataQuery');
+const sqlGuard = require('../db/sqlGuard');
 const dataApiRepository = require('../repositories/dataapi.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
 const taskInstanceService = require('./taskInstance.service');
@@ -18,6 +21,36 @@ const { ERROR_CODES, BIZ_CODE_BY_HTTP_STATUS } = require('../config/errorCodes')
 
 /** apiKey 前缀（契约示例 `dk-9f3a...`），后面接 32 位随机 hex */
 const API_KEY_PREFIX = 'dk-';
+
+/** 契约 1.9.2 允许的自定义 SQL 参数类型（boolean 只有 builder 用） */
+const CUSTOM_PARAM_TYPES = ['string', 'number', 'date', 'list'];
+
+/**
+ * DB_DRIVER=memory（演示模式）下的内置元数据（1.9.1）：
+ * 与 seed 里的 T_ORDER / T_ORDER_MIRROR 叙事保持一致，前端下拉与联调不至于空手。
+ */
+const MEMORY_META_TABLES = [
+  { name: 'T_ORDER', comment: '订单主表（演示）' },
+  { name: 'T_ORDER_ITEM', comment: '订单明细（演示）' },
+];
+
+const MEMORY_META_COLUMNS = {
+  T_ORDER: [
+    { name: 'ID', type: 'BIGINT', nullable: false, comment: '主键' },
+    { name: 'ORDER_NO', type: 'VARCHAR(32)', nullable: false, comment: '订单号' },
+    { name: 'CUSTOMER_NAME', type: 'VARCHAR(64)', nullable: true, comment: '客户名' },
+    { name: 'AMOUNT', type: 'DECIMAL(18,2)', nullable: true, comment: '金额' },
+    { name: 'STATUS', type: 'VARCHAR(16)', nullable: true, comment: '状态' },
+    { name: 'CREATED_AT', type: 'DATETIME', nullable: true, comment: '创建时间' },
+  ],
+  T_ORDER_ITEM: [
+    { name: 'ID', type: 'BIGINT', nullable: false, comment: '主键' },
+    { name: 'ORDER_ID', type: 'BIGINT', nullable: false, comment: '订单主表外键' },
+    { name: 'SKU', type: 'VARCHAR(64)', nullable: true, comment: '商品编码' },
+    { name: 'QTY', type: 'INT', nullable: true, comment: '数量' },
+    { name: 'PRICE', type: 'DECIMAL(18,2)', nullable: true, comment: '单价' },
+  ],
+};
 
 const getOrThrow = async (id) => {
   const api = await dataApiRepository.getById(id);
@@ -34,6 +67,8 @@ const normalizeBody = (body = {}) => {
     'tableName',
     'fields',
     'queryParams',
+    'sqlMode',
+    'customSql',
     'authEnabled',
     'rateLimitQps',
     'ipWhitelist',
@@ -43,25 +78,97 @@ const normalizeBody = (body = {}) => {
     payload.ipWhitelist = payload.ipWhitelist.map((item) => String(item).trim()).filter(Boolean);
   }
   if (payload.path) payload.path = String(payload.path).trim().replace(/^\/+/, '');
+  if (payload.customSql !== undefined) payload.customSql = String(payload.customSql || '').trim();
   return payload;
 };
 
-/** 定义校验：名称 / 路径唯一 / 数据源存在 / 至少一个返回字段（runtime 出数要按字段生成） */
+/** sqlMode 缺省按 builder（契约：builder 是默认模式） */
+const sqlModeOf = (api = {}) => (api.sqlMode === 'custom' ? 'custom' : 'builder');
+
+/**
+ * custom 模式的定义校验（契约 1.9.2 保存期红线）：
+ * 1) customSql 必填 + 只读（assertReadOnly：SELECT/WITH 开头、禁多语句、关键字黑名单）；
+ * 2) SQL 里的 :name 占位符集合 ⊆ queryParams 名单（多出来的参数只当未使用，不报错）；
+ * 3) queryParams[].type ∈ string|number|date|list，参数名不得重复。
+ * @returns {{ placeholders: string[] }}
+ */
+const assertCustomSql = (payload) => {
+  const sql = String(payload.customSql || '').trim();
+  if (!sql) throw paramInvalid('sqlMode=custom 时 customSql 必填');
+  const guard = sqlGuard.assertReadOnly(sql);
+  if (!guard.ok) throw paramInvalid(`customSql: ${guard.reason}`);
+  const declared = Array.isArray(payload.queryParams) ? payload.queryParams : [];
+  const names = declared.map((p) => p && p.name);
+  const duplicated = names.filter((name, index) => name && names.indexOf(name) !== index);
+  if (duplicated.length) throw paramInvalid(`queryParams 参数名重复: ${Array.from(new Set(duplicated)).join(', ')}`);
+  declared.forEach((p) => {
+    if (!CUSTOM_PARAM_TYPES.includes(p.type)) {
+      throw paramInvalid(`queryParams[${p.name}].type 仅支持 ${CUSTOM_PARAM_TYPES.join('|')}，当前: ${p.type}`);
+    }
+  });
+  const placeholders = sqlGuard.extractPlaceholders(sql);
+  const unknown = placeholders.filter((name) => !names.includes(name));
+  if (unknown.length) {
+    throw paramInvalid(`customSql 占位符未在 queryParams 声明: ${unknown.map((n) => `:${n}`).join(', ')}`);
+  }
+  return { placeholders };
+};
+
+/** 定义校验：名称 / 路径唯一 / 数据源存在 / 按 sqlMode 分别校验 builder 与 custom */
 const assertDefinition = async (payload, self) => {
   if (!payload.name) throw paramInvalid('name 必填');
   if (!payload.path) throw paramInvalid('path 必填（对外地址是 /ds/{path}）');
-  if (!payload.tableName) throw paramInvalid('tableName 必填');
   if (!payload.datasourceId) throw paramInvalid('datasourceId 必填');
   if (!(await datasourceRepository.getById(payload.datasourceId))) {
     throw paramInvalid(`datasourceId 对应的数据源不存在: ${payload.datasourceId}`);
   }
-  if (!Array.isArray(payload.fields) || !payload.fields.length) {
-    throw paramInvalid('fields 至少需要一个返回字段');
+  if (sqlModeOf(payload) === 'custom') {
+    assertCustomSql(payload);
+  } else {
+    // builder：维持现状 —— 表名 + 至少一个返回字段（runtime 出数要按字段生成）
+    if (!payload.tableName) throw paramInvalid('tableName 必填');
+    if (!Array.isArray(payload.fields) || !payload.fields.length) {
+      throw paramInvalid('fields 至少需要一个返回字段');
+    }
   }
   const occupied = await dataApiRepository.findByPath(payload.path);
   if (occupied && (!self || occupied.id !== self.id)) {
     throw paramInvalid(`path 已被数据服务 ${occupied.id} 占用: ${payload.path}`);
   }
+};
+
+/**
+ * 1.9.1 元数据浏览：真实模式（DB_DRIVER=mysql）按绑定数据源查 information_schema / ALL_*，
+ * 演示模式（memory）返回内置表。数据源不存在 → 40401。
+ * @param {Object} input { datasourceId, keyword }
+ */
+const listMetaTables = async ({ datasourceId, keyword } = {}) => {
+  if (!datasourceId) throw paramInvalid('datasourceId 必填');
+  const ds = await datasourceRepository.getById(datasourceId);
+  if (!ds) throw notFound(`数据源不存在: ${datasourceId}`);
+  if (!config.db.isMysql()) {
+    const text = String(keyword || '').trim().toUpperCase();
+    return text ? MEMORY_META_TABLES.filter((item) => item.name.includes(text)) : MEMORY_META_TABLES;
+  }
+  return dataQuery.listTables(ds, keyword);
+};
+
+/**
+ * 1.9.1 列清单。真实模式由 dataQuery 侧过 IDENT_RE 白名单 + 全绑定参数查询。
+ * @param {Object} input { datasourceId, tableName }
+ */
+const listMetaColumns = async ({ datasourceId, tableName } = {}) => {
+  if (!datasourceId) throw paramInvalid('datasourceId 必填');
+  if (!tableName) throw paramInvalid('tableName 必填');
+  const ds = await datasourceRepository.getById(datasourceId);
+  if (!ds) throw notFound(`数据源不存在: ${datasourceId}`);
+  if (!config.db.isMysql()) {
+    const key = String(tableName).toUpperCase().split('.').pop();
+    const columns = MEMORY_META_COLUMNS[key];
+    if (!columns) return [];
+    return columns;
+  }
+  return dataQuery.listColumns(ds, tableName);
 };
 
 /** 分页列表：keyword / status / datasourceId / sort */
@@ -82,6 +189,7 @@ const createDataApi = async (body) => {
   return dataApiRepository.create({
     method: 'GET',
     queryParams: [],
+    sqlMode: 'builder',
     authEnabled: true,
     rateLimitQps: 20,
     ipWhitelist: [],
@@ -121,6 +229,11 @@ const generateApiKey = () => `${API_KEY_PREFIX}${crypto.randomBytes(16).toString
  */
 const publishDataApi = async (id) => {
   const existing = await getOrThrow(id);
+  // 发布是「对外可达」的开关，这里再跑一次定义校验：直接改库把 customSql 换掉的场景也会被拦下
+  if (sqlModeOf(existing) === 'custom') assertCustomSql(existing);
+  else if (!existing.tableName || !(existing.fields || []).length) {
+    throw paramInvalid('builder 模式需要 tableName 与 fields 才能发布');
+  }
   const apiKey = existing.apiKey || generateApiKey();
   return dataApiRepository.update(id, {
     status: 'published',
@@ -211,10 +324,17 @@ const getStats = async (id) => {
 
 module.exports = {
   API_KEY_PREFIX,
+  CUSTOM_PARAM_TYPES,
+  MEMORY_META_TABLES,
+  MEMORY_META_COLUMNS,
   generateApiKey,
   queryDataApis,
   getDataApiById,
   getDataApiOrThrow: getOrThrow,
+  sqlModeOf,
+  assertCustomSql,
+  listMetaTables,
+  listMetaColumns,
   createDataApi,
   updateDataApiById,
   deleteDataApiById,

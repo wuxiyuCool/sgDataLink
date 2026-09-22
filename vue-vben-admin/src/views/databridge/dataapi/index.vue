@@ -60,7 +60,11 @@
             {{ record.tableName || '-' }}
           </template>
           <template v-else-if="column.key === 'fields'">
-            <Tooltip :title="getFieldsSummary(record.fields)">
+            <!-- custom 模式输出列由 SQL 结果集决定，fields 无意义（契约 1.9.2） -->
+            <Tooltip v-if="record.sqlMode === 'custom'" :title="record.customSql || '自定义 SQL'">
+              <Tag color="geekblue">SQL 模式</Tag>
+            </Tooltip>
+            <Tooltip v-else :title="getFieldsSummary(record.fields)">
               <span>{{ getFieldsSummary(record.fields) }}</span>
             </Tooltip>
           </template>

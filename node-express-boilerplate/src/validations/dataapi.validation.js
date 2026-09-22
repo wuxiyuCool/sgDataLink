@@ -8,8 +8,16 @@ const Joi = require('joi');
 
 const STATUSES = ['draft', 'published'];
 const METHODS = ['GET', 'POST'];
-/** 声明的查询参数支持的类型（只影响前端渲染，不参与 mock 出数） */
-const QUERY_TYPES = ['string', 'number', 'date', 'boolean'];
+/**
+ * 声明的查询参数支持的类型。
+ * string/number/date/list 是契约 1.9.2 的四种（list 值逗号分隔或重复参数，元素上限 1000）；
+ * boolean 只有 builder 模式用得上（等值过滤），custom 模式在 service 里再收口到前四种。
+ */
+const QUERY_TYPES = ['string', 'number', 'date', 'list', 'boolean'];
+/** 1.9.2 SQL 构建模式 */
+const SQL_MODES = ['builder', 'custom'];
+/** customSql 长度上限（与 sqlGuard.MAX_SQL_LENGTH 同值） */
+const MAX_SQL_LENGTH = 20000;
 /** 返回字段类型：允许 SQL 风格带精度，如 DECIMAL(18,2) / VARCHAR2(200) */
 const FIELD_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\(\s*\d+\s*(,\s*\d+\s*)?\))?$/;
 /** 白名单条目：IPv4（可带 * 后缀）、IPv6 字面量、localhost */
@@ -23,8 +31,22 @@ const field = Joi.object().keys({
   remark: Joi.string().trim().max(255).allow('', null),
 });
 
+/**
+ * 参数名要和 sqlGuard 的 `:name` 占位符解析对齐：字母/下划线开头 + 只允许字母数字下划线，
+ * 且不能含 list 展开用的 `__` 分隔符，也不能占用分页包装的 dbr_ 前缀绑定名。
+ */
+const PARAM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
 const queryParam = Joi.object().keys({
-  name: Joi.string().trim().min(1).max(128).required(),
+  name: Joi.string()
+    .trim()
+    .min(1)
+    .max(64)
+    .pattern(PARAM_NAME_PATTERN)
+    .custom((value, helpers) =>
+      value.includes('__') || /^dbr_/i.test(value) ? helpers.error('any.invalid') : value
+    )
+    .required(),
   type: Joi.string().valid(...QUERY_TYPES),
   required: Joi.boolean(),
   remark: Joi.string().trim().max(255).allow('', null),
@@ -43,6 +65,12 @@ const baseKeys = {
   tableName: Joi.string().trim().max(128),
   fields: Joi.array().items(field).max(200),
   queryParams: Joi.array().items(queryParam).max(100),
+  /** 1.9.2 builder（按 tableName+fields 拼 SELECT）| custom（执行 customSql） */
+  sqlMode: Joi.string().valid(...SQL_MODES),
+  customSql: Joi.string()
+    .trim()
+    .max(MAX_SQL_LENGTH)
+    .allow('', null),
   authEnabled: Joi.boolean(),
   rateLimitQps: Joi.number().integer().min(1).max(10000),
   ipWhitelist: Joi.array().items(Joi.string().trim().max(64).regex(IP_PATTERN)).max(200),
@@ -67,6 +95,11 @@ const getDataApi = {
   params: Joi.object().keys({ id }),
 };
 
+/**
+ * 创建：name/path/datasourceId 恒必填；
+ * tableName/fields 只在 builder 模式必填（custom 模式由 customSql 决定输出列），
+ * 两者的必填判定统一放在 services/dataApi.service.js 的 assertDefinition 里（能给出 40001 的中文原因）。
+ */
 const createDataApi = {
   body: Joi.object()
     .keys({
@@ -74,8 +107,9 @@ const createDataApi = {
       name: baseKeys.name.required(),
       path: baseKeys.path.required(),
       datasourceId: baseKeys.datasourceId.required(),
-      tableName: baseKeys.tableName.required(),
-      fields: baseKeys.fields.required().min(1),
+      tableName: baseKeys.tableName.when('sqlMode', { is: 'builder', then: baseKeys.tableName.required() }),
+      fields: baseKeys.fields.when('sqlMode', { is: 'builder', then: baseKeys.fields.required().min(1) }),
+      customSql: baseKeys.customSql.when('sqlMode', { is: 'custom', then: baseKeys.customSql.required() }),
     })
     .required(),
 };
@@ -118,10 +152,37 @@ const invokeDataApi = {
     .unknown(true),
 };
 
+/**
+ * 1.9.1 元数据浏览：GET /data-apis/meta/tables 与 /data-apis/meta/columns。
+ * tableName 走标识符白名单（sqlGuard/dataQuery 侧还会再校验一次），只接受单段或 schema.table。
+ */
+const listMetaTables = {
+  query: Joi.object()
+    .keys({
+      datasourceId: Joi.string().trim().max(64).required(),
+      keyword: Joi.string().trim().max(128).allow(''),
+    })
+    .unknown(true),
+};
+
+const listMetaColumns = {
+  query: Joi.object()
+    .keys({
+      datasourceId: Joi.string().trim().max(64).required(),
+      tableName: Joi.string()
+        .trim()
+        .max(128)
+        .pattern(/^[A-Za-z_][A-Za-z0-9_$]{0,63}(\.[A-Za-z_][A-Za-z0-9_$]{0,63})?$/)
+        .required(),
+    })
+    .unknown(true),
+};
+
 module.exports = {
   METHODS,
   STATUSES,
   QUERY_TYPES,
+  SQL_MODES,
   listDataApis,
   getDataApi,
   createDataApi,
@@ -130,4 +191,6 @@ module.exports = {
   publishDataApi,
   invokeDataApi,
   getDataApiStats,
+  listMetaTables,
+  listMetaColumns,
 };

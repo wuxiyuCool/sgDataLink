@@ -16,6 +16,12 @@ router
   .get(validate(dataApiValidation.listDataApis), dataApiController.getDataApis)
   .post(validate(dataApiValidation.createDataApi), dataApiController.createDataApi);
 
+/**
+ * 1.9.1 元数据浏览：**必须注册在 /:id 之前**，否则 'meta' 会被当成 :id 吃掉（→ 40401）。
+ */
+router.get('/meta/tables', validate(dataApiValidation.listMetaTables), dataApiController.listMetaTables);
+router.get('/meta/columns', validate(dataApiValidation.listMetaColumns), dataApiController.listMetaColumns);
+
 router.post('/:id/publish', validate(dataApiValidation.publishDataApi), dataApiController.publishDataApi);
 router.post('/:id/unpublish', validate(dataApiValidation.publishDataApi), dataApiController.unpublishDataApi);
 router.post('/:id/invoke', validate(dataApiValidation.invokeDataApi), dataApiController.invokeDataApi);
