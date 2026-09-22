@@ -181,6 +181,46 @@ const queryDataApis = (filter = {}, options = {}) =>
     size: options.size,
   });
 
+/**
+ * 调用明细的出参键（契约 1.9 GET /data-apis/calls 的 items[]）。
+ * 仓储里存的是脱敏后的 JSON 串 queryMasked，出参按契约改名成 query（前端只展示，不再解析成对象，
+ * 免得两套驱动因 JSON 截断而 parse 失败给出不一样的形状）。
+ */
+const CALL_ITEM_FIELDS = [
+  'id',
+  'apiId',
+  'apiName',
+  'path',
+  'method',
+  'httpStatus',
+  'bizCode',
+  'ok',
+  'latencyMs',
+  'ip',
+  'errorMsg',
+  'createdAt',
+];
+
+const toCallItem = (item = {}) => ({
+  ...pick(item, CALL_ITEM_FIELDS),
+  query: item.queryMasked === undefined ? null : item.queryMasked,
+});
+
+/** GET /data-apis/calls：调用明细分页，filter = { apiId, result: 'success'|'error', keyword } */
+const queryCalls = async (filter = {}, options = {}) => {
+  const result = await dataApiRepository.pageCalls({
+    apiId: filter.apiId,
+    result: filter.result,
+    keyword: filter.keyword,
+    page: options.page,
+    size: options.size,
+  });
+  return { ...result, items: (result.items || []).map(toCallItem) };
+};
+
+/** 明细聚合（契约 1.5 dataApiCallStats），调用方负责容错 */
+const getCallStats = () => dataApiRepository.callStats();
+
 const getDataApiById = (id) => getOrThrow(id);
 
 const createDataApi = async (body) => {
@@ -325,10 +365,14 @@ const getStats = async (id) => {
 module.exports = {
   API_KEY_PREFIX,
   CUSTOM_PARAM_TYPES,
+  CALL_ITEM_FIELDS,
   MEMORY_META_TABLES,
   MEMORY_META_COLUMNS,
   generateApiKey,
   queryDataApis,
+  queryCalls,
+  getCallStats,
+  toCallItem,
   getDataApiById,
   getDataApiOrThrow: getOrThrow,
   sqlModeOf,

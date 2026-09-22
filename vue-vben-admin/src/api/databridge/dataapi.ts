@@ -2,6 +2,8 @@ import { databridgeHttp } from './http'
 import type { DatabridgePageResult } from './model/commonModel'
 import type {
   DataApi,
+  DataApiCallItem,
+  DataApiCallPageParams,
   DataApiInvokeParams,
   DataApiInvokeResult,
   DataApiMetaColumnsParams,
@@ -16,6 +18,7 @@ import type {
 
 enum Api {
   DataApi = '/data-apis',
+  Calls = '/data-apis/calls',
   MetaTables = '/data-apis/meta/tables',
   MetaColumns = '/data-apis/meta/columns',
 }
@@ -25,6 +28,15 @@ enum Api {
  */
 export function getDataApiListApi(params: DataApiPageParams) {
   return databridgeHttp.get<DatabridgePageResult<DataApi>>({ url: Api.DataApi, params })
+}
+
+/**
+ * @description: 调用明细日志分页（契约 1.9）：GET /data-apis/calls
+ * 支持 apiId / result(success|error) / keyword 过滤，返回 { items, total }；
+ * 后端滚动保留最近 5000 条，query 中的 apiKey 已脱敏。
+ */
+export function getApiCallsApi(params: DataApiCallPageParams = {}) {
+  return databridgeHttp.get<DatabridgePageResult<DataApiCallItem>>({ url: Api.Calls, params })
 }
 
 /**

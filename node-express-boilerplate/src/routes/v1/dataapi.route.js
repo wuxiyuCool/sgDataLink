@@ -22,6 +22,11 @@ router
 router.get('/meta/tables', validate(dataApiValidation.listMetaTables), dataApiController.listMetaTables);
 router.get('/meta/columns', validate(dataApiValidation.listMetaColumns), dataApiController.listMetaColumns);
 
+/**
+ * 1.9 调用明细日志：同样**必须在 /:id 之前**，不然 'calls' 会被当成 id 查不到（→ 40401）。
+ */
+router.get('/calls', validate(dataApiValidation.listDataApiCalls), dataApiController.listDataApiCalls);
+
 router.post('/:id/publish', validate(dataApiValidation.publishDataApi), dataApiController.publishDataApi);
 router.post('/:id/unpublish', validate(dataApiValidation.publishDataApi), dataApiController.unpublishDataApi);
 router.post('/:id/invoke', validate(dataApiValidation.invokeDataApi), dataApiController.invokeDataApi);

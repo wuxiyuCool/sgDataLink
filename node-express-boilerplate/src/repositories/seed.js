@@ -524,12 +524,36 @@ const seedEntities = async (repos) => {
   callTrend.forEach((day) => {
     const date = utcDateDaysAgo(day.daysAgo);
     for (let index = 0; index < day.count; index += 1) {
-      calls.push({ latencyMs: 10 + (index % 9), ok: index >= day.count - day.errors, date });
+      // 每天末尾的 day.errors 条算失败（原先的判定反了：那样会把 count-errors 条记成错误，
+      // 明细日志上线后这个偏差会直接呈现在「调用明细」页上，所以顺手改对）
+      calls.push({ latencyMs: 10 + (index % 9), ok: index < day.count - day.errors, date });
     }
   });
   // memory 驱动下这些调用按顺序执行完（门面包装的同步实现不会让出事件循环）；
   // mysql 驱动下每条都是原子 UPDATE + 按天 upsert，顺序无关
   await Promise.all(calls.map((call) => dataApis.recordCall(dataApi.id, call)));
+  /**
+   * 同一批调用也写进明细日志（契约 1.9 GET /data-apis/calls、1.5 dataApiCallStats），
+   * 否则全新初始化的演示环境里「调用明细」页与调用统计卡都是空的，而列表页 invokeCount 却有数。
+   */
+  await Promise.all(
+    calls.map((call, index) =>
+      dataApis.addCall({
+        apiId: dataApi.id,
+        apiName: dataApi.name,
+        path: dataApi.path,
+        method: 'GET',
+        httpStatus: call.ok ? 200 : 401,
+        bizCode: call.ok ? null : 40101,
+        ok: call.ok,
+        latencyMs: call.latencyMs,
+        ip: '127.0.0.1',
+        queryMasked: JSON.stringify({ page: (index % 3) + 1, size: 20, apiKey: '***' }),
+        errorMsg: call.ok ? null : '未提供 API Key（请用 X-API-KEY 头或 apiKey 查询参数携带）',
+        createdAt: `${call.date}T09:15:00.000Z`,
+      })
+    )
+  );
   await dataApis.update(dataApi.id, { invokeCount: 138, errorCount: 2, avgLatencyMs: 14 });
 
   // 告警规则（1.10）+ 两条历史记录（一条已读、一条未读，便于演示 read 筛选与 PATCH）

@@ -80,6 +80,18 @@ const getDataApiStats = catchAsync(async (req, res) => {
 });
 
 /**
+ * GET /data-apis/calls —— 调用明细日志分页（契约 1.9）。
+ * filter：apiId（某一条服务）、result（success|error）、keyword（服务名 / 路径模糊）；
+ * 信封与列表页一致 { items, total, page, size, pages }。
+ */
+const listDataApiCalls = catchAsync(async (req, res) => {
+  const filter = pick(req.query, ['apiId', 'result', 'keyword']);
+  const options = pick(req.query, ['page', 'size']);
+  const result = await dataApiService.queryCalls(filter, options);
+  pageResult(res, result);
+});
+
+/**
  * GET /data-apis/meta/tables?datasourceId=&keyword= —— 1.9.1 表清单。
  * 真实模式查 information_schema / ALL_TABLES，演示模式返回内置表；数据源不存在 40401。
  */
@@ -104,6 +116,7 @@ module.exports = {
   unpublishDataApi,
   invokeDataApi,
   getDataApiStats,
+  listDataApiCalls,
   listMetaTables,
   listMetaColumns,
 };

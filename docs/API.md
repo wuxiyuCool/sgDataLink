@@ -280,11 +280,48 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
   "recentTrend": [
     { "date": "2026-09-15", "success": 4, "failed": 0 },
     { "date": "2026-09-16", "success": 5, "failed": 1 }
-  ]
+  ],
+  "datasourceTypes": [
+    { "type": "oracle", "count": 1 },
+    { "type": "mysql", "count": 2 },
+    { "type": "postgresql", "count": 0 }
+  ],
+  "taskModeDistribution": [
+    { "mode": "full", "count": 2 },
+    { "mode": "incremental", "count": 3 },
+    { "mode": "cdc", "count": 1 },
+    { "mode": "dataflow", "count": 1 }
+  ],
+  "runningPipelines": { "count": 1, "maxLagMs": 820 },
+  "topDataApis": [
+    { "id": "api-8001", "name": "订单查询服务", "path": "order-query", "invokeCount": 138, "errorCount": 2, "avgLatencyMs": 14 }
+  ],
+  "dataApiTotal": 4,
+  "publishedDataApis": 4,
+  "recentAlerts": [
+    { "id": "rec-9501", "level": "WARN", "targetName": "订单库实时镜像", "message": "数据管道 订单库实时镜像 同步延迟 7564ms，已超过告警阈值", "createdAt": "2026-09-22T04:18:20.995Z", "read": false }
+  ],
+  "recentLogs": [
+    { "id": "log-5001", "level": "INFO", "message": "捕获 58 条变更 (mock)", "instanceId": "inst-3101", "taskId": null, "createdAt": "2026-09-22T04:23:18.045Z", "taskName": "订单库实时镜像" }
+  ],
+  "todayRunning": 2,
+  "weekSuccessRate": 75
 }
 ```
 
-`recentTrend` 固定返回最近 7 天（含当天）按实例 `startedAt` 日期聚合的成败数量。
+- `recentTrend` 固定返回最近 7 天（含当天）按实例 `startedAt` 日期聚合的成败数量。
+
+`dataApiCallStats`（数据服务监控大屏用）：`{ total, success, error, errorRate(0-100 一位小数), avgLatencyMs, todaySuccess, todayError, dayTrend: [{date, success, error}] }`（dayTrend 最近 7 天，按调用明细日志聚合）。
+- 大盘新增字段（前端单接口取数，不再逐模块轮询列表页）：
+  - `datasourceTypes`：按数据源 `type` 分组计数，`oracle|mysql|postgresql` 三类恒定输出（计数为 0 也给出）。
+  - `taskModeDistribution`：`full|incremental` 取同步任务 `syncMode`，`cdc` 取数据管道总数，`dataflow` 取数据开发总数（四类恒定输出）。
+  - `runningPipelines`：`status=running` 的管道数与其中最大 `lagMs`；无运行管道时 `maxLagMs` 为 `null`（区别于「延迟 0ms」）。
+  - `topDataApis`：仅 `published`，按 `invokeCount` 降序前 5 条；`dataApiTotal` / `publishedDataApis` 为同一次查询算出的总量与已发布量（大盘 KPI 卡用，避免前端再打列表接口）。
+  - `recentAlerts`：告警记录（契约 1.10）最新 8 条，`read` 缺省按 `false` 输出。
+  - `recentLogs`：`run_log` 最新 15 条（`createdAt` 倒序）；`taskName` 为可选补充，由实例表反查，解析不到为 `null`。
+  - `todayRunning`：当前 running 实例数（任务 / 数据开发 / 管道实例同表，故恒等于 `runningInstances`，保留独立字段供大盘卡片区使用）。
+  - `weekSuccessRate`：`recentTrend` 7 天合计 `success/(success+failed)`，0-100 保留 1 位小数；7 天内无 success/failed 实例时为 `null`。
+- **容错约定**：以上 6 组子聚合各自独立 try/catch，任一数据源查询失败只回退成 `[]` / `{ count: 0, maxLagMs: null }` / `null` 并记 warn 日志，不影响 overview 整体返回。
 
 ### 1.6 实例触发方式补充
 
@@ -385,7 +422,9 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/data-apis` | 分页列表 |
-| GET / POST / PUT / DELETE | `/data-apis/:id` | CRUD |
+| GET | `/data-apis/calls` | **调用明细日志**分页：参数 `apiId?`、`result?`(`success|error`)、`keyword?`（服务名/路径）；item：`{id, apiId, apiName, path, method, httpStatus, bizCode, ok, latencyMs, ip, query, errorMsg, createdAt}`（query 中 apiKey 脱敏；表滚动保留最近 5000 条） |
+| GET | `/data-apis/:id` | CRUD |
+| POST / PUT / DELETE | `/data-apis/:id` | CRUD |
 | POST | `/data-apis/:id/publish` | 发布（生成 apiKey，状态 published） |
 | POST | `/data-apis/:id/unpublish` | 下线 |
 | POST | `/data-apis/:id/invoke` | 前端"调试"按钮代理调用（透传 runtime 结果） |

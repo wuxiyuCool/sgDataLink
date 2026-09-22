@@ -8,6 +8,8 @@ const Joi = require('joi');
 
 const STATUSES = ['draft', 'published'];
 const METHODS = ['GET', 'POST'];
+/** 1.9 调用明细的结果筛选：success -> ok=1，error -> ok=0 */
+const CALL_RESULTS = ['success', 'error'];
 /**
  * 声明的查询参数支持的类型。
  * string/number/date/list 是契约 1.9.2 的四种（list 值逗号分隔或重复参数，元素上限 1000）；
@@ -153,6 +155,22 @@ const invokeDataApi = {
 };
 
 /**
+ * 1.9 调用明细日志分页：GET /data-apis/calls（必须注册在 /:id 之前，见 routes/v1/dataapi.route.js）。
+ * result 只认 success|error（对应明细的 ok=1/0），keyword 打的是服务名与路径。
+ */
+const listDataApiCalls = {
+  query: Joi.object()
+    .keys({
+      apiId: Joi.string().trim().max(64),
+      result: Joi.string().valid(...CALL_RESULTS),
+      keyword: Joi.string().trim().max(64).allow(''),
+      page: Joi.number().integer().min(1),
+      size: Joi.number().integer().min(1).max(500),
+    })
+    .unknown(true),
+};
+
+/**
  * 1.9.1 元数据浏览：GET /data-apis/meta/tables 与 /data-apis/meta/columns。
  * tableName 走标识符白名单（sqlGuard/dataQuery 侧还会再校验一次），只接受单段或 schema.table。
  */
@@ -183,7 +201,9 @@ module.exports = {
   STATUSES,
   QUERY_TYPES,
   SQL_MODES,
+  CALL_RESULTS,
   listDataApis,
+  listDataApiCalls,
   getDataApi,
   createDataApi,
   updateDataApi,

@@ -13,7 +13,9 @@ import { getParentLayout, LAYOUT } from '/@/router/constant'
  *    占位组件本身不会被真实挂载，仅用于生成菜单层级。
  * 3. 分组内的叶子路由一律使用「绝对路径」（/databridge/xxx），并配合
  *    meta.hidePathForChildren，保证菜单缩进分组的同时不改变原有页面 URL
- *    （数据源、任务、映射、大盘、日志这 5 个历史路径保持不动）。
+ *    （数据源、任务、映射、日志这 4 个历史路径保持不动）。
+ * 4. 原「任务监控大盘」（/databridge/dashboard）已拆成四个大屏页，迁到
+ *    「可视化监控」菜单（/monitor/*，见 modules/dashboard.ts）。
  */
 const databridge: AppRouteModule = {
   path: '/databridge',
@@ -120,15 +122,6 @@ const databridge: AppRouteModule = {
         hidePathForChildren: true,
       },
       children: [
-        {
-          path: '/databridge/dashboard',
-          name: 'DatabridgeDashboard',
-          component: () => import('/@/views/databridge/dashboard/index.vue'),
-          meta: {
-            title: '任务监控大盘',
-            icon: 'ion:speedometer-outline',
-          },
-        },
         {
           path: '/databridge/log',
           name: 'DatabridgeLog',

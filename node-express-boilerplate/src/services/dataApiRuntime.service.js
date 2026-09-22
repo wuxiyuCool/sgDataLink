@@ -11,10 +11,16 @@
  * 失败一律抛带 bizCode 的 ApiError，由全局 errorHandler 渲染成统一信封 + 契约要求的 HTTP 状态码；
  * 管理端 POST /data-apis/:id/invoke 直接复用 invokeById（不经 HTTP 回环），
  * 把结果或错误信封原样透传给前端的「调试」按钮。
+ *
+ * 每次调用（成功与被拒都算）除了累加 invokeCount，还会写一条调用明细（契约 1.9 /calls）：
+ * 见 writeCallDetail —— query 里的 apiKey 只以 *** 形式落库，失败带 bizCode / HTTP 状态码 / errorMsg，
+ * 写明细自身失败只记 WARN，绝不影响本次调用的响应。
  */
 const { performance } = require('perf_hooks');
+const httpStatus = require('http-status');
 const logger = require('../config/logger');
 const config = require('../config/config');
+const { HTTP_STATUS_BY_CODE } = require('../config/errorCodes');
 const dataQuery = require('../db/dataQuery');
 const sqlGuard = require('../db/sqlGuard');
 const dataApiRepository = require('../repositories/dataapi.repository');
@@ -36,6 +42,14 @@ const API_KEY_HEADER = 'x-api-key';
 const DEFAULT_PAGE = 1;
 const DEFAULT_SIZE = 20;
 const MAX_SIZE = 500;
+
+/** 调用明细（契约 1.9 /calls）的字段口径：脱敏 query 与 errorMsg 的截断长度 */
+const QUERY_MASK_MAX = 1000;
+const ERROR_MSG_MAX = 500;
+/** query 里视为凭据的键（忽略大小写），值一律替换成 ***，绝不落库 */
+const SECRET_QUERY_KEYS = ['apikey', 'x-api-key'];
+const MASKED_VALUE = '***';
+const SUCCESS_HTTP_STATUS = 200;
 
 /** 进程级滑动窗口限流器（1s 窗口），key = dataApi id */
 const rateWindow = createRateWindow();
@@ -169,6 +183,61 @@ const buildResult = async (api, query = {}) => {
 };
 
 /**
+ * query 脱敏（契约 1.9：明细里的 query 不得含 apiKey 明文）：
+ * 浅拷贝一份，把 apiKey / X-API-Key 这类凭据键的值换成 ***，整体 JSON 串后截 QUERY_MASK_MAX。
+ * 序列化失败（循环引用等）只记 warn 返回 null，不能让一条明细写不出来影响业务响应。
+ * @returns {string|null}
+ */
+const maskQuery = (query = {}) => {
+  try {
+    const copy = { ...(query || {}) };
+    Object.keys(copy).forEach((key) => {
+      if (SECRET_QUERY_KEYS.includes(String(key).toLowerCase())) copy[key] = MASKED_VALUE;
+    });
+    const text = JSON.stringify(copy);
+    return text ? text.slice(0, QUERY_MASK_MAX) : null;
+  } catch (err) {
+    logger.warn('data api call detail query mask failed: %s', err.message);
+    return null;
+  }
+};
+
+/** 明细里的 HTTP 状态码：成功固定 200；失败优先取 err.statusCode（bizError 已按业务码推导） */
+const httpStatusOf = (err) =>
+  Number(err && (err.statusCode || HTTP_STATUS_BY_CODE[err.bizCode])) || httpStatus.INTERNAL_SERVER_ERROR;
+
+/**
+ * 写一条调用明细（契约 1.9 GET /data-apis/calls 的数据源）。
+ * 成功与被拒都写：成功 ok=true / httpStatus=200 / bizCode=null；
+ * 失败带 bizCode（40101/40301/42901/40404/50003…）、HTTP 状态码与 errorMsg（前 500 字）。
+ * 写失败只记 WARN —— 明细是旁路观测数据，绝不能把响应的业务码换掉或让请求挂掉。
+ * @param {Object|null} api dataApi 记录（path 未注册时为 null，只能记下请求的 path）
+ * @param {Object} ctx { ip, query, path }
+ * @param {Object} info { latencyMs, ok, err }
+ */
+const writeCallDetail = async (api, ctx = {}, { latencyMs = 0, ok = false, err = null } = {}) => {
+  const record = {
+    apiId: (api && api.id) || null,
+    apiName: (api && api.name) || null,
+    path: ctx.path || (api && api.path) || null,
+    method: (api && api.method) || 'GET',
+    httpStatus: ok ? SUCCESS_HTTP_STATUS : httpStatusOf(err),
+    bizCode: ok ? null : (err && err.bizCode) || null,
+    ok: Boolean(ok),
+    latencyMs,
+    ip: ctx.ip || null,
+    queryMasked: maskQuery(ctx.query),
+    errorMsg: ok || !err ? null : String(err.message || err).slice(0, ERROR_MSG_MAX),
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    await dataApiRepository.addCall(record);
+  } catch (writeErr) {
+    logger.warn('data api call detail write failed(%s %s): %s', record.path, record.httpStatus, writeErr.message);
+  }
+};
+
+/**
  * 网关主流程：校验 + 出数据 + 记统计（延迟用 performance.now 实测）。
  * 被拒的请求同样计入 invokeCount / errorCount，因为「确实有人打过来了」。
  * 统计写入是 await 的（mysql 驱动下要落库），但失败只记 WARN ——
@@ -181,14 +250,17 @@ const serve = async (api, ctx = {}) => {
   const started = performance.now();
   const query = ctx.query || {};
   let ok = true;
+  let failure = null;
   try {
     assertAccessible(api, { ...ctx, query });
     return await buildResult(api, query);
   } catch (err) {
     ok = false;
     // 带 bizCode 的（鉴权/限流/未发布等）原样抛出；驱动层抛出的连接/SQL 错误统一包装为 50003
-    if (!err.bizCode) throw dataQueryFailed(`真实查询失败(${api.datasourceId} ${err.code || err.errorNum || ''}): ${err.message}`);
-    throw err;
+    failure = err.bizCode
+      ? err
+      : dataQueryFailed(`真实查询失败(${api.datasourceId} ${err.code || err.errorNum || ''}): ${err.message}`);
+    throw failure;
   } finally {
     const latencyMs = Math.round((performance.now() - started) * 100) / 100;
     try {
@@ -197,32 +269,56 @@ const serve = async (api, ctx = {}) => {
     } catch (err) {
       logger.warn('data api %s recordCall failed: %s', api.id, err.message);
     }
+    // 调用明细（契约 1.9 /calls）：失败原因取抛出链上最终那个 err（未包装时即 failure 本身）
+    await writeCallDetail(api, { ...ctx, query }, { latencyMs, ok, err: failure });
   }
 };
 
 /**
  * 运行时入口：GET /ds/:path。path 不存在或未发布 → 404 / 40404（不暴露是否存在，统一文案）。
+ * 这类请求压根没进 serve（没有 api 记录可累加），所以在这里单独补一条明细，
+ * 否则「有人打了个不存在的地址」在调用日志里完全是隐身的。
  */
 const invokeByPath = async (path, ctx = {}) => {
+  const started = performance.now();
+  const requestCtx = { ...ctx, path };
   const api = await dataApiRepository.findByPath(path);
   if (!api || api.status !== 'published') {
-    throw dataApiNotFound(`数据服务不存在或未发布: /ds/${path}`);
+    const err = dataApiNotFound(`数据服务不存在或未发布: /ds/${path}`);
+    await writeCallDetail(api, requestCtx, {
+      latencyMs: Math.round((performance.now() - started) * 100) / 100,
+      ok: false,
+      err,
+    });
+    throw err;
   }
-  return serve(api, ctx);
+  return serve(api, requestCtx);
 };
 
-/** 管理端「调试」入口：按 id 走同一套网关逻辑 */
+/** 管理端「调试」入口：按 id 走同一套网关逻辑（未发布同样补一条明细后抛错） */
 const invokeById = async (id, ctx = {}) => {
+  const started = performance.now();
   const api = await dataApiRepository.getById(id);
   if (!api) throw dataApiNotFound(`数据服务不存在: ${id}`);
-  if (api.status !== 'published') throw dataApiNotFound(`数据服务未发布，无法调用: ${api.path}`);
-  return serve(api, ctx);
+  const requestCtx = { ...ctx, path: api.path };
+  if (api.status !== 'published') {
+    const err = dataApiNotFound(`数据服务未发布，无法调用: ${api.path}`);
+    await writeCallDetail(api, requestCtx, {
+      latencyMs: Math.round((performance.now() - started) * 100) / 100,
+      ok: false,
+      err,
+    });
+    throw err;
+  }
+  return serve(api, requestCtx);
 };
 
 module.exports = {
   API_KEY_HEADER,
   DEFAULT_SIZE,
   MAX_SIZE,
+  QUERY_MASK_MAX,
+  ERROR_MSG_MAX,
   rateWindow,
   normalizeIp,
   clientIpOf,
@@ -232,6 +328,8 @@ module.exports = {
   deriveMockFields,
   buildResult,
   assertAccessible,
+  maskQuery,
+  writeCallDetail,
   serve,
   invokeByPath,
   invokeById,

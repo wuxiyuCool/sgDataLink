@@ -250,6 +250,34 @@ CREATE TABLE IF NOT EXISTS `databridge_data_api_call_day` (
   KEY `idx_call_day_date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- 数据服务调用明细日志（契约 1.9 GET /data-apis/calls）--------------------------------
+-- 与 call_day（按天计数）互补：日计数表喂 /data-apis/:id/stats 的 recentTrend，
+-- 本表存每次调用的明细（含被拒的请求），滚动保留最近 MAX_CALL_DETAILS 条
+-- （插入侧每 50 次触发一条 DELETE，见 mysql/dataapi.store.js 的 pruneCallDetails）。
+-- query_masked 是脱敏后 query 的 JSON 串（apiKey 值已替换为 ***），error_msg 只存前 500 字。
+CREATE TABLE IF NOT EXISTS `databridge_data_api_call` (
+  `seq`          BIGINT        NOT NULL AUTO_INCREMENT,
+  `id`           VARCHAR(64)   NOT NULL COMMENT 'call- 前缀 + UUID（明细量大且不对外寻址，不回查 databridge_id_seq）',
+  `api_id`       VARCHAR(64)   NULL COMMENT '路径不存在时未知，为 NULL',
+  `api_name`     VARCHAR(128)  NULL,
+  `path`         VARCHAR(128)  NULL COMMENT '请求的运行时路径片段（/ds/{path}），未注册的 path 也照记',
+  `method`       VARCHAR(8)    NULL,
+  `http_status`  INT           NULL COMMENT '200 或契约 1.9 的 401/403/404/429/502',
+  `biz_code`     INT           NULL COMMENT '业务码，成功为 NULL',
+  `ok`           TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1 成功 0 失败（含被网关拒绝）',
+  `latency_ms`   DECIMAL(10,2) NULL,
+  `ip`           VARCHAR(64)   NULL,
+  `query_masked` VARCHAR(1000) NULL COMMENT '脱敏 query 的 JSON 串',
+  `error_msg`    VARCHAR(500)  NULL,
+  `created_at`   DATETIME(3)   NULL,
+  `extra`        JSON          NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_dataapicall_id` (`id`),
+  KEY `idx_dataapicall_api_created` (`api_id`, `created_at`),
+  KEY `idx_dataapicall_ok` (`ok`),
+  KEY `idx_dataapicall_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 告警规则（契约 1.10）-------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `databridge_alert_rule` (
   `id`                VARCHAR(64)  NOT NULL,

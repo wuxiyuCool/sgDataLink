@@ -110,6 +110,39 @@ export interface DataApiPageParams extends DatabridgePageParams {
   datasourceId?: string
 }
 
+/** 调用明细结果筛选（契约 1.9 GET /data-apis/calls?result=） */
+export type DataApiCallResult = 'success' | 'error'
+
+/**
+ * 调用明细日志单项（契约 1.9 GET /data-apis/calls 的 items[]）。
+ * 后端滚动保留最近 5000 条，query 中的 apiKey 已脱敏。
+ */
+export interface DataApiCallItem {
+  id: string
+  apiId: string
+  apiName?: string | null
+  /** 运行时路径片段，对应 GET /ds/{path} */
+  path?: string | null
+  method?: DataApiMethod | string | null
+  /** 运行时 HTTP 状态码（200/401/403/429/404/502…） */
+  httpStatus?: number | string | null
+  /** 业务码：0 成功，其余为契约 1.9 定义的错误码（40101/42901/50003 等） */
+  bizCode?: number | string | null
+  ok?: boolean | null
+  latencyMs?: number | null
+  ip?: string | null
+  /** 请求 query 摘要（apiKey 已脱敏） */
+  query?: string | null
+  errorMsg?: string | null
+  createdAt?: string | null
+}
+
+/** GET /data-apis/calls 请求参数（契约 1.9） */
+export interface DataApiCallPageParams extends DatabridgePageParams {
+  apiId?: string
+  result?: DataApiCallResult
+}
+
 /**
  * POST /data-apis/:id/publish 返回：契约只保证状态变为 published，
  * 完整 apiKey 仅此次返回，前端一次性弹窗展示
