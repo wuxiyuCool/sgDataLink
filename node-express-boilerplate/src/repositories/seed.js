@@ -9,8 +9,8 @@
  *
  * 调用点（src/index.js）：
  * - DB_DRIVER=memory：启动即注入（原行为，只是改成 await）；
- * - DB_DRIVER=mysql ：建表后若 databridge_datasource 是空表才注入一次，
- *                     有数据就跳过（幂等，重启不会重复插）。
+ * - DB_DRIVER=mysql ：默认 **不注入**（契约 4.1「空库起步」），只有显式 SEED_DEMO=true 才走这里，
+ *                     且仍然保留「已有数据即跳过」的幂等保护。
  *
  * 只有 MEM_MOCK=false 且 DB_DRIVER=memory（即走脚手架的 MongoDB 分支）时不注入。
  */
@@ -423,6 +423,9 @@ const seedEntities = async (repos) => {
     targetId: targetMysqlDs.id,
     syncObjects: ['APP_USER.T_ORDER', 'APP_USER.T_ORDER_ITEM'],
     ddlPolicy: 'ignore',
+    // 契约 1.7 / 5：真实 cdc 是「按轮询列增量拉取」，这两个字段就是轮询列与轮询间隔（秒）
+    cdcPollColumn: 'UPDATE_TIME',
+    pollIntervalSec: 5,
     status: 'running',
     runningInstanceId: 'inst-3101',
     lastError: null,
@@ -620,11 +623,19 @@ const hasSeedData = async () => {
 
 /**
  * 注入种子数据（幂等：已有数据则跳过）。
+ *
+ * 契约 4.1：演示实体（假数据源 / 任务 / 管道 / 画布 / DataAPI / 告警）只在
+ * `DB_DRIVER=memory` 或显式 `SEED_DEMO=true` 时注入；mysql 模式默认空库起步，
+ * 这样生产测试库里出现的每一条记录都是用户真实配置或真实执行产物。
  * @returns {Promise<boolean>} 是否执行了注入
  */
 const seedMockData = async () => {
   if (!config.memMock && config.db.driver !== 'mysql') {
     logger.info('seed skipped: not in memory-mock mode and driver is %s', config.db.driver);
+    return false;
+  }
+  if (!config.seedDemo) {
+    logger.info('seed skipped: SEED_DEMO=false（不注入演示数据，driver=%s）', config.db.driver);
     return false;
   }
   if (await hasSeedData()) {

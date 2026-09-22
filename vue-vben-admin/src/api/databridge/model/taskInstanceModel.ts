@@ -1,5 +1,6 @@
 import type {
   DatabridgePageParams,
+  ExecMode,
   InstanceStatus,
   InstanceTrigger,
   LogLevel,
@@ -17,6 +18,11 @@ export interface TaskInstance {
   status: InstanceStatus | TaskLastStatus
   /** 触发方式（契约 1.6）：manual | cron | retry */
   trigger?: InstanceTrigger
+  /**
+   * 执行模式（契约 4.1）：real 真实读写 / simulate 模拟执行。
+   * 老数据可能不带该字段，前端按「未知」处理（不显示标识 Tag）。
+   */
+  execMode?: ExecMode
   progress?: number
   totalRows?: number
   readRows?: number

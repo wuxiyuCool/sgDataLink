@@ -77,6 +77,19 @@ yarn install            # 或 pnpm install
 yarn dev                # vite 代理 /api/v1 -> http://127.0.0.1:3001
 ```
 
+### 存储层开关（MySQL 持久化 ↔ 内存 Mock）
+
+Node 管理后端支持双驱动（仓储门面按 `DB_DRIVER` 选择实现，service 层无感）：
+
+- `DB_DRIVER=mysql`：10+ 张 `databridge_*` 表真实落库（内网 `10.45.34.222/dataLink`）；**空库起步、不注入任何演示数据**（契约 4.1，`SEED_DEMO=true` 可强制注入）；历史演示行用 `yarn db:cleanup` 清除
+- `DB_DRIVER=memory`（默认）：纯内存 + 种子数据，行为与 Mock 阶段一致
+- 后端也可用脚本直接指定：`yarn dev:mysql` / `yarn dev:memory`
+- 当前模式查看：`GET /api/v1/health` 的 `storage` 字段（前端大盘服务状态 Tag 同步展示"MySQL 持久化 / 内存 mock"）
+
+### 执行层开关（真实同步 ↔ 模拟，引擎 mode）
+
+`DB_DRIVER=mysql` 且源/目标类型 ∈ {mysql, oracle} 时，任务/管道/数据开发自动走**真实数据库读写**（Go 引擎 `mode:"real"`，go-ora 纯 Go 驱动免装 Oracle 客户端）：全量分批拷贝、增量位点推进、管道按轮询列定时拉取；实例带 `execMode:"real"`。不满足条件（如 postgresql、管道未配轮询列、memory 模式）自动降级 `simulate` 并在实例日志中 WARN 标注，前端列表有「真实/模拟」Tag。详见 `databridge-engine/README.md` 与契约第 5 节。
+
 ## 3. 功能清单（Mock 行为，对标 FineDataLink 四大模块）
 
 ### 数据集成

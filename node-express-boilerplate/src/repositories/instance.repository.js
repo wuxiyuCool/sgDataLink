@@ -62,6 +62,8 @@ const create = (data) => {
     retryAttempt: 0,
     /** 数据管道（cdc）实例携带，task / dataflow 实例为 null */
     pipelineId: null,
+    /** 契约 1.3：本次运行是真实读写（real）还是模拟推进（simulate），由 run.service 判定后写入 */
+    execMode: 'simulate',
     finishedAt: null,
     message: null,
     ...data,

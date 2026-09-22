@@ -171,6 +171,22 @@ curl -s -X POST $B/api/v1/engine/tasks/start -H 'Content-Type: application/json'
 }
 ```
 
+## 真实同步模式（mode:"real"，已实现）
+
+start 快照带 `mode:"real"` 时走 `internal/service/real_runner.go` + `internal/infra/dbio/`
+（`go-sql-driver/mysql` + `go-ora/v2` 纯 Go 驱动，Oracle 免装 Instant Client）：
+
+| 模式 | 行为 |
+|------|------|
+| full | `COUNT(*)` 定总量 → 主键/ROWNUM 分批读 → 事务批量写；writeMode insert/overwrite/upsert（mysql `ON DUPLICATE KEY UPDATE`、oracle `MERGE INTO`） |
+| incremental | `WHERE incrCol > 位点 ORDER BY incrCol` 分批，完成回报最终 `currentOffset` |
+| cdc（管道） | 按 `cdcPollColumn` 每 `pollIntervalSec` 秒轮询增量拉取（非日志挖掘），无限运行直至 stop，changeRows/qps/lagMs/位点实时回报 |
+
+安全：列名走标识符白名单 + 方言引号转义，值全部绑定参数（不拼 SQL 字面量）；连接密码仅进程内使用，不回报、不落日志；SQL 错误回报 `failed` + 数据库原始错误（截 500 字）。
+`simulate` 模式（无 mode 字段/memory 驱动/不支持的类型，如 postgresql、未配轮询列的管道）行为与 Mock 阶段完全一致。
+
+已验证（内网真库）：mysql→mysql 全量 2500 行校验和一致；增量补差 2 行且位点持久化；cdc 轮询管道实时捕获 3 行；**oracle→mysql 真实镜像 9 行**（go-ora）。
+
 ## 第二阶段替换点
 
 service 层**只依赖接口**、handler 层**只做校验与响应封装**，接真实数据源时这两层代码不动：

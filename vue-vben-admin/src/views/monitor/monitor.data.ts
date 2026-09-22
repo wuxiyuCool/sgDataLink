@@ -211,7 +211,7 @@ export const runningInstanceColumns: TableColumn[] = [
   { title: '运行实例', dataIndex: 'id', key: 'id', width: 120 },
   { title: '名称 / 归属', dataIndex: 'taskName', key: 'name', width: 220, ellipsis: true },
   { title: '模式', dataIndex: 'syncMode', key: 'syncMode', width: 110 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
+  { title: '状态', dataIndex: 'status', key: 'status', width: 165 },
   { title: '进度', key: 'progress', width: 170 },
   { title: '读 / 写(变更)行数', key: 'rows', width: 170 },
   { title: '速率', key: 'rate', width: 120, align: 'right' },

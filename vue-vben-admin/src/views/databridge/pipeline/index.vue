@@ -62,7 +62,7 @@
         :data-source="dataSource"
         :loading="loading"
         :pagination="getPagination"
-        :scroll="{ x: 1880 }"
+        :scroll="{ x: 2040 }"
         row-key="id"
         size="middle"
         @change="handleTableChange"
@@ -105,6 +105,21 @@
           </template>
           <template v-else-if="column.key === 'cdcPosition'">
             <span class="offset-text">{{ (isRunning(record) && record.cdcPosition) || '-' }}</span>
+          </template>
+          <template v-else-if="column.key === 'pollConfig'">
+            <Tooltip
+              :title="
+                record.cdcPollColumn
+                  ? `真实模式按 ${record.cdcPollColumn} 每 ${
+                      record.pollIntervalSec ?? DEFAULT_POLL_INTERVAL_SEC
+                    } 秒拉一轮增量`
+                  : '未配置增量轮询列，引擎无法做真实增量拉取，本次执行按模拟处理'
+              "
+            >
+              <span :class="record.cdcPollColumn ? '' : 'poll-missing'">{{
+                getPollConfigSummary(record.cdcPollColumn, record.pollIntervalSec)
+              }}</span>
+            </Tooltip>
           </template>
           <template v-else-if="column.key === 'lastError'">
             <Tooltip v-if="record.lastError" :title="record.lastError">
@@ -212,7 +227,7 @@
     getPipelineStatusLabel,
     isLagOverThreshold,
   } from '../data'
-  import { pipelineColumns } from './pipeline.data'
+  import { DEFAULT_POLL_INTERVAL_SEC, getPollConfigSummary, pipelineColumns } from './pipeline.data'
   import PipelineModal from './PipelineModal.vue'
 
   const FormItem = Form.Item
@@ -417,5 +432,10 @@
   .lag-danger {
     color: #cf1322;
     font-weight: 600;
+  }
+
+  /* 未配置增量轮询列：该管道无法真实增量拉取，弱化提示为待补齐 */
+  .poll-missing {
+    color: #fa8c16;
   }
 </style>

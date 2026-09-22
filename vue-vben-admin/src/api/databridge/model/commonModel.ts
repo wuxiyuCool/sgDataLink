@@ -40,6 +40,12 @@ export type InstanceStatus = 'running' | 'success' | 'failed' | 'stopped'
 /** 实例触发方式（契约 1.6）：手动 / 定时调度 / 失败重试 */
 export type InstanceTrigger = 'manual' | 'cron' | 'retry'
 
+/**
+ * 执行模式（契约 4.1 / 5）：Node 下发引擎快照时判定并写入实例。
+ * real 为真实读写，simulate 为模拟执行（DB_DRIVER=memory 或端点类型/驱动不支持真实读写）。
+ */
+export type ExecMode = 'real' | 'simulate'
+
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR'
 
 /** 写入冲突策略 */

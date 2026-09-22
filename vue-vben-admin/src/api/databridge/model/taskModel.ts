@@ -1,6 +1,7 @@
 import type {
   DatabridgePageParams,
   EnabledStatus,
+  ExecMode,
   InstanceTrigger,
   SyncMode,
   TaskLastStatus,
@@ -65,6 +66,11 @@ export interface Task {
    * 取该任务最近一次运行实例的 trigger，后端任务对象不含该字段
    */
   latestTrigger?: InstanceTrigger
+  /**
+   * 列表页与 latestTrigger 同一次 GET /task-instances 聚合：
+   * 最近一次运行实例的执行模式（契约 4.1），用于「模拟」标识 Tag，后端任务对象不含该字段
+   */
+  latestExecMode?: ExecMode
   /** 任务状态，部分后端版本会返回，缺失时以 lastStatus 兜底 */
   status?: TaskLastStatus | EnabledStatus
 }

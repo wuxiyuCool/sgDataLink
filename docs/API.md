@@ -155,6 +155,7 @@
   "taskId": "task-2001",
   "instanceId": "inst-3001",
   "status": "running",
+  "execMode": "real",
   "progress": 46,
   "totalRows": 100000,
   "readRows": 46000,
@@ -166,6 +167,8 @@
   "message": null
 }
 ```
+
+- `execMode` 取自最新实例（见 1.3）；该任务还没有实例时为 `null`。
 
 ### 1.3 任务运行实例 `/task-instances`
 
@@ -185,6 +188,7 @@
   "taskName": "订单表全量同步",
   "syncMode": "full",
   "status": "running",
+  "execMode": "real",
   "progress": 46,
   "totalRows": 100000,
   "readRows": 46000,
@@ -194,6 +198,11 @@
   "message": null
 }
 ```
+
+- `execMode`：`real`（引擎真实读写源/目标库）| `simulate`（引擎按第 2 节 Mock 规格模拟推进）| `null`
+  （本次改造之前落库的历史实例，没有该列）。判定规则见 4.1，字段随实例列表/详情/进度一并返回。
+- `DB_DRIVER=mysql` 下 `simulate` 的实例会额外写一条 WARN 日志
+  「本次为模拟执行（数据源类型或驱动不支持真实读写）」，供实例日志页与「模拟」Tag 使用。
 
 日志对象：
 
@@ -352,6 +361,8 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
   "targetId": "ds-1002",
   "syncObjects": ["APP_USER.T_ORDER", "APP_USER.T_ORDER_ITEM"],
   "ddlPolicy": "ignore",
+  "cdcPollColumn": "UPDATE_TIME",
+  "pollIntervalSec": 5,
   "status": "running",
   "runningInstanceId": "inst-3101",
   "lastError": null,
@@ -359,6 +370,11 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
   "updatedAt": "2026-09-01T08:00:00Z"
 }
 ```
+
+- `cdcPollColumn`（`string|null`，最长 128）：真实 cdc 的轮询增量列（时间列 / 自增列，见第 5 节），
+  `null` 表示未配置；仅 `mode:"real"` 的快照会把它连同 `pollIntervalSec` 下发给引擎。
+- `pollIntervalSec`（`number`，整数 1~3600，默认 `5`）：每多少秒拉一轮增量。
+  两项在 simulate 模式下被引擎忽略（模拟链路不读库）。
 
 `ddlPolicy`：`ignore|report`（DDL 变更策略占位）。`GET /pipelines/:id/status` 响应 `result`：
 
@@ -371,9 +387,14 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
   "currentQps": 46,
   "lagMs": 820,
   "cdcPosition": "SCN=28461937451",
+  "cdcPollColumn": "UPDATE_TIME",
+  "pollIntervalSec": 5,
+  "execMode": "real",
   "startedAt": "2026-09-19T01:00:00Z"
 }
 ```
+
+- `execMode` 取该管道运行中实例的执行模式，管道已停止时退到最近一次实例（都没有则 `null`）。
 
 ### 1.8 数据开发（ETL 编排）`/dataflows`
 
@@ -650,7 +671,7 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效） |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效） |
 | databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS` |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
 
@@ -658,8 +679,26 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 （datasource / sync_task / task_instance / run_log / offset / pipeline / dataflow / data_api /
 data_api_call_day / alert_rule / alert_record + `databridge_id_seq` 取号表），
 启动时逐表 `CREATE TABLE IF NOT EXISTS`（MySQL 5.7+，逐表显式 `utf8mb4 / utf8mb4_unicode_ci`），
-并只在 `databridge_datasource` 为空表时注入上表所列的种子数据；
+**默认不注入演示种子**（空库起步，见 4.1；`SEED_DEMO=true` 才注入，且仍受「已有数据即跳过」的幂等保护）；
 接口路径、出入参结构与错误码与 `DB_DRIVER=memory` 完全一致（契约不变），
 差异只有：时间统一按 `YYYY-MM-DDTHH:mm:ss.sssZ` 回显、`POST /datasources/{id,}/test` 对
 `type=mysql` 的数据源改为真实建连测试。滑动窗口限流计数、调度器 `lastTriggerAt`、
 失败重试排程定时器仍是内存态。表清单与启动步骤见 `node-express-boilerplate/README.md` 第 3.1 节。
+
+### 4.1 演示种子与去 mock 语义（2026-09-22 起生效）
+
+- 演示种子（假数据源/任务/管道/画布/DataAPI/告警等）**仅 `DB_DRIVER=memory` 注入**；`DB_DRIVER=mysql` 启动为空库起步，接口返回的全部是用户真实配置与真实执行数据。`SEED_DEMO=true` 可显式覆盖（特殊调试用）。
+- 历史库中已注入的演示行用 `yarn db:cleanup`（`src/db/cleanup-demo.js`）按固定演示 ID 清单一次性清除，不碰用户数据。
+- 执行模式判定（Node 下发引擎快照时决定并写入 `mode` 字段）：`DB_DRIVER=mysql` 且源/目标类型均 ∈ {mysql, oracle} → `mode:"real"` 真实读写；否则 `mode:"simulate"` 模拟执行。模拟执行的实例会写一条 WARN 日志「本次为模拟执行」，前端任务/管道列表显示「模拟」Tag。
+- 数据开发画布：**保存允许草稿态**（input/output 节点可暂缺 config.datasourceId/table），`run` 时才强制端点配置完整（40001）。
+
+## 5. 引擎真实同步模式（start 快照 `mode:"real"`）
+
+真实模式下 Node 快照的 `source/target` 携带完整连接信息（含明文 password，仅内网进程间传输、引擎不落日志），并附 `table`、`fieldMappings`、`incrementalColumn`（增量）、`cdcPollColumn`/`pollIntervalSec`（管道轮询）：
+
+- **驱动**：mysql → `go-sql-driver/mysql`；oracle → `go-ora`（纯 Go，免 Instant Client）。
+- **full**：`COUNT(*)` 定总量 → 按主键/ROWNUM 分批读（批大小 `batchSize`）→ 事务批量写目标表。`writeMode`：`insert` 批插；`overwrite` 先清空目标表；`upsert` mysql `ON DUPLICATE KEY UPDATE`、oracle `MERGE INTO`（依赖 primaryKey 映射）。
+- **incremental**：`WHERE incrCol > :offset ORDER BY incrCol` 循环拉批写入，位点=批内最大值，完成回报最终 `currentOffset`；起始位点取 Node 下发的 `offsetStart`（上次持久化值，可空）。
+- **cdc（管道）**：非日志挖掘——按 `cdcPollColumn` 每 `pollIntervalSec` 秒一轮增量拉取，无限运行直至 stop；changeRows=累计写入行数、qps=近一轮均值、lagMs=本轮处理耗时、位点持久化在实例内并随 report 回报 `cdcPosition`。
+- 真实模式进度/行数/日志全部来自真实执行；SQL 错误回报 `failed` + 数据库原始错误（截 500 字）。凭据仅在引擎进程内使用，不回报、不落日志。
+- `simulate` 模式行为与旧契约第 2 节完全一致（memory 驱动或端点类型不支持时使用）。

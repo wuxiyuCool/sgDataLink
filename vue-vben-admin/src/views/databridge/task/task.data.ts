@@ -27,7 +27,7 @@ export const taskColumns: TableColumn[] = [
   { title: '增量列', dataIndex: 'incrementalColumn', key: 'incrementalColumn', width: 130 },
   { title: '批量/写入', key: 'batchWrite', width: 150 },
   { title: '调度', key: 'scheduleCron', width: 190 },
-  { title: '最近状态', dataIndex: 'lastStatus', key: 'lastStatus', width: 100 },
+  { title: '最近状态', dataIndex: 'lastStatus', key: 'lastStatus', width: 150 },
   {
     // 契约 1.6：列表接口不返回 trigger，由前端用 GET /task-instances 聚合最近一次实例
     title: '触发方式',

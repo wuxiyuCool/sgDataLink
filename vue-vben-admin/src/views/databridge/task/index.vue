@@ -1,7 +1,7 @@
 <template>
   <PageWrapper
     title="同步任务管理"
-    content="创建全量/增量同步任务，支持启动、停止、调度配置（cron + 失败重试）与字段映射转换；「触发方式」列取最近一次运行实例的 trigger（manual/cron/retry）；运行中的任务禁止编辑与删除（后端返回 40003）"
+    content="创建全量/增量同步任务，支持启动、停止、调度配置（cron + 失败重试）与字段映射转换；「触发方式」列取最近一次运行实例的 trigger（manual/cron/retry），最近状态旁的「模拟」Tag 表示该次执行未做真实读写（契约 4.1）；运行中的任务禁止编辑与删除（后端返回 40003）"
   >
     <Card :bordered="false" class="mb-3">
       <Form :model="query" layout="inline" @finish="handleSearch">
@@ -59,7 +59,7 @@
         :data-source="dataSource"
         :loading="loading"
         :pagination="getPagination"
-        :scroll="{ x: 1860 }"
+        :scroll="{ x: 1910 }"
         row-key="id"
         size="middle"
         @change="handleTableChange"
@@ -83,9 +83,17 @@
             <Tag v-else>手动</Tag>
           </template>
           <template v-else-if="column.key === 'lastStatus'">
-            <Tag :color="getTaskStatusColor(record.lastStatus)">
-              {{ getTaskStatusLabel(record.lastStatus) }}
-            </Tag>
+            <Space :size="4">
+              <Tag :color="getTaskStatusColor(record.lastStatus)">
+                {{ getTaskStatusLabel(record.lastStatus) }}
+              </Tag>
+              <!-- 列宽有限，真实执行不加标识，只把「模拟」这一例外标出来（契约 4.1） -->
+              <Tooltip v-if="isSimulateExec(record.latestExecMode)" :title="EXEC_MODE_SIMULATE_TIP">
+                <Tag :color="getExecModeColor(record.latestExecMode)">
+                  {{ getExecModeLabel(record.latestExecMode) }}
+                </Tag>
+              </Tooltip>
+            </Space>
           </template>
           <template v-else-if="column.key === 'trigger'">
             <Tooltip
@@ -194,21 +202,25 @@
   } from '/@/api/databridge/task'
   import { getTaskInstanceListApi } from '/@/api/databridge/taskInstance'
   import { getApiErrorMessage } from '/@/api/databridge/http'
-  import type { InstanceTrigger } from '/@/api/databridge/model/commonModel'
+  import type { ExecMode, InstanceTrigger } from '/@/api/databridge/model/commonModel'
   import type { Task } from '/@/api/databridge/model/taskModel'
   import { usePagedFetch } from '../hooks/usePagedFetch'
   import {
+    EXEC_MODE_SIMULATE_TIP,
     SYNC_MODE_OPTIONS,
     SYNC_MODE_TAG_COLORS,
     TASK_STATUS_OPTIONS,
     formatNumber,
     formatTime,
+    getExecModeColor,
+    getExecModeLabel,
     getProgressStatus,
     getSyncModeLabel,
     getTaskStatusColor,
     getTaskStatusLabel,
     getTriggerColor,
     getTriggerLabel,
+    isSimulateExec,
   } from '../data'
   import { taskColumns } from './task.data'
   import TaskModal from './TaskModal.vue'
@@ -267,11 +279,11 @@
   }
 
   /**
-   * 「触发方式」增强列（契约 1.6）：任务列表接口不含 trigger，
-   * 这里用一次 GET /task-instances 拉最近 200 条实例，按 taskId 取第一条（最新）聚合，
-   * 避免逐行请求；取不到时该列显示 '-'，不影响列表主流程。
+   * 「触发方式 / 执行模式」增强列（契约 1.6、4.1）：任务列表接口既不含 trigger 也不含实例
+   * execMode，这里用一次 GET /task-instances 拉最近 200 条实例，按 taskId 取第一条（最新）
+   * 聚合两列，避免逐行请求；取不到时触发方式显示 '-'、不出现「模拟」标识，不影响列表主流程。
    */
-  async function fillLatestTrigger() {
+  async function fillLatestInstance() {
     if (!dataSource.value.length) return
     try {
       const res = await getTaskInstanceListApi({
@@ -279,42 +291,47 @@
         size: 200,
         sort: 'startedAt:desc',
       })
-      const latest = new Map<string, InstanceTrigger>()
+      const latest = new Map<string, { trigger: InstanceTrigger; execMode?: ExecMode }>()
       ;(res?.items ?? []).forEach((item) => {
         if (!item.taskId || latest.has(item.taskId)) return
-        latest.set(item.taskId, (item.trigger ?? 'manual') as InstanceTrigger)
+        latest.set(item.taskId, {
+          trigger: (item.trigger ?? 'manual') as InstanceTrigger,
+          execMode: item.execMode,
+        })
       })
       dataSource.value.forEach((row) => {
-        const trigger = row.id ? latest.get(row.id) : undefined
-        if (trigger) row.latestTrigger = trigger
+        const latestInstance = row.id ? latest.get(row.id) : undefined
+        if (!latestInstance) return
+        row.latestTrigger = latestInstance.trigger
+        if (latestInstance.execMode) row.latestExecMode = latestInstance.execMode
       })
     } catch {
-      // 触发方式为附加信息，失败时静默保留 '-'
+      // 两列都是附加信息，失败时静默保留 '-'/无标识
     }
   }
 
   async function loadList() {
     await search()
     fillRunningProgress()
-    fillLatestTrigger()
+    fillLatestInstance()
   }
 
   async function handleSearch() {
     await search()
     fillRunningProgress()
-    fillLatestTrigger()
+    fillLatestInstance()
   }
 
   async function handleReset() {
     await resetFetch()
     fillRunningProgress()
-    fillLatestTrigger()
+    fillLatestInstance()
   }
 
   async function handleRefreshProgress() {
     await reload()
     fillRunningProgress()
-    fillLatestTrigger()
+    fillLatestInstance()
   }
 
   function handleCreate() {
@@ -345,7 +362,7 @@
       })
       await reload()
       fillRunningProgress()
-      fillLatestTrigger()
+      fillLatestInstance()
     } catch (error: any) {
       createMessage.error(getApiErrorMessage(error, '启动失败'))
     } finally {
@@ -361,7 +378,7 @@
       createMessage.success(`停止指令已下发，实例 ${result?.instanceId ?? record.id} 正在停止`)
       await reload()
       fillRunningProgress()
-      fillLatestTrigger()
+      fillLatestInstance()
     } catch (error: any) {
       createMessage.error(getApiErrorMessage(error, '停止失败'))
     } finally {

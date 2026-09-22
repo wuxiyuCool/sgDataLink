@@ -27,7 +27,7 @@
       :data-source="rows"
       :loading="loading"
       :pagination="false"
-      :scroll="{ x: 1320, y: 320 }"
+      :scroll="{ x: 1385, y: 320 }"
       row-key="id"
       size="small"
       :row-class-name="rowClassName"
@@ -59,9 +59,17 @@
           </Tag>
         </template>
         <template v-else-if="column.key === 'status'">
-          <Tag :color="getTaskStatusColor(record.status)">
-            {{ getTaskStatusLabel(record.status) }}
-          </Tag>
+          <Space :size="4">
+            <Tag :color="getTaskStatusColor(record.status)">
+              {{ getTaskStatusLabel(record.status) }}
+            </Tag>
+            <!-- 执行模式标识（契约 4.1）：模拟实例的进度/行数并非真实读写结果 -->
+            <Tooltip v-if="record.execMode" :title="execModeTip(record.execMode)">
+              <Tag :color="getExecModeColor(record.execMode)">
+                {{ getExecModeLabel(record.execMode) }}
+              </Tag>
+            </Tooltip>
+          </Space>
         </template>
         <template v-else-if="column.key === 'progress'">
           <!-- CDC 管道没有百分比终点：用脉冲样式表达「持续同步中」 -->
@@ -128,11 +136,16 @@
   import { useRouter } from 'vue-router'
   import { Button, Empty, Progress, Space, Table, Tag, Tooltip } from 'ant-design-vue'
   import { Icon } from '/@/components/Icon'
+  import type { ExecMode } from '/@/api/databridge/model/commonModel'
   import {
+    EXEC_MODE_REAL_TIP,
+    EXEC_MODE_SIMULATE_TIP,
     SYNC_MODE_TAG_COLORS,
     formatLag,
     formatNumber,
     formatTime,
+    getExecModeColor,
+    getExecModeLabel,
     getProgressStatus,
     getSyncModeLabel,
     getTaskStatusLabel,
@@ -169,6 +182,11 @@
   /** 同步模式 Tag 配色（cdc 由管道承载，色值与全站一致） */
   function modeTagColor(row: RunningRow) {
     return (row.syncMode && SYNC_MODE_TAG_COLORS[row.syncMode]) || 'default'
+  }
+
+  /** 执行模式悬浮说明（契约 4.1）：模拟态解释成因，真实态说明数据来源 */
+  function execModeTip(mode: ExecMode) {
+    return mode === 'simulate' ? EXEC_MODE_SIMULATE_TIP : EXEC_MODE_REAL_TIP
   }
 
   /** 管道行的第二列为累计变更行数，任务/画布行为已写行数 */

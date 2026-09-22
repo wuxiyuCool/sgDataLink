@@ -5,13 +5,16 @@ go 1.24.10
 require (
 	github.com/duke-git/lancet/v2 v2.3.8
 	github.com/gin-gonic/gin v1.11.0
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/wire v0.7.0
+	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/spf13/viper v1.21.0
 	go.uber.org/zap v1.27.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect

@@ -18,6 +18,7 @@ const pipelineRepository = require('../repositories/pipeline.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
 const instanceRepository = require('../repositories/instance.repository');
 const offsetRepository = require('../repositories/offset.repository');
+const logRepository = require('../repositories/log.repository');
 const { paramInvalid, notFound, runningForbidden, duplicateStart } = require('../utils/bizError');
 const { nowIso } = require('../repositories/memoryStore');
 const runService = require('./run.service');
@@ -30,6 +31,25 @@ const RUNTIME_FIELDS = ['changeRows', 'currentQps', 'lagMs', 'cdcPosition', 'las
 
 /** 管道对象没有 batchSize 字段，下发引擎时给的默认批量（契约 2 节 cdc 请求体仍需要） */
 const DEFAULT_BATCH_SIZE = 1000;
+
+/** 真实 cdc 轮询间隔默认值（契约 1.7 pollIntervalSec，1~3600 秒） */
+const DEFAULT_POLL_INTERVAL_SEC = 5;
+
+/** pollIntervalSec 归一：非法 / 缺省回落到默认值，其余夹到 1~3600 */
+const normalizePollInterval = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num) || value === null || value === '' || value === undefined) return DEFAULT_POLL_INTERVAL_SEC;
+  return Math.min(Math.max(Math.trunc(num), 1), 3600);
+};
+
+/**
+ * 真实模式快照里 endpoint.table 取哪个表：管道是整库 / 多表镜像，
+ * 契约 5 约定给 syncObjects[0]（引擎按 syncObjects 逐表搬，table 只作首表示意）。
+ */
+const resolveCdcTable = (pipeline) => {
+  const objects = (pipeline && pipeline.syncObjects) || [];
+  return objects.length ? String(objects[0]) : null;
+};
 
 const isFinalStatus = (status) => FINAL_STATUSES.includes(status);
 
@@ -61,6 +81,8 @@ const normalizeBody = (body = {}) => {
     'targetId',
     'syncObjects',
     'ddlPolicy',
+    'cdcPollColumn',
+    'pollIntervalSec',
     'batchSize',
     'failureRate',
     'remark',
@@ -68,6 +90,11 @@ const normalizeBody = (body = {}) => {
   if (Array.isArray(payload.syncObjects)) {
     payload.syncObjects = payload.syncObjects.map((item) => String(item).trim()).filter(Boolean);
   }
+  // 契约 1.7：cdcPollColumn 允许显式清空（'' / null 都落库成 null），pollIntervalSec 只在传了的时候归一
+  if ('cdcPollColumn' in payload && (payload.cdcPollColumn === '' || payload.cdcPollColumn === undefined)) {
+    payload.cdcPollColumn = null;
+  }
+  if ('pollIntervalSec' in payload) payload.pollIntervalSec = normalizePollInterval(payload.pollIntervalSec);
   return payload;
 };
 
@@ -98,6 +125,8 @@ const createPipeline = async (body) => {
   await assertDefinition(payload);
   return pipelineRepository.create({
     ddlPolicy: 'ignore',
+    cdcPollColumn: null,
+    pollIntervalSec: DEFAULT_POLL_INTERVAL_SEC,
     ...payload,
     status: 'stopped',
     runningInstanceId: null,
@@ -124,24 +153,38 @@ const deletePipelineById = async (id) => {
   return existing;
 };
 
-/** 下发给 Go 引擎的 cdc 快照（字段见 docs/API.md 第 1.7 / 2 节） */
-const buildEngineSnapshot = async (pipeline, instanceId) => {
-  const [source, target] = await Promise.all([
-    runService.endpointOf(pipeline.sourceId),
-    runService.endpointOf(pipeline.targetId),
-  ]);
+/**
+ * 下发给 Go 引擎的 cdc 快照（字段见 docs/API.md 第 1.7 / 2 节 + 第 5 节真实同步模式）。
+ * mode 由 run.service 判定（外部没传就自己判一次）：real 时 source/target 换成完整连接体
+ * （含明文 password，仅内网进程间传输），并把轮询列 / 轮询间隔一并交给引擎。
+ */
+const buildEngineSnapshot = async (pipeline, instanceId, context = {}) => {
+  const { mode, source, target } = await runService.loadEndpoints(pipeline.sourceId, pipeline.targetId, {
+    sourceTable: resolveCdcTable(pipeline),
+    targetTable: resolveCdcTable(pipeline),
+    mode: context.mode,
+  });
   return {
     instanceId,
     pipelineId: pipeline.id,
     // 管道不属于任何同步任务：cdc 回报靠 pipelineId 归属，taskId 恒为 null
     taskId: null,
     syncMode: 'cdc',
+    mode,
     syncObjects: pipeline.syncObjects || [],
     source,
     target,
     batchSize: Number(pipeline.batchSize) || DEFAULT_BATCH_SIZE,
     failureRate: runService.resolveFailureRate(pipeline),
     reportUrl: config.engine.reportUrl,
+    // 契约 1.7 / 5：真实 cdc 是「按轮询列每 N 秒一轮增量拉取」，这两项只对 real 模式有意义，
+    // simulate 快照因此与改造前逐字段一致（不带凭据、也不带这组轮询参数）
+    ...(mode === 'real'
+      ? {
+          cdcPollColumn: pipeline.cdcPollColumn || null,
+          pollIntervalSec: normalizePollInterval(pipeline.pollIntervalSec),
+        }
+      : {}),
   };
 };
 
@@ -151,9 +194,18 @@ const findRunningInstance = async (pipeline) => {
   return instanceRepository.getById(pipeline.runningInstanceId);
 };
 
+/** 管道实例按 pipelineId 归属，取最近一次实例（run.service 的 execMode 判定落在实例上） */
+const findLatestInstance = async (pipeline) => {
+  if (!pipeline || !pipeline.id) return null;
+  const instances = await instanceRepository.find({ filters: { pipelineId: pipeline.id }, sort: 'startedAt:desc' });
+  return instances[0] || null;
+};
+
 /**
- * 启动管道：校验 → 预写 inst- 实例（syncMode=cdc）→ 运行态清零并置 running → 引擎下发 cdc 快照；
+ * 启动管道：校验 → 判定 execMode → 预写 inst- 实例（syncMode=cdc，带 execMode）
+ * → 运行态清零并置 running → 引擎下发 cdc 快照；
  * 引擎拒绝时回滚实例与管道记录，避免留下幽灵 running。
+ * simulate 时补一条 WARN 日志（契约 4.1），前端据此在管道列表打「模拟」Tag。
  * @param {string} id 管道 id
  * @param {Object} [options] { trigger, retryAttempt }
  * @returns {Promise<{pipelineId, instanceId, status}>}
@@ -168,6 +220,8 @@ const startPipeline = async (id, options = {}) => {
   }
   await assertDefinition({ ...pipeline, name: pipeline.name });
 
+  // 契约 4.1：cdc 真实模式依赖轮询增量列；未配置 cdcPollColumn 时即便类型支持也降级为模拟
+  const execMode = pipeline.cdcPollColumn ? await runService.resolveExecMode(pipeline.sourceId, pipeline.targetId) : 'simulate';
   const instance = await instanceRepository.create({
     // 管道实例不属于任何同步任务，靠 pipelineId 归属（契约 1.4）
     taskId: null,
@@ -183,6 +237,8 @@ const startPipeline = async (id, options = {}) => {
     rateRowsPerSec: 0,
     trigger: runService.TRIGGERS.includes(options.trigger) ? options.trigger : 'manual',
     retryAttempt: Number(options.retryAttempt) || 0,
+    // 契约 1.3：本次镜像是真实轮询读写还是模拟推进
+    execMode,
     startedAt: nowIso(),
     finishedAt: null,
     message: null,
@@ -202,7 +258,7 @@ const startPipeline = async (id, options = {}) => {
   });
 
   try {
-    await engineClient.startPipeline(await buildEngineSnapshot(pipeline, instance.id));
+    await engineClient.startPipeline(await buildEngineSnapshot(pipeline, instance.id, { mode: execMode }));
   } catch (err) {
     logger.warn('engine start rejected for pipeline %s, rollback instance %s: %s', pipeline.id, instance.id, err.message);
     await Promise.all([
@@ -211,6 +267,16 @@ const startPipeline = async (id, options = {}) => {
       pipelineRepository.update(pipeline.id, { ...rollback, changeRows: 0, currentQps: 0, lagMs: 0, cdcPosition: null }),
     ]);
     throw err;
+  }
+
+  if (execMode === 'simulate') {
+    // 与 run.service 的任务 / 画布同一口径：下发成功后再写，回滚路径不会留下孤儿日志
+    await logRepository.create({
+      instanceId: instance.id,
+      taskId: null,
+      level: 'WARN',
+      message: '本次为模拟执行（数据源类型或驱动不支持真实读写）',
+    });
   }
 
   return { pipelineId: pipeline.id, instanceId: instance.id, status: 'running' };
@@ -258,6 +324,8 @@ const stopPipeline = async (id) => {
 /** GET /pipelines/:id/status —— 实时状态（数据全部来自管道记录的运行态字段） */
 const getPipelineStatus = async (id) => {
   const pipeline = await getPipelineOrThrow(id);
+  // execMode 取运行中实例，没有就退到该管道最近一次实例（停止后仍能看到上次是真实还是模拟）
+  const modeInstance = (await findRunningInstance(pipeline)) || (await findLatestInstance(pipeline));
   return {
     pipelineId: pipeline.id,
     instanceId: pipeline.runningInstanceId || null,
@@ -270,6 +338,9 @@ const getPipelineStatus = async (id) => {
     lastError: pipeline.lastError || null,
     lastReportAt: pipeline.lastReportAt || null,
     syncObjects: pipeline.syncObjects || [],
+    cdcPollColumn: pipeline.cdcPollColumn || null,
+    pollIntervalSec: normalizePollInterval(pipeline.pollIntervalSec),
+    execMode: (modeInstance && modeInstance.execMode) || null,
   };
 };
 
@@ -310,7 +381,9 @@ const applyEngineReport = async (pipeline, payload = {}) => {
 module.exports = {
   FINAL_STATUSES,
   RUNTIME_FIELDS,
+  DEFAULT_POLL_INTERVAL_SEC,
   isFinalStatus,
+  normalizePollInterval,
   queryPipelines,
   getPipelineById,
   getPipelineOrThrow,

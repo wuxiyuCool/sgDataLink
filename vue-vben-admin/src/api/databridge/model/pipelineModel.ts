@@ -17,6 +17,13 @@ export interface Pipeline {
   /** 同步对象：形如 APP_USER.T_ORDER 的表名数组 */
   syncObjects: string[]
   ddlPolicy?: PipelineDdlPolicy
+  /**
+   * 增量轮询列（契约 4.1 / 5）：真实模式下引擎按该列每 pollIntervalSec 秒拉一轮增量。
+   * 留空表示该管道无法按轮询做真实读写，实例会以 simulate 模式执行。
+   */
+  cdcPollColumn?: string | null
+  /** 轮询间隔（秒），取值 1~3600，缺省 5 */
+  pollIntervalSec?: number
   status?: PipelineStatus
   /** running 时对应的运行实例，stop 后为 null */
   runningInstanceId?: string | null
@@ -45,6 +52,10 @@ export interface PipelinePayload {
   targetId: string
   syncObjects: string[]
   ddlPolicy?: PipelineDdlPolicy
+  /** 增量轮询列，null / 空串表示未配置（该管道按模拟执行） */
+  cdcPollColumn?: string | null
+  /** 轮询间隔（秒），1~3600 */
+  pollIntervalSec?: number
 }
 
 export interface PipelinePageParams extends DatabridgePageParams {

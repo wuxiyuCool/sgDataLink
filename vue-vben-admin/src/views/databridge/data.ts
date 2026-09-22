@@ -6,6 +6,7 @@ import type {
   TaskPayload,
 } from '/@/api/databridge/model/taskModel'
 import type {
+  ExecMode,
   InstanceTrigger,
   LogLevel,
   SyncMode,
@@ -285,7 +286,7 @@ export function pickTaskPayload(task: Task): TaskPayload {
  * 与 pickTaskPayload 同样的约定：后端 Joi 严格校验（未开 stripUnknown），
  * 请求体只提交契约列出的字段，id / status / lastStatus / 统计量等响应侧字段一律不回传。
  */
-const PIPELINE_PAYLOAD_KEYS: (keyof Pipeline)[] = ['ddlPolicy']
+const PIPELINE_PAYLOAD_KEYS: (keyof Pipeline)[] = ['ddlPolicy', 'cdcPollColumn', 'pollIntervalSec']
 
 /** 裁剪 PUT/POST /pipelines 请求体（契约 1.7） */
 export function pickPipelinePayload(pipeline: Pipeline): PipelinePayload {
@@ -383,6 +384,41 @@ export function getTriggerLabel(trigger?: InstanceTrigger) {
 
 export function getTriggerColor(trigger?: InstanceTrigger) {
   return trigger ? TRIGGER_TAG_COLORS[trigger] : 'default'
+}
+
+/* --------------------------- 执行模式（契约 4.1） --------------------------- */
+
+/**
+ * 执行模式由 Node 下发引擎快照时判定：DB_DRIVER=mysql 且端点类型均受驱动支持才是 real，
+ * 否则 simulate（进度/行数为模拟值）。老数据可能没有该字段，前端不显示标识。
+ */
+export const EXEC_MODE_LABELS: Record<ExecMode, string> = {
+  real: '真实',
+  simulate: '模拟',
+}
+
+export const EXEC_MODE_TAG_COLORS: Record<ExecMode, string> = {
+  real: 'green',
+  simulate: 'orange',
+}
+
+/** 模拟执行的原因说明：悬浮在「模拟」Tag 上 */
+export const EXEC_MODE_SIMULATE_TIP = '数据源类型或驱动不支持真实读写，本次进度为模拟值'
+
+/** 真实执行说明：悬浮在「真实」Tag 上 */
+export const EXEC_MODE_REAL_TIP = '端点驱动支持真实读写，本次进度与行数来自实际执行'
+
+/** 是否模拟执行（execMode 缺失时按未知处理，不显示标识） */
+export function isSimulateExec(mode?: ExecMode) {
+  return mode === 'simulate'
+}
+
+export function getExecModeLabel(mode?: ExecMode) {
+  return mode ? EXEC_MODE_LABELS[mode] : '-'
+}
+
+export function getExecModeColor(mode?: ExecMode) {
+  return mode ? EXEC_MODE_TAG_COLORS[mode] : 'default'
 }
 
 /* ------------------------------ 数据管道（1.7） ------------------------------ */

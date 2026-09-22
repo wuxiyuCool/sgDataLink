@@ -30,6 +30,8 @@ const store = defineStore({
     readRows: { type: 'int' },
     writeRows: { type: 'int' },
     rateRowsPerSec: { type: 'int' },
+    // 契约 1.3：real = 引擎真实读写，simulate = 模拟推进（由 run.service 判定后写入）
+    execMode: { col: 'exec_mode' },
     startedAt: { type: 'datetime' },
     finishedAt: { type: 'datetime' },
     message: { type: 'text' },
@@ -80,6 +82,8 @@ const create = async (data) => {
     trigger: 'manual',
     retryAttempt: 0,
     pipelineId: null,
+    // 与内存版同名同默认值：真实执行模式由 run.service 判定时覆盖
+    execMode: 'simulate',
     finishedAt: null,
     message: null,
     ...data,

@@ -18,6 +18,13 @@ const envVarsSchema = Joi.object()
       .valid('memory', 'mysql')
       .default('memory')
       .description('repository driver: memory (mock) | mysql'),
+    // 演示种子开关（docs/API.md 4.1）：空 = 按驱动推导（memory 注入 / mysql 不注入），
+    // 显式 true|false 覆盖，mysql 库需要演示数据时用 SEED_DEMO=true 起一次
+    SEED_DEMO: Joi.string()
+      .valid('true', 'false')
+      .allow('')
+      .default('')
+      .description('inject demo seed entities: empty = auto (memory=true, mysql=false)'),
     MYSQL_HOST: Joi.string().allow('').default('').description('mysql host'),
     MYSQL_PORT: Joi.number().default(3306).description('mysql port'),
     MYSQL_USER: Joi.string().allow('').default('').description('mysql user'),
@@ -56,16 +63,32 @@ if (error) {
   throw new Error(`Config validation error: ${error.message}`);
 }
 
+const driver = envVars.DB_DRIVER || 'memory';
+
+/**
+ * 演示种子是否注入（docs/API.md 4.1）：
+ * SEED_DEMO 显式给了 true|false 就听它的，否则按驱动推导 —— memory=true、mysql=false。
+ * mysql 模式下默认「空库起步」，接口返回的全是用户真实配置与真实执行数据。
+ */
+const resolveSeedDemo = () => {
+  const raw = envVars.SEED_DEMO;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return driver !== 'mysql';
+};
+
 module.exports = {
   env: envVars.NODE_ENV,
   port: envVars.PORT,
   // DataBridge mock 开关：true 时 src/index.js 跳过 mongoose.connect，直接 listen
   // （兼容 docs/API.md 第 4 节里的别名 MOCK=true）
   memMock: envVars.MEM_MOCK === 'true' || process.env.MOCK === 'true',
+  // 演示种子注入开关（src/index.js 与 src/repositories/seed.js 共用这一个判定）
+  seedDemo: resolveSeedDemo(),
   // 持久层驱动：memory（默认，纯内存 mock）| mysql（src/repositories/mysql 落库）
   db: {
-    driver: envVars.DB_DRIVER || 'memory',
-    isMysql: () => (envVars.DB_DRIVER || 'memory') === 'mysql',
+    driver,
+    isMysql: () => driver === 'mysql',
     mysql: {
       host: envVars.MYSQL_HOST,
       port: envVars.MYSQL_PORT,

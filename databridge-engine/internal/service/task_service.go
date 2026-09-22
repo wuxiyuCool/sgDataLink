@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "databridge-engine/api/v1"
+	"databridge-engine/internal/infra/dbio"
 	"databridge-engine/internal/infra/reader"
 	"databridge-engine/internal/infra/reporter"
 	"databridge-engine/internal/infra/writer"
@@ -66,7 +67,10 @@ type Deps struct {
 	Readers reader.Builder
 	Writers writer.Builder
 	Reports reporter.Builder
-	Logger  *log.Logger
+	// DB 真实同步模式（契约第 5 节）的连接构造器；nil 时用 dbio 默认实现（真驱动）。
+	// 单测可注入假 Dialer，让 real runner 的分支不依赖真实数据库。
+	DB     dbio.Dialer
+	Logger *log.Logger
 }
 
 type taskService struct {
@@ -75,6 +79,7 @@ type taskService struct {
 	readers reader.Builder
 	writers writer.Builder
 	reports reporter.Builder
+	db      dbio.Dialer
 	opts    Options
 
 	mu   sync.Mutex
@@ -104,12 +109,17 @@ func NewTaskService(deps Deps, opts Options) (TaskService, error) {
 	if logger == nil {
 		logger = log.DefaultLogger()
 	}
+	dialer := deps.DB
+	if dialer == nil {
+		dialer = dbio.NewDialer()
+	}
 	return &taskService{
 		Service: NewService(logger),
 		repo:    deps.Repo,
 		readers: deps.Readers,
 		writers: deps.Writers,
 		reports: deps.Reports,
+		db:      dialer,
 		opts:    opts,
 		runs:    make(map[string]*runHandle),
 		now:     func() time.Time { return time.Now().UTC().Truncate(time.Millisecond) },
@@ -131,34 +141,62 @@ func (s *taskService) Start(ctx context.Context, req *v1.StartTaskRequest) (*v1.
 		reportURL = s.opts.DefaultReportURL
 	}
 
+	mode := req.ExecMode()
+	sourceTable := req.SourceTable
+	targetTable := req.TargetTable
+	if mode == model.ModeReal {
+		// 真实模式下表名以端点里的 table 为准（契约第 5 节），回显字段同步过去
+		if strings.TrimSpace(req.Source.Table) != "" {
+			sourceTable = req.Source.Table
+		}
+		if strings.TrimSpace(req.Target.Table) != "" {
+			targetTable = req.Target.Table
+		}
+	}
+
 	task := &model.MockTask{
 		InstanceID:        instanceID,
 		TaskID:            strings.TrimSpace(req.TaskID),
 		TaskName:          req.TaskName,
+		Mode:              mode,
 		SyncMode:          req.SyncMode,
 		BatchSize:         req.BatchSize,
 		FailureRate:       req.FailureRate,
 		IncrementalColumn: strings.TrimSpace(req.IncrementalColumn),
 		PipelineID:        strings.TrimSpace(req.PipelineID),
 		SyncObjects:       normalizeSyncObjects(req.SyncObjects),
-		SourceTable:       req.SourceTable,
-		TargetTable:       req.TargetTable,
+		SourceTable:       sourceTable,
+		TargetTable:       targetTable,
 		WriteMode:         req.WriteMode,
 		Source: model.Endpoint{
 			ID:       req.Source.ID,
 			Type:     req.Source.Type,
 			Database: req.Source.Database,
+			Host:     req.Source.Host,
+			Port:     req.Source.Port,
+			Username: req.Source.Username,
+			Password: req.Source.Password,
+			Table:    req.Source.Table,
 		},
 		Target: model.Endpoint{
 			ID:       req.Target.ID,
 			Type:     req.Target.Type,
 			Database: req.Target.Database,
+			Host:     req.Target.Host,
+			Port:     req.Target.Port,
+			Username: req.Target.Username,
+			Password: req.Target.Password,
+			Table:    req.Target.Table,
 		},
-		ReportURL:     reportURL,
-		Status:        model.StatusRunning,
-		Progress:      0,
-		CurrentOffset: "",
-		StartedAt:     s.now(),
+		ReportURL:       reportURL,
+		Status:          model.StatusRunning,
+		Progress:        0,
+		CurrentOffset:   "",
+		StartedAt:       s.now(),
+		OffsetStart:     strings.TrimSpace(req.OffsetStart),
+		CdcPollColumn:   strings.TrimSpace(req.CdcPollColumn),
+		PollIntervalSec: req.PollIntervalSec,
+		FieldMappings:   normalizeFieldMappings(req.FieldMappings),
 	}
 	// cdc（数据管道）忽略 totalRows：契约第 2 节第 6 条，管道没有「总量 / 进度」概念
 	if task.SyncMode == model.SyncModeCDC {
@@ -166,7 +204,11 @@ func (s *taskService) Start(ctx context.Context, req *v1.StartTaskRequest) (*v1.
 	} else {
 		task.TotalRows = req.TotalRows
 	}
-	s.planFailure(task)
+	// failureRate 只作用于模拟执行（契约第 2 节第 4 条）；真实模式不做随机失败，
+	// 失败一律来自数据库真实错误（契约第 5 节）。
+	if !task.IsReal() {
+		s.planFailure(task)
+	}
 
 	handle := &runHandle{done: make(chan struct{})}
 	// 幂等保护：instanceId 已存在（运行中或已终态）一律 409 / 40901
@@ -176,11 +218,16 @@ func (s *taskService) Start(ctx context.Context, req *v1.StartTaskRequest) (*v1.
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle.cancel = cancel
-	go s.run(runCtx, handle, task)
+	if task.IsReal() {
+		go s.runReal(runCtx, handle, task)
+	} else {
+		go s.run(runCtx, handle, task)
+	}
 
 	s.logger.Info("task accepted",
 		zap.String("instanceId", instanceID),
 		zap.String("taskId", task.TaskID),
+		zap.String("mode", mode),
 		zap.String("syncMode", task.SyncMode),
 		zap.Int("batchSize", task.BatchSize),
 		zap.Int64("totalRows", task.TotalRows),
@@ -188,9 +235,34 @@ func (s *taskService) Start(ctx context.Context, req *v1.StartTaskRequest) (*v1.
 		zap.Int("failAtBatch", task.FailAtBatch),
 		zap.String("pipelineId", task.PipelineID),
 		zap.Int("syncObjects", len(task.SyncObjects)),
+		zap.String("source", task.Source.Label()),
+		zap.String("target", task.Target.Label()),
 		zap.String("reportUrl", reportURL))
 
 	return &v1.StartTaskData{Accepted: true, InstanceID: instanceID}, nil
+}
+
+// normalizeFieldMappings 清洗字段映射：去空白、targetField 缺省沿用 sourceField、保持下发顺序。
+func normalizeFieldMappings(mappings []v1.FieldMappingDTO) []model.FieldMapping {
+	if len(mappings) == 0 {
+		return nil
+	}
+	out := make([]model.FieldMapping, 0, len(mappings))
+	for _, m := range mappings {
+		src := strings.TrimSpace(m.SourceField)
+		dst := strings.TrimSpace(m.TargetField)
+		if dst == "" {
+			dst = src
+		}
+		if src == "" && dst == "" {
+			continue
+		}
+		out = append(out, model.FieldMapping{SourceField: src, TargetField: dst, PrimaryKey: m.PrimaryKey})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // normalizeSyncObjects 清洗管道同步对象：去掉空白项、保持下发顺序。
@@ -310,6 +382,7 @@ func viewOf(t *model.MockTask) v1.TaskView {
 		InstanceID:        t.InstanceID,
 		TaskID:            t.TaskID,
 		TaskName:          t.TaskName,
+		Mode:              t.Mode,
 		SyncMode:          t.SyncMode,
 		Status:            t.Status,
 		Progress:          t.Progress,

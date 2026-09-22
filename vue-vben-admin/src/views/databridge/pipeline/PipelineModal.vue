@@ -85,17 +85,47 @@
       >
         <Select v-model:value="formState.ddlPolicy" :options="DDL_POLICY_OPTIONS" />
       </FormItem>
+      <FormItem
+        label="增量轮询列"
+        name="cdcPollColumn"
+        extra="真实模式下引擎按该列循环拉取增量，位点持久化在运行实例内"
+      >
+        <Input
+          v-model:value="formState.cdcPollColumn"
+          allow-clear
+          placeholder="增量轮询列，如 UPDATED_DT；留空则该管道按模拟执行"
+        />
+      </FormItem>
+      <FormItem
+        label="轮询间隔(秒)"
+        name="pollIntervalSec"
+        extra="取值 1~3600，每一轮拉取增量后的等待时长"
+      >
+        <InputNumber
+          v-model:value="formState.pollIntervalSec"
+          :min="MIN_POLL_INTERVAL_SEC"
+          :max="MAX_POLL_INTERVAL_SEC"
+          :precision="0"
+          addon-after="秒"
+          style="width: 100%"
+        />
+      </FormItem>
       <Alert
         type="info"
         show-icon
         message="管道只做搬运（对标 FDL 数据管道），运行状态、QPS、延迟与位点由引擎 cdc 模式回报，列表页 3 秒轮询刷新。"
+      />
+      <Alert
+        type="warning"
+        show-icon
+        message="未填增量轮询列时引擎无法做真实轮询拉取，本次执行会落为「模拟」实例（进度与行数为模拟值）。"
       />
     </Form>
   </BasicModal>
 </template>
 <script lang="ts" setup>
   import { computed, reactive, ref, unref } from 'vue'
-  import { Alert, Form, Input, Radio, Select } from 'ant-design-vue'
+  import { Alert, Form, Input, InputNumber, Radio, Select } from 'ant-design-vue'
   import { BasicModal, useModalInner } from '/@/components/Modal'
   import { useMessage } from '/@/hooks/web/useMessage'
   import { getAllDatasourcesApi } from '/@/api/databridge/datasource'
@@ -108,7 +138,15 @@
     PipelinePayload,
   } from '/@/api/databridge/model/pipelineModel'
   import { DEFAULT_DDL_POLICY, DDL_POLICY_OPTIONS, pickPipelinePayload } from '../data'
-  import { parseSyncObjects, stringifySyncObjects, SYNC_OBJECT_SAMPLES } from './pipeline.data'
+  import {
+    DEFAULT_POLL_INTERVAL_SEC,
+    MAX_POLL_INTERVAL_SEC,
+    MIN_POLL_INTERVAL_SEC,
+    clampPollInterval,
+    parseSyncObjects,
+    stringifySyncObjects,
+    SYNC_OBJECT_SAMPLES,
+  } from './pipeline.data'
 
   const FormItem = Form.Item
   const TextArea = Input.TextArea
@@ -134,6 +172,8 @@
     targetId: undefined as string | undefined,
     syncObjects: [] as string[],
     ddlPolicy: DEFAULT_DDL_POLICY as PipelineDdlPolicy,
+    cdcPollColumn: '',
+    pollIntervalSec: DEFAULT_POLL_INTERVAL_SEC,
   })
 
   const formState = reactive<ReturnType<typeof defaultForm>>(defaultForm())
@@ -208,6 +248,8 @@
         targetId: record.targetId,
         syncObjects: [...(record.syncObjects ?? [])],
         ddlPolicy: record.ddlPolicy || DEFAULT_DDL_POLICY,
+        cdcPollColumn: record.cdcPollColumn ?? '',
+        pollIntervalSec: record.pollIntervalSec ?? DEFAULT_POLL_INTERVAL_SEC,
       })
     }
     loadDatasources()
@@ -230,12 +272,16 @@
 
   /** 只提交契约 1.7 的请求字段，status / runningInstanceId 等响应侧字段不回传 */
   function buildPayload(): PipelinePayload {
+    const pollColumn = (formState.cdcPollColumn || '').trim()
     return pickPipelinePayload({
       name: formState.name,
       sourceId: String(formState.sourceId ?? ''),
       targetId: String(formState.targetId ?? ''),
       syncObjects: currentSyncObjects.value,
       ddlPolicy: formState.ddlPolicy,
+      // 留空显式回传 null，避免编辑时清空轮询列后旧值仍在后端生效
+      cdcPollColumn: pollColumn || null,
+      pollIntervalSec: clampPollInterval(formState.pollIntervalSec),
     })
   }
 

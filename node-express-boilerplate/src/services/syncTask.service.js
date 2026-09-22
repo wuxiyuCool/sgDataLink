@@ -131,22 +131,37 @@ const deleteTaskById = async (id) => {
 };
 
 /**
- * 下发给 Go 引擎的任务快照（docs/API.md 第 2 节）。
+ * 下发给 Go 引擎的任务快照（docs/API.md 第 2 节 + 第 5 节真实同步模式）。
  * 注意：scheduleCron / retryCount / retryIntervalSec 由 Node 侧的调度器与重试逻辑消费，
- * 不进快照；fieldMappings[].transform 是转换组件占位，Mock 阶段也不参与引擎执行。
+ * 不进快照；fieldMappings[].transform 是转换组件占位，引擎按映射搬数据、不做转换。
+ *
+ * mode 由 run.service 的执行模式判定给出（外部没传就自己判一次，便于脚本单独调这个函数）：
+ * - real     ：source/target 带完整连接体（含明文 password，仅内网进程间传输），
+ *              另附 fieldMappings（原样透传）与 offsetStart（上次持久化位点的原值）；
+ * - simulate ：快照字段与改造前逐字段一致（id/type/database 摘要，不含任何凭据）。
  */
-const buildEngineSnapshot = async (task, instanceId, totalRows) => {
-  const [source, target] = await Promise.all([runService.endpointOf(task.sourceId), runService.endpointOf(task.targetId)]);
+const buildEngineSnapshot = async (task, instanceId, totalRows, context = {}) => {
+  const { mode, source, target } = await runService.loadEndpoints(task.sourceId, task.targetId, {
+    sourceTable: task.sourceTable,
+    targetTable: task.targetTable,
+    mode: context.mode,
+  });
+  const extra = {
+    sourceTable: task.sourceTable,
+    targetTable: task.targetTable,
+    writeMode: task.writeMode || 'insert',
+  };
+  if (mode === 'real') {
+    extra.fieldMappings = Array.isArray(task.fieldMappings) ? task.fieldMappings : [];
+    extra.offsetStart = await runService.resolveOffsetStart(task.id, task.incrementalColumn);
+  }
   return runService.baseSnapshot(task, instanceId, {
     syncMode: task.syncMode,
     totalRows,
     source,
     target,
-    extra: {
-      sourceTable: task.sourceTable,
-      targetTable: task.targetTable,
-      writeMode: task.writeMode || 'insert',
-    },
+    mode,
+    extra,
   });
 };
 
@@ -157,6 +172,7 @@ const runApi = runService.registerRunner({
   repository: taskRepository,
   resultIdKey: 'taskId',
   resolveSyncMode: (task) => task.syncMode,
+  resolveExecMode: (task) => runService.resolveExecMode(task.sourceId, task.targetId),
   buildSnapshot: buildEngineSnapshot,
 });
 

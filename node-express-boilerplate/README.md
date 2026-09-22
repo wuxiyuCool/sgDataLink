@@ -461,6 +461,7 @@ Contributions are more than welcome! Please check out the [contributing guide](C
 | `ADMIN_REPORT_URL` | 否 | `http://127.0.0.1:3001/api/v1/engine` | 引擎回报进度的地址（容器里写服务名，如 `http://databridge-admin:3001/api/v1/engine`） |
 | `ENGINE_TIMEOUT_MS` | 否 | `5000` | 调用引擎的超时 |
 | `DB_DRIVER` | 否 | `memory` | 仓储驱动：`memory` = 内存 Mock；`mysql` = 落库到 `databridge_*` 表 |
+| `SEED_DEMO` | 否 | 留空（memory=true / mysql=false） | 演示种子开关（契约 4.1）：mysql 模式默认空库起步，要演示数据显式设 `true` |
 | `MYSQL_HOST` | `DB_DRIVER=mysql` 时必填 | `''` | MySQL 主机 |
 | `MYSQL_PORT` | 否 | `3306` | MySQL 端口 |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `DB_DRIVER=mysql` 时必填 | `''` | 账号密码 |
@@ -522,9 +523,22 @@ yarn dev
 
 `src/index.js` 在 mysql 驱动下的装配顺序：
 建池 → 逐表 `CREATE TABLE IF NOT EXISTS`（`src/db/schema.sql` + `src/db/init.js`）
-→ **列定义与 information_schema 比对**（schema.sql 与仓储列声明漂移时直接起不来，避免运行期才报 Unknown column）
-→ 初始化 ID 序列 → `databridge_datasource` 为空表才注入种子 → 启动调度器 → listen；
+→ **列定义与 information_schema 比对**（schema.sql 与仓储列声明漂移时自动补可空列，补不上直接起不来，避免运行期才报 Unknown column）
+→ 初始化 ID 序列 → **默认不注入演示种子**（契约 4.1「空库起步」，`SEED_DEMO=true` 才 seed()，
+空库时日志提示「空库启动（生产测试模式），如需演示数据设 SEED_DEMO=true」）→ 启动调度器 → listen；
 退出时 `shutdownScheduling()` + `pool.end()`。
+
+历史库里早期版本注入过的演示行（`ds-1001..1003`、`task-2001/2002`、`pipe-7001`、`df-7501`、
+`api-8001`、`ar-9001` 及其名下实例/日志/点位/告警记录/调用明细）用一次性清理脚本删除：
+
+```bash
+yarn db:cleanup                              # dry-run：只报将删行数与样本，不写库
+yarn db:cleanup -- --yes                     # 执行删除（默认带「时间戳早于今天 UTC」护栏）
+yarn db:cleanup -- --yes --include-today     # 连当天产生的演示行一起清（父实体删了就是孤儿）
+yarn db:cleanup -- --yes --force             # 连被用户实体引用的演示数据源也删（默认跳过并打印原因）
+```
+
+只按固定演示 ID 与外键归属圈定范围，用户自建数据不在删除条件内（`src/db/cleanup-demo.js`）。
 
 表清单（全部 `databridge_` 前缀，`id` 沿用 `ds-1001` 式字符串主键）：
 
@@ -532,10 +546,10 @@ yarn dev
 |------|------|--------|
 | `databridge_datasource` | 契约 1.1 数据源 | `type`、`status`、`created_at` 索引 |
 | `databridge_sync_task` | 契约 1.2 同步任务 | `field_mappings` JSON、`schedule_cron`、`last_status` |
-| `databridge_task_instance` | 契约 1.3/1.4 运行实例（task / dataflow / cdc 共用） | `task_id`、`pipeline_id`、`status`、`started_at`、`trigger_type` |
+| `databridge_task_instance` | 契约 1.3/1.4 运行实例（task / dataflow / cdc 共用） | `task_id`、`pipeline_id`、`status`、`started_at`、`trigger_type`、`exec_mode` |
 | `databridge_run_log` | 契约 1.3 实例日志 | `(instance_id, created_at)` 复合索引，每实例留最近 500 条 |
 | `databridge_offset` | 契约 1.2/1.4 同步点位 | `(task_id, instance_id, shard_key)` 三元 upsert |
-| `databridge_pipeline` | 契约 1.7 数据管道 | `sync_objects` JSON + 运行态列（`change_rows`/`current_qps`/`lag_ms`/`cdc_position`） |
+| `databridge_pipeline` | 契约 1.7 数据管道 | `sync_objects` JSON、`cdc_poll_column`/`poll_interval_sec`（真实 cdc 轮询）+ 运行态列（`change_rows`/`current_qps`/`lag_ms`/`cdc_position`） |
 | `databridge_dataflow` | 契约 1.8 数据开发画布 | `nodes`、`edges` JSON |
 | `databridge_data_api` | 契约 1.9 数据服务定义 | `fields`/`query_params`/`ip_whitelist` JSON、`invoke_count` 等统计列 |
 | `databridge_data_api_call_day` | 1.9 的按天调用计数（替代内存 Map，供 `stats` 的 `recentTrend`） | `(api_id, date)` 唯一 |
@@ -601,7 +615,8 @@ todayFailed, todayStopped, recentTrend: [{ date, success, failed }] }`；今日�
 
 ### 6. 种子数据
 
-`MEM_MOCK=true` 时由 `src/repositories/seed.js` 注入：
+`MEM_MOCK=true` 时由 `src/repositories/seed.js` 注入（`DB_DRIVER=mysql` 默认**不**注入，
+需 `SEED_DEMO=true` 显式打开，见第 3.1 节与契约 4.1）：
 
 - 3 个数据源：`ds-1001` 生产Oracle（host `10.0.0.11` → 连通测试必定失败）、`ds-1002` 业务MySQL（必定成功）、
   `ds-1003` 预发PostgreSQL(fail)（名称含 `fail` → 必定失败，且未被任务引用，可演示删除）

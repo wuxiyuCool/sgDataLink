@@ -24,6 +24,9 @@ const store = defineStore({
     targetId: {},
     syncObjects: { type: 'json' },
     ddlPolicy: {},
+    // 契约 1.7 / 5：真实 cdc 的轮询增量列与轮询间隔（秒）
+    cdcPollColumn: {},
+    pollIntervalSec: { type: 'int' },
     status: {},
     runningInstanceId: {},
     lastError: { type: 'text' },
@@ -78,6 +81,8 @@ const create = async (data) => {
     syncObjects: [],
     batchSize: 1000,
     failureRate: 0,
+    cdcPollColumn: null,
+    pollIntervalSec: 5,
     // ---- 运行态（引擎回报刷新）----
     changeRows: 0,
     currentQps: 0,

@@ -123,7 +123,8 @@ const createDataflow = async (body) => {
   const { nodes } = payload;
   const edges = payload.edges || [];
   assertCanvas(nodes, edges);
-  await assertEndpointConfig(nodes);
+  // 草稿态允许 input/output 尚未补齐 datasourceId/table（新建弹窗预置节点即为此形态），
+  // 端点配置完整性在 run 时由 buildEngineSnapshot → assertEndpointConfig 强制校验（40001）
   return dataflowRepository.create({
     ...DEFAULT_SCHEDULE,
     ...payload,
@@ -143,7 +144,6 @@ const updateDataflowById = async (id, body) => {
   const edges = payload.edges === undefined ? existing.edges : payload.edges;
   if (payload.nodes || payload.edges) {
     assertCanvas(nodes, edges);
-    await assertEndpointConfig(nodes);
     payload.nodes = nodes;
     payload.edges = edges;
   }
@@ -162,20 +162,25 @@ const deleteDataflowById = async (id) => {
 const resolveEndpoints = (dataflow) => {
   const nodes = dataflow.nodes || [];
   const { inputs, outputs } = assertCanvas(nodes, dataflow.edges || []);
-  assertEndpointConfig(nodes);
   return { input: inputs[0], output: outputs[outputs.length - 1] };
 };
 
 /**
- * 引擎快照：画布 run 复用 full 模式（契约 1.8「run 时由引擎按 full 模式模拟执行」）。
+ * 引擎快照：画布 run 复用 full 模式（契约 1.8）。
  * taskId 位置放 dataflowId —— 引擎不区分二者，回报时按实例的 taskId 反查归属。
+ *
+ * 端点配置（config.datasourceId / table）在 run 这一步才被强制（草稿允许缺，契约 4.1）：
+ * assertEndpointConfig 必须 await，否则 40001 会变成未处理的 rejection。
+ * mode=real 时 source/target 带完整连接体 + table（取 input/output 节点的 config.table）。
  */
-const buildEngineSnapshot = async (dataflow, instanceId, totalRows) => {
+const buildEngineSnapshot = async (dataflow, instanceId, totalRows, context = {}) => {
   const { input, output } = resolveEndpoints(dataflow);
-  const [source, target] = await Promise.all([
-    runService.endpointOf(input.config.datasourceId),
-    runService.endpointOf(output.config.datasourceId),
-  ]);
+  await assertEndpointConfig([input, output]);
+  const { mode, source, target } = await runService.loadEndpoints(input.config.datasourceId, output.config.datasourceId, {
+    sourceTable: input.config.table,
+    targetTable: output.config.table,
+    mode: context.mode,
+  });
   return runService.baseSnapshot(
     {
       ...dataflow,
@@ -188,6 +193,7 @@ const buildEngineSnapshot = async (dataflow, instanceId, totalRows) => {
       totalRows,
       source,
       target,
+      mode,
       extra: {
         sourceTable: input.config.table,
         targetTable: output.config.table,
@@ -197,6 +203,17 @@ const buildEngineSnapshot = async (dataflow, instanceId, totalRows) => {
   );
 };
 
+/** 画布 run 的执行模式：按首尾端点各自绑定的数据源类型判定（草稿没配数据源就是 simulate） */
+const resolveDataflowExecMode = async (dataflow) => {
+  const nodes = dataflow.nodes || [];
+  const inputs = nodes.filter((node) => node && node.type === 'input');
+  const outputs = nodes.filter((node) => node && node.type === 'output');
+  const input = inputs[0];
+  const output = outputs[outputs.length - 1];
+  if (!input || !output) return 'simulate';
+  return runService.resolveExecMode((input.config || {}).datasourceId, (output.config || {}).datasourceId);
+};
+
 /** dataflow 这一种「可运行体」的注册（定时调度 / 失败重试与任务共用同一套实现） */
 const runApi = runService.registerRunner({
   kind: 'dataflow',
@@ -204,6 +221,7 @@ const runApi = runService.registerRunner({
   repository: dataflowRepository,
   resultIdKey: 'dataflowId',
   resolveSyncMode: () => 'full',
+  resolveExecMode: resolveDataflowExecMode,
   buildSnapshot: buildEngineSnapshot,
 });
 

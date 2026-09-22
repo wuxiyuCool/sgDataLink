@@ -19,6 +19,9 @@ const baseKeys = {
   // 同步对象：形如 APP_USER.T_ORDER 的表清单（整库/多表实时镜像）
   syncObjects: Joi.array().items(Joi.string().trim().min(1).max(256)).min(1).max(500),
   ddlPolicy: Joi.string().valid(...DDL_POLICIES),
+  // 契约 1.7 / 5：真实 cdc 的轮询列与轮询间隔（引擎按该列每 N 秒拉一轮增量）
+  cdcPollColumn: Joi.string().trim().max(128).allow('', null),
+  pollIntervalSec: Joi.number().integer().min(1).max(3600),
   // 下面两项不进契约的管道对象示例，但引擎 cdc 快照需要，允许配置用于演示失败态
   batchSize: Joi.number().integer().min(1).max(100000),
   failureRate: Joi.number().min(0).max(1),
@@ -32,7 +35,9 @@ const listPipelines = {
       status: Joi.string().valid(...PIPELINE_STATUSES),
       sourceId: Joi.string().trim().max(64),
       targetId: Joi.string().trim().max(64),
-      sort: Joi.string().trim().pattern(/^[A-Za-z._]+(:asc|:desc)?$/i),
+      sort: Joi.string()
+        .trim()
+        .pattern(/^[A-Za-z._]+(:asc|:desc)?$/i),
       page: Joi.number().integer().min(1),
       size: Joi.number().integer().min(1).max(500),
     })

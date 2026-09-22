@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"databridge-engine/internal/handler"
+	"databridge-engine/internal/infra/dbio"
 	"databridge-engine/internal/infra/reader"
 	"databridge-engine/internal/infra/reporter"
 	"databridge-engine/internal/infra/writer"
@@ -32,12 +33,13 @@ var repositorySet = wire.NewSet(
 
 // infraSet：数据读写与回报。这里是 mock -> real 的真正替换点，
 // 参数与手写版 main.go 的 buildDeps() 保持一致。
-// 第二阶段：newReaderBuilder 返回 reader.NewOracleBuilder(dsn)，newWriterBuilder 返回
-// writer.NewPostgresBuilder(dsn)；reporter 已是真实 net/http 调用，可保持不变。
+// simulate 路径继续用 reader/writer 的 MockBuilder；mode=real 路径由 dbio.Dialer
+// 直连真实库（mysql / oracle 驱动都在 internal/infra/dbio 里注册）。
 var infraSet = wire.NewSet(
 	newReaderBuilder,
 	newWriterBuilder,
 	newReporterBuilder,
+	newDialer,
 )
 
 var serviceSet = wire.NewSet(
@@ -66,6 +68,12 @@ func newWriterBuilder() writer.Builder {
 	return writer.NewMockBuilder(3*time.Microsecond, time.Millisecond, 60*time.Millisecond)
 }
 
+// newDialer 真实同步模式（契约第 5 节）的连接构造器：mysql / oracle 真驱动，
+// 按 start 快照里的 host/port/username/password/table 现开现关。
+func newDialer() dbio.Dialer {
+	return dbio.NewDialer()
+}
+
 func newReporterBuilder(conf *viper.Viper, logger *log.Logger) reporter.Builder {
 	return reporter.NewHTTPBuilder(nil, time.Duration(conf.GetInt("engine.report_timeout_ms"))*time.Millisecond, logger)
 }
@@ -86,6 +94,7 @@ func newTaskServiceDeps(
 	readers reader.Builder,
 	writers writer.Builder,
 	reports reporter.Builder,
+	dialer dbio.Dialer,
 	logger *log.Logger,
 ) service.Deps {
 	return service.Deps{
@@ -93,6 +102,7 @@ func newTaskServiceDeps(
 		Readers: readers,
 		Writers: writers,
 		Reports: reports,
+		DB:      dialer,
 		Logger:  logger,
 	}
 }

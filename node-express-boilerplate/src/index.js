@@ -5,6 +5,7 @@ const logger = require('./config/logger');
 const mysql = require('./db/mysql');
 const { initMysql } = require('./db/init');
 const { seed } = require('./repositories');
+const datasourceRepository = require('./repositories/datasource.repository');
 // 先加载 services 聚合入口：它会把 task / dataflow 两种「可运行体」注册进 run.service，
 // 调度器与失败重试都靠这份 registry 找到该调谁的 start()。
 const { schedulerService } = require('./services');
@@ -23,14 +24,25 @@ const listen = (message) => {
 
 /**
  * 启动方式三选一（src/index.js 的装配点，对应 docs/API.md 第 4 节）：
- * - DB_DRIVER=mysql：建池 -> 逐表 CREATE TABLE IF NOT EXISTS -> 空表才注入种子 -> 调度 -> listen；
+ * - DB_DRIVER=mysql：建池 -> 逐表 CREATE TABLE IF NOT EXISTS -> 调度 -> listen，
+ *   **默认不注入演示种子**（契约 4.1「空库起步」），只有 SEED_DEMO=true 才 seed()；
  * - DB_DRIVER=memory 且 MEM_MOCK=true（默认）：不连任何数据库，内存仓储 + 种子数据；
  * - MEM_MOCK=false 且 DB_DRIVER=memory：走脚手架原逻辑，先连 MongoDB 再 listen。
  */
 const startWithMysql = async () => {
   await initMysql();
   logger.info('running with mysql repositories (driver=mysql)');
-  await seed();
+  if (config.seedDemo) {
+    await seed();
+  } else {
+    // 只在 databridge_datasource 仍是空表时提示「生产测试模式」，有真实配置就安静启动
+    const datasourceTotal = await datasourceRepository.count();
+    if (!datasourceTotal) {
+      logger.info('空库启动（生产测试模式），如需演示数据设 SEED_DEMO=true');
+    } else {
+      logger.info('空库起步已生效（不注入演示种子），当前数据源 %d 条', datasourceTotal);
+    }
+  }
   listen('mysql driver ready');
 };
 
