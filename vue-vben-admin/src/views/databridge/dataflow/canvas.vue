@@ -189,7 +189,7 @@
   </PageWrapper>
 </template>
 <script lang="ts" setup>
-  import { computed, nextTick, onMounted, reactive, ref, unref, watch } from 'vue'
+  import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, unref, watch } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
   import {
     Alert,
@@ -263,6 +263,21 @@
 
   const containerRef = ref<HTMLDivElement | null>(null)
   const lfReady = ref(false)
+  /** LF 画布容器尺寸监听器：容器变化时把新宽高同步给 LogicFlow 内部模型 */
+  let containerObserver: ResizeObserver | null = null
+
+  function syncCanvasSize() {
+    const el = containerRef.value
+    if (!lf || !el || !unref(lfReady) || unref(jsonMode)) return
+    const { clientWidth, clientHeight } = el
+    if (clientWidth > 0 && clientHeight > 0 && typeof lf.resize === 'function') {
+      try {
+        lf.resize(clientWidth, clientHeight)
+      } catch {
+        // 版本差异兜底：resize 不可用时保持原尺寸
+      }
+    }
+  }
   const lfError = ref('')
   const jsonMode = ref(false)
   const jsonText = ref('')
@@ -384,10 +399,23 @@
         throw new Error('未取到 LogicFlow 构造函数（@logicflow/core 导出结构不符合预期）')
       }
       await loadLogicFlowStyle()
-      lf = new LogicFlowCtor({ container, grid: true, edgeType: LF_EDGE_TYPE })
+      lf = new LogicFlowCtor({
+        container,
+        // 显式 10px 网格：与自动布局常量（180/260/150 均为 10 的倍数）对齐，落点即格点
+        grid: { size: 10, visible: true, type: 'solid' },
+        edgeType: LF_EDGE_TYPE,
+      })
       lfReady.value = true
       bindLfEvents()
       renderCanvas()
+      // 容器尺寸变化（窗口缩放、JSON 模式切回、侧栏折叠）时同步 LF 画布尺寸，
+      // 否则 LF 内部宽高与实际容器脱节，拖拽落点坐标映射会偏移
+      if (typeof ResizeObserver !== 'undefined') {
+        containerObserver = new ResizeObserver(() => syncCanvasSize())
+        containerObserver.observe(container)
+      }
+      await nextTick()
+      syncCanvasSize()
     } catch (error: any) {
       lf = null
       lfReady.value = false
@@ -850,6 +878,22 @@
     await initLogicFlow()
     await loadDetail(unref(routeQueryId))
   })
+
+  // JSON 模式容器是 v-show 隐藏，切回画布时 LF 内部尺寸可能已过期 → 立即同步一次
+  watch(jsonMode, (isJson) => {
+    if (!isJson) nextTick(syncCanvasSize)
+  })
+
+  onActivated(() => nextTick(syncCanvasSize))
+
+  onBeforeUnmount(() => {
+    if (containerObserver) {
+      containerObserver.disconnect()
+      containerObserver = null
+    }
+    lf = null
+    lfReady.value = false
+  })
 </script>
 <style lang="less" scoped>
   .canvas-layout {
@@ -924,7 +968,9 @@
 
   .lf-container {
     width: 100%;
-    height: 560px;
+    /* 自适应视口高度（原来固定 560px，大屏下半屏全是空白） */
+    height: calc(100vh - 300px);
+    min-height: 520px;
     border: 1px solid #d9d9d9;
     border-radius: 4px;
     background: #fff;

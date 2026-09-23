@@ -53,7 +53,7 @@
 
   const hasData = computed(() => (props.data || []).some((item) => Number(item.value) > 0))
 
-  function renderChart() {
+  function renderChart(full = false) {
     const list = (props.data || []).filter((item) => Number(item.value) > 0)
     if (!list.length) return
     const valueOf = (name: string) => list.find((item) => item.name === name)?.value ?? 0
@@ -93,7 +93,7 @@
           })),
         },
       ],
-    })
+    }, full)
   }
 
   watch(

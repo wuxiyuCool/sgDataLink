@@ -44,7 +44,7 @@
     return String(date || '').slice(5)
   }
 
-  function renderChart() {
+  function renderChart(full = false) {
     const list = props.trend || []
     if (!list.length) return
     setOptions({
@@ -79,7 +79,7 @@
           data: list.map((item) => Number(item.success || 0) + Number(item.failed || 0)),
         },
       ],
-    })
+    }, full)
   }
 
   watch(

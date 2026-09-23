@@ -54,7 +54,7 @@
       : '选择一条运行中的管道后开始采样',
   )
 
-  function renderChart() {
+  function renderChart(full = false) {
     const points = props.samples || []
     if (!points.length) return
     setOptions({
@@ -102,7 +102,7 @@
           },
         },
       ],
-    })
+    }, full)
   }
 
   // 每次轮询父组件都会换一个新的数组引用，deep watch 保证新增采样点即刻重画

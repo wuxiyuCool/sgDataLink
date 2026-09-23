@@ -46,7 +46,7 @@
     () => `等待采样点（每 3 秒一次，最多 ${MAX_PROGRESS_SAMPLES} 个点）`,
   )
 
-  function renderChart() {
+  function renderChart(full = false) {
     const points = props.samples || []
     if (!points.length) return
     const timeOf = (item: ProgressSample) => item.time
@@ -106,14 +106,20 @@
           data: points.map((item) => Number(item.rate || 0)),
         },
       ],
-    })
+    }, full)
   }
 
-  // 切换追踪实例与新增采样点都要重画：父组件每次刷新都会换一个新的数组引用
+  // 新增采样点：merge 局部更新（不清图、不重放入场动画）
   watch(
     () => props.samples,
     () => renderChart(),
     { deep: true, immediate: true },
+  )
+
+  // 切换追踪实例属于结构级变化：整图重画一次，避免旧曲线向新数据做补间变形
+  watch(
+    () => props.label,
+    () => renderChart(true),
   )
 </script>
 
