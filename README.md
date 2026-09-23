@@ -54,6 +54,23 @@ docker compose up -d --build
 
 登录（vben 内置 mock 账号）：`admin` / `123456`。
 
+### 方式一·生产：MySQL 持久化打包（推荐上线姿势）
+
+> ⚠️ 默认（不建 `.env`）= `DB_DRIVER=memory` 演示模式，**界面全是 mock 数据**。要生产版本必须显式提供根目录 `.env`（该文件被 gitignore，口令永不入库）：
+
+```bash
+git clone git@github.com:wuxiyuCool/sgDataLink.git && cd dataLink
+cp .env.example .env        # 编辑：DB_DRIVER=mysql、MYSQL_HOST/USER/PASSWORD/DATABASE 填真实值
+docker compose up -d --build
+curl http://localhost:3001/api/v1/health   # 确认返回 "storage":"mysql" 即生产模式生效
+```
+
+生效后的行为差异（契约 4.1/5 节）：空库起步**不注入任何演示种子**；10+ 张 `databridge_*` 表自动建表；数据源连通测试、Data API 查询、同步任务/管道/数据开发全部走真实 MySQL/Oracle 读写（引擎 `mode:"real"`，列表带「真实」Tag；不支持的类型自动降级「模拟」Tag）。
+
+K8s 生产：`deploy/k8s/configmap.yaml` 配好 `MYSQL_HOST` 等，`kubectl create secret generic databridge-db-secret -n databridge --from-literal=MYSQL_PASSWORD=xxx`，再 `kubectl apply -k deploy/k8s/`。
+
+裸机生产：`cp node-express-boilerplate/.env.example node-express-boilerplate/.env`（设 `DB_DRIVER=mysql` + `MYSQL_*`），`yarn install && yarn start`。
+
 ### 方式二：本地开发（依赖只列清单，请自行安装）
 
 前置：Go ≥ 1.24（引擎 go.mod 为 1.24.10；本机 1.21 + `GOTOOLCHAIN=auto` 会自动拉取）、Node ≥ 18、pnpm/yarn、Git Bash。

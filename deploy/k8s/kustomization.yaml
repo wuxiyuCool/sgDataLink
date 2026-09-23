@@ -1,6 +1,9 @@
 namespace: databridge
 resources:
   - namespace.yaml
+  - configmap.yaml
+  # 生产部署前：kubectl create secret generic databridge-db-secret -n databridge --from-literal=MYSQL_PASSWORD=xxx
+  # （或 apply 自建副本的 secret.example.yaml，真实 secret 文件勿入库）
   - admin.yaml
   - engine.yaml
   - web.yaml

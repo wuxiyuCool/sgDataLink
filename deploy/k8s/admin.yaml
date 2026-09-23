@@ -34,6 +34,16 @@ spec:
               value: http://databridge-engine:8080
             - name: ADMIN_REPORT_URL
               value: http://databridge-admin:3001/api/v1/engine
+            # 生产模式（MySQL 落库）：DB_DRIVER/MYSQL_* 来自 ConfigMap，口令来自 Secret
+            # 演示模式删除下面 envFrom 即可（默认 memory，全 mock 数据）
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: databridge-db-secret
+                  key: MYSQL_PASSWORD
+          envFrom:
+            - configMapRef:
+                name: databridge-config
           readinessProbe:
             httpGet:
               path: /api/v1/health
