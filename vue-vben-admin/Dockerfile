@@ -6,8 +6,8 @@ WORKDIR /app
 # 国内构建走 npmmirror（内网实测 0.2s，npmjs 本家 1.1s+ 且经代理易超时）；npm/pnpm/yarn 均认这个变量
 ENV npm_config_registry=https://registry.npmmirror.com
 
-# pnpm-lock.yaml 为 lockfileVersion 5.4（pnpm 7），镜像构建时安装依赖
-RUN npm install -g pnpm@7.33.7
+# pnpm-lock.yaml 为 lockfileVersion 9.0（本地 pnpm 12 生成），需 pnpm >=9 才能命中锁文件
+RUN npm install -g pnpm@9
 
 # 依赖层单独缓存
 # 低并发+多重试：经 squid 代理时 pnpm 默认 16 并发会耗尽连接导致 meta 请求 60s 超时
