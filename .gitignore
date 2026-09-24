@@ -12,3 +12,6 @@ storage/logs/
 
 # 生产部署配置（含数据库口令），只提交 .env.example
 .env
+
+# 打包脚本的本地版本回退记录（以 Harbor 实际 tag 为准）
+deploy/.harbor-version

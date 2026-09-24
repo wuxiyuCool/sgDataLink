@@ -10,11 +10,11 @@ resources:
 # build-push-harbor.sh 推送成功后自动改写 newTag；kubectl apply -k 时映射到 Harbor
 images:
   - name: databridge/admin
-    newName: 10.45.34.165:5000/databridge/admin
-    newTag: v1.0.0
+    newName: 10.45.34.167:5000/datalink/admin
+    newTag: v3
   - name: databridge/engine
-    newName: 10.45.34.165:5000/databridge/engine
-    newTag: v1.0.0
+    newName: 10.45.34.167:5000/datalink/engine
+    newTag: v3
   - name: databridge/web
-    newName: 10.45.34.165:5000/databridge/web
-    newTag: v1.0.0
+    newName: 10.45.34.167:5000/datalink/web
+    newTag: v3
