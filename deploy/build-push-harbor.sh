@@ -10,6 +10,10 @@
 #   load —— 内网机（无外网）：读 tar.gz 并推送 Harbor（你原来的手工流程）
 #            MODE=load bash deploy/build-push-harbor.sh v5 [tar包目录，默认 /opt/dataLink/v5]
 #
+# web 前端分发（推荐，绕开内网装依赖）：
+#   本地 bash deploy/build-web-dist.sh（pnpm build + 产物 tar 提交到 deploy/web-dist/）→ git push
+#   服务器 git pull → ONLY=web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh（自动解压 tar 进 prebuilt-dist/）
+#
 # 可覆盖：REGISTRY / PROJECT / ONLY=admin,engine,web / SKIP_BUILD=1(push 模式跳过构建)
 #         OUT_DIR(save 输出目录) / SRC_DIR(load 输入目录)
 # 内网 Harbor 免密机器无需账号变量；需要认证才设 HARBOR_USER/HARBOR_PASS
@@ -35,10 +39,18 @@ ctx_dir() {
   esac
 }
 
-build_image() {  # $1=服务名 $2=本地tag后缀；web 支持 PREBUILT_WEB=1 用本地传来的 dist 直接打 nginx 镜像
+build_image() {  # $1=服务名 $2=本地tag后缀；web 支持 PREBUILT_WEB=1 用 git 分发的 dist 包直接打 nginx 镜像
   if [[ "$1" == web && "${PREBUILT_WEB:-0}" == "1" ]]; then
+    # 仓库里有更新的 dist tar 包（deploy/build-web-dist.sh 产出并随 git 分发）时自动解压覆盖
+    if [[ -f deploy/web-dist/web-dist.tar.gz ]] && \
+       { [[ ! -f vue-vben-admin/prebuilt-dist/index.html ]] || [[ deploy/web-dist/web-dist.tar.gz -nt vue-vben-admin/prebuilt-dist/index.html ]]; }; then
+      echo "==> 解压 deploy/web-dist/web-dist.tar.gz -> vue-vben-admin/prebuilt-dist/"
+      mkdir -p vue-vben-admin/prebuilt-dist
+      rm -rf vue-vben-admin/prebuilt-dist/*
+      tar xzf deploy/web-dist/web-dist.tar.gz -C vue-vben-admin/prebuilt-dist
+    fi
     [[ -f vue-vben-admin/prebuilt-dist/index.html ]] || {
-      echo "!! PREBUILT_WEB=1 但缺 vue-vben-admin/prebuilt-dist/index.html（先本地 pnpm build 再传 dist）" >&2; exit 1; }
+      echo "!! 缺 vue-vben-admin/prebuilt-dist/index.html：请先本地 bash deploy/build-web-dist.sh 并提交 tar 包，或手动 scp dist" >&2; exit 1; }
     echo "==> 构建 web（预构建 dist 模式，跳过 pnpm install）"
     docker build -f vue-vben-admin/Dockerfile.prebuilt -t "databridge/web:$2" vue-vben-admin
   else
