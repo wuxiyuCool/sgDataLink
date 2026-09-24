@@ -7,8 +7,10 @@ WORKDIR /app
 RUN npm install -g pnpm@7.33.7
 
 # 依赖层单独缓存
+# 低并发+多重试：经 squid 代理时 pnpm 默认 16 并发会耗尽连接导致 meta 请求 60s 超时
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --no-frozen-lockfile --prefer-offline
+RUN pnpm install --no-frozen-lockfile --prefer-offline \
+    --network-concurrency 4 --fetch-retries 5 --fetch-retry-maxtimeout 30000
 
 COPY . .
 
