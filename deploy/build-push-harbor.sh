@@ -36,10 +36,13 @@ ctx_dir() {
 }
 
 curl_tags() {
-  local repo="$1" auth=()
-  [[ -n "$HARBOR_USER" ]] && auth=(-u "$HARBOR_USER:$HARBOR_PASS")
-  curl -fsSk --connect-timeout 5 "${auth[@]}" \
-    "$SCHEME://$REGISTRY/v2/$PROJECT/$repo/tags/list" 2>/dev/null || true
+  local repo="$1" url="$SCHEME://$REGISTRY/v2/$PROJECT/$1/tags/list"
+  # 不用空数组展开：CentOS7 bash4.2 在 set -u 下 "${arr[@]}" 会报 unbound variable
+  if [[ -n "$HARBOR_USER" ]]; then
+    curl -fsSk --connect-timeout 5 -u "$HARBOR_USER:$HARBOR_PASS" "$url" 2>/dev/null || true
+  else
+    curl -fsSk --connect-timeout 5 "$url" 2>/dev/null || true
+  fi
 }
 
 # 版本确定：显式参数优先；否则取三个仓库现有 v<N> tag 最大值 +1，查不到再回退本地记录
@@ -61,8 +64,9 @@ else
     if [[ -f deploy/.harbor-version ]]; then
       max_v=$(cat deploy/.harbor-version)
     else
-      max_v=0
-      echo "!! 无法访问 $REGISTRY 的 tag 列表，从 v1 开始（如已有历史版本请手动核对）"
+      echo "!! 无法访问 $REGISTRY 的 tag 列表，且无本地版本记录。" >&2
+      echo "   请显式指定版本避免覆盖已有镜像，如: bash deploy/build-push-harbor.sh v4" >&2
+      exit 1
     fi
   fi
   VERSION="v$((max_v + 1))"
