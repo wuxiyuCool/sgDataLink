@@ -16,6 +16,8 @@ spec:
       labels:
         app: databridge-web
     spec:
+      imagePullSecrets:
+        - name: harbor-registry
       containers:
         - name: web
           image: databridge/web:mock
@@ -55,7 +57,9 @@ spec:
     - name: http
       port: 80
       targetPort: http
-  type: ClusterIP
+      nodePort: 32614
+  type: NodePort   # 集群当前实测 32614；固定端口避免 apply -k 后随机漂移
+  # 生产切 Ingress 时改回 ClusterIP
 ---
 # 外部访问入口（开发用 NodePort；生产替换为 Ingress）
 apiVersion: networking.k8s.io/v1

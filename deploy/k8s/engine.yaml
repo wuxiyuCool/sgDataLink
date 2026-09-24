@@ -16,6 +16,8 @@ spec:
       labels:
         app: databridge-engine
     spec:
+      imagePullSecrets:
+        - name: harbor-registry
       containers:
         - name: engine
           image: databridge/engine:mock

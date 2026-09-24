@@ -16,6 +16,8 @@ spec:
       labels:
         app: databridge-admin
     spec:
+      imagePullSecrets:
+        - name: harbor-registry   # kubectl create secret docker-registry harbor-registry --docker-server=10.45.34.165:5000 ...
       containers:
         - name: admin
           image: databridge/admin:mock # 替换为你的镜像仓库地址

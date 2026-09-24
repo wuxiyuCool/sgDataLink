@@ -7,3 +7,14 @@ resources:
   - admin.yaml
   - engine.yaml
   - web.yaml
+# build-push-harbor.sh 推送成功后自动改写 newTag；kubectl apply -k 时映射到 Harbor
+images:
+  - name: databridge/admin
+    newName: 10.45.34.165:5000/databridge/admin
+    newTag: v1.0.0
+  - name: databridge/engine
+    newName: 10.45.34.165:5000/databridge/engine
+    newTag: v1.0.0
+  - name: databridge/web
+    newName: 10.45.34.165:5000/databridge/web
+    newTag: v1.0.0
