@@ -35,6 +35,18 @@ ctx_dir() {
   esac
 }
 
+build_image() {  # $1=服务名 $2=本地tag后缀；web 支持 PREBUILT_WEB=1 用本地传来的 dist 直接打 nginx 镜像
+  if [[ "$1" == web && "${PREBUILT_WEB:-0}" == "1" ]]; then
+    [[ -f vue-vben-admin/prebuilt-dist/index.html ]] || {
+      echo "!! PREBUILT_WEB=1 但缺 vue-vben-admin/prebuilt-dist/index.html（先本地 pnpm build 再传 dist）" >&2; exit 1; }
+    echo "==> 构建 web（预构建 dist 模式，跳过 pnpm install）"
+    docker build -f vue-vben-admin/Dockerfile.prebuilt -t "databridge/web:$2" vue-vben-admin
+  else
+    echo "==> 构建 $1 ($(ctx_dir "$1"))"
+    docker build -t "databridge/$1:$2" "$(ctx_dir "$1")"
+  fi
+}
+
 curl_tags() {
   local repo="$1" url="$SCHEME://$REGISTRY/v2/$PROJECT/$1/tags/list"
   # 不用空数组展开：CentOS7 bash4.2 在 set -u 下 "${arr[@]}" 会报 unbound variable
@@ -110,8 +122,7 @@ case "$MODE" in
     harbor_login
     for s in "${SERVICES[@]}"; do
       if [[ "$SKIP_BUILD" != "1" ]]; then
-        echo "==> 构建 $s ($(ctx_dir "$s"))"
-        docker build -t "databridge/$s:mock" "$(ctx_dir "$s")"
+        build_image "$s" mock
       fi
       push_to_harbor "$s" "databridge/$s:mock"
     done
@@ -121,8 +132,7 @@ case "$MODE" in
   save)
     # 外网构建机：build -> save tar.gz，产物拷进内网后用 load 模式
     for s in "${SERVICES[@]}"; do
-      echo "==> 构建 $s ($(ctx_dir "$s"))"
-      docker build -t "databridge/$s:$VERSION" "$(ctx_dir "$s")"
+      build_image "$s" "$VERSION"
       mkdir -p "$OUT_DIR"
       echo "==> 导出 $OUT_DIR/databridge-$s-$VERSION.tar.gz"
       docker save "databridge/$s:$VERSION" | gzip > "$OUT_DIR/databridge-$s-$VERSION.tar.gz"
