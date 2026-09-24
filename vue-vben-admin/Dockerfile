@@ -3,6 +3,9 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
+# 国内构建走 npmmirror（内网实测 0.2s，npmjs 本家 1.1s+ 且经代理易超时）；npm/pnpm/yarn 均认这个变量
+ENV npm_config_registry=https://registry.npmmirror.com
+
 # pnpm-lock.yaml 为 lockfileVersion 5.4（pnpm 7），镜像构建时安装依赖
 RUN npm install -g pnpm@7.33.7
 

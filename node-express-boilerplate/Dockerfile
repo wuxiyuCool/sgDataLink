@@ -13,6 +13,9 @@ ENV NODE_ENV=production \
 
 WORKDIR /usr/src/node-app
 
+# 国内构建走 npmmirror，与 web 镜像保持一致（yarn 1.x 认 npm_config_registry）
+ENV npm_config_registry=https://registry.npmmirror.com
+
 # 先只拷依赖清单，利用层缓存。
 # --ignore-scripts：跳过 prepare(husky) 等脚本；本项目运行时依赖全是纯 JS，无 native 编译。
 COPY package.json yarn.lock ./
