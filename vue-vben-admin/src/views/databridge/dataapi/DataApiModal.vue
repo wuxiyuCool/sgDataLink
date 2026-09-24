@@ -65,20 +65,12 @@
         <FormItem
           label="数据表"
           name="tableName"
-          extra="选定数据源后远程加载可查表，支持关键字搜索（防抖 300ms）；换表会清空已勾选字段"
+          extra="选定数据源后一次性拉取表清单，输入关键字本地过滤；换表会清空已勾选字段"
         >
-          <Select
+          <TableSelect
             v-model:value="formState.tableName"
-            :options="tableOptions"
-            :loading="tablesLoading"
-            :disabled="!formState.datasourceId"
-            show-search
-            :filter-option="false"
-            allow-clear
-            placeholder="点击加载表列表，可直接输入关键字搜索"
-            @search="handleTableSearch"
+            :datasource-id="formState.datasourceId"
             @change="handleTableSelectChange"
-            @dropdown-visible-change="handleTableDropdownOpen"
           />
         </FormItem>
 
@@ -299,7 +291,6 @@
     Table,
     Tag,
   } from 'ant-design-vue'
-  import { useDebounceFn } from '@vueuse/core'
   import { Icon } from '/@/components/Icon'
   import { BasicModal, useModalInner } from '/@/components/Modal'
   import { useMessage } from '/@/hooks/web/useMessage'
@@ -307,7 +298,6 @@
   import {
     createDataApiItemApi,
     getMetaColumnsApi,
-    getMetaTablesApi,
     updateDataApiItemApi,
   } from '/@/api/databridge/dataapi'
   import { getApiErrorMessage } from '/@/api/databridge/http'
@@ -339,6 +329,7 @@
     queryParamTableColumns,
     suggestApiPath,
   } from './dataapi.data'
+  import TableSelect from '../components/TableSelect.vue'
 
   const FormItem = Form.Item
   const TextArea = Input.TextArea
@@ -363,9 +354,6 @@
   const datasourceOptions = ref<SelectOption[]>([])
   let rowSeed = 0
 
-  /** meta/tables 远程下拉状态（契约 1.9.1） */
-  const tableOptions = ref<SelectOption[]>([])
-  const tablesLoading = ref(false)
   /** meta/columns 字段勾选状态 */
   const metaColumns = ref<MetaColumn[]>([])
   const columnsLoading = ref(false)
@@ -459,7 +447,6 @@
     isUpdate.value = !!data?.isUpdate
     submitting.value = false
     Object.assign(formState, defaultForm())
-    tableOptions.value = []
     metaColumns.value = []
     selectedFieldNames.value = []
     setModalProps({ confirmLoading: false })
@@ -484,14 +471,13 @@
       })
     }
     loadDatasources()
-    // 编辑回显：builder 模式下预载表列表与字段，并把已保存字段勾选回去
+    // 编辑回显：builder 模式下预载字段并勾选回显（表清单项由 TableSelect 自动拉取）
     if (
       data?.record &&
       formState.sqlMode === 'builder' &&
       formState.datasourceId &&
       formState.tableName
     ) {
-      loadTables('')
       const savedNames = formState.fields.map((item) => String(item.name))
       loadColumns(String(formState.tableName)).then(() => {
         const present = new Set(metaColumns.value.map((item) => item.name))
@@ -528,49 +514,7 @@
     }
   }
 
-  /** 表名远程搜索：keyword 走后端 LIKE（契约 1.9.1），onSearch 防抖 300ms */
-  async function loadTables(keyword?: string) {
-    const datasourceId = String(formState.datasourceId ?? '')
-    if (!datasourceId) {
-      tableOptions.value = []
-      return
-    }
-    tablesLoading.value = true
-    try {
-      const list = await getMetaTablesApi({
-        datasourceId,
-        keyword: String(keyword ?? '').trim() || undefined,
-      })
-      const options = (list ?? []).map((item) => ({
-        label: item.comment ? `${item.name}（${item.comment}）` : item.name,
-        value: item.name,
-      }))
-      keepCurrentTableOption(options)
-      tableOptions.value = options
-    } catch (error: any) {
-      const fallback: SelectOption[] = []
-      keepCurrentTableOption(fallback)
-      tableOptions.value = fallback
-      createMessage.warning(getApiErrorMessage(error, '表列表加载失败，可退回手动配置'))
-    } finally {
-      tablesLoading.value = false
-    }
-  }
-
-  /** 搜索结果不含当前选中表（编辑回显/按关键字过滤）时补一项，避免下拉丢值 */
-  function keepCurrentTableOption(options: SelectOption[]) {
-    const current = String(formState.tableName ?? '')
-    if (current && !options.some((item) => item.value === current)) {
-      options.unshift({ label: current, value: current })
-    }
-  }
-
-  const handleTableSearch = useDebounceFn((keyword: string) => loadTables(keyword), 300)
-
-  function handleTableDropdownOpen(open: boolean) {
-    if (open && !tableOptions.value.length && formState.datasourceId) loadTables('')
-  }
-
+  /** 表名清单由 TableSelect 内部拉取（契约 1.9.1），这里只负责选表后的列联动 */
   async function loadColumns(tableName: string) {
     metaColumns.value = []
     const datasourceId = String(formState.datasourceId ?? '')
@@ -587,14 +531,12 @@
     }
   }
 
-  /** 换数据源：表/列/勾选全部重置（custom 模式仅影响 SQL 执行所在库，不重置 textarea） */
+  /** 换数据源：表/列/勾选全部重置（表清单由 TableSelect 监听 datasourceId 自动重拉） */
   function handleDatasourceChange() {
     formState.tableName = ''
-    tableOptions.value = []
     metaColumns.value = []
     selectedFieldNames.value = []
     formState.fields = []
-    loadTables('')
   }
 
   /** 换表（用户操作）：清空已勾字段并重新拉列 */

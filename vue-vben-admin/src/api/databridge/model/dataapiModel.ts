@@ -163,6 +163,8 @@ export interface DataApiInvokeParams {
   page?: number
   size?: number
   queryParams?: Recordable
+  /** 调试代理透传的 X-API-Key（空串=模拟未带 Key 触发 40101） */
+  apiKey?: string
 }
 
 /** 运行时 result 数据结构（契约 1.9 成功响应） */

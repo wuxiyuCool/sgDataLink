@@ -26,8 +26,8 @@ oracledb.fetchAsString = [oracledb.DATE, oracledb.CLOB, oracledb.NUMBER];
 
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_$]{0,63}(\.[A-Za-z_][A-Za-z0-9_$]{0,63})?$/;
 const QUERY_TIMEOUT_MS = 10000;
-/** 元数据浏览单次返回上限（表清单可能上千张，前端下拉只需一屏） */
-const MAX_META_ROWS = 500;
+/** 元数据浏览单次返回上限（前端切库时一次性拉全量做本地过滤，Oracle 大 schema 也基本在数千内） */
+const MAX_META_ROWS = 5000;
 /** 契约 1.9：行数硬上限 MAX_SIZE(500)，queryCustom 再兜一次 */
 const MAX_PAGE_SIZE = 500;
 /** 自定义 SQL 分页包装里的行号别名列，取结果列名时按它剔除（下划线不能开头，故带 dbr_ 前缀） */
@@ -305,11 +305,12 @@ const listTables = async (ds, keyword) => {
     try {
       const owner = String(ds.username || '').toUpperCase();
       const hasKeyword = Boolean(keyword);
+      // Oracle LIKE 没有默认转义符，必须显式 ESCAPE，否则 likeParam 里的 \_ 会被当字面下划线导致查不到
       const sql = `
         SELECT t.TABLE_NAME AS "name", c.COMMENTS AS "comment"
           FROM ALL_TABLES t
           LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME
-         WHERE t.OWNER = :owner${hasKeyword ? " AND t.TABLE_NAME LIKE :keyword" : ''}
+         WHERE t.OWNER = :owner${hasKeyword ? " AND t.TABLE_NAME LIKE :keyword ESCAPE '\\'" : ''}
          ORDER BY t.TABLE_NAME`;
       const binds = hasKeyword ? { owner, keyword: likeParam(keyword, true) } : { owner };
       const { rows } = await conn.execute(sql, binds, { outFormat: oracledb.OUT_FORMAT_ARRAY, maxRows: MAX_META_ROWS });
@@ -321,7 +322,7 @@ const listTables = async (ds, keyword) => {
         SELECT t.OWNER || '.' || t.TABLE_NAME AS "name", c.COMMENTS AS "comment"
           FROM ALL_TABLES t
           LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME
-         WHERE t.OWNER NOT IN ('SYS','SYSTEM','OUTLN','DBSNMP','APPQOSSYS','WMSYS','XDB','ORDSYS','MDSYS')${hasKeyword ? ' AND t.TABLE_NAME LIKE :keyword' : ' AND t.OWNER = :owner'}
+         WHERE t.OWNER NOT IN ('SYS','SYSTEM','OUTLN','DBSNMP','APPQOSSYS','WMSYS','XDB','ORDSYS','MDSYS')${hasKeyword ? " AND t.TABLE_NAME LIKE :keyword ESCAPE '\\'" : ' AND t.OWNER = :owner'}
          ORDER BY t.OWNER, t.TABLE_NAME`;
       const fb = await conn.execute(fallbackSql, hasKeyword ? { keyword: likeParam(keyword, true) } : { owner }, { outFormat: oracledb.OUT_FORMAT_ARRAY, maxRows: MAX_META_ROWS });
       return fb.rows.map((row) => ({ name: String(row[0]), comment: row[1] === null || row[1] === undefined ? null : String(row[1]) }));

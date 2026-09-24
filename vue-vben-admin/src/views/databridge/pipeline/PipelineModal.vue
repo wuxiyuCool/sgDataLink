@@ -27,6 +27,7 @@
           show-search
           option-filter-prop="label"
           placeholder="请选择 CDC 捕获端数据源"
+          @change="formState.syncObjects = []"
         />
       </FormItem>
       <FormItem label="目标数据源" name="targetId">
@@ -59,13 +60,13 @@
             @change="handleModeChange"
           />
         </div>
-        <Select
+        <TableSelect
           v-if="!textMode"
           v-model:value="formState.syncObjects"
           mode="tags"
-          :options="syncObjectOptions"
+          :datasource-id="formState.sourceId"
           :token-separators="TOKEN_SEPARATORS"
-          placeholder="例如：APP_USER.T_ORDER"
+          placeholder="选择源数据源后可搜索表名，回车或粘贴可自定义"
         />
         <TextArea
           v-else
@@ -138,6 +139,7 @@
     PipelinePayload,
   } from '/@/api/databridge/model/pipelineModel'
   import { DEFAULT_DDL_POLICY, DDL_POLICY_OPTIONS, pickPipelinePayload } from '../data'
+  import TableSelect from '../components/TableSelect.vue'
   import {
     DEFAULT_POLL_INTERVAL_SEC,
     MAX_POLL_INTERVAL_SEC,
@@ -145,7 +147,6 @@
     clampPollInterval,
     parseSyncObjects,
     stringifySyncObjects,
-    SYNC_OBJECT_SAMPLES,
   } from './pipeline.data'
 
   const FormItem = Form.Item
@@ -163,7 +164,6 @@
   const submitting = ref(false)
   const datasourceLoading = ref(false)
   const datasourceOptions = ref<{ label: string; value: string }[]>([])
-  const syncObjectOptions = SYNC_OBJECT_SAMPLES.map((item) => ({ label: item, value: item }))
 
   const defaultForm = () => ({
     id: undefined as string | undefined,

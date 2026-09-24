@@ -29,10 +29,11 @@
             show-search
             option-filter-prop="label"
             :placeholder="node?.type === 'input' ? '请选择读取的源数据源' : '请选择写入的目标数据源'"
+            @change="form.table = ''"
           />
         </FormItem>
-        <FormItem label="表名" required>
-          <Input v-model:value="form.table" placeholder="例如：T_ORDER" />
+        <FormItem label="表名" required extra="选定数据源后可输入关键字远程搜索表名">
+          <TableSelect v-model:value="form.table" :datasource-id="form.datasourceId" />
         </FormItem>
       </template>
       <FormItem v-if="node?.type === 'output'" label="写入策略">
@@ -143,6 +144,7 @@
     validateFieldTransforms,
   } from '../../data'
   import FieldMappingEditor from '../../components/FieldMappingEditor.vue'
+  import TableSelect from '../../components/TableSelect.vue'
 
   const FormItem = Form.Item
   const TextArea = Input.TextArea

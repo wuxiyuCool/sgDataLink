@@ -101,10 +101,11 @@
             show-search
             option-filter-prop="label"
             placeholder="请选择源数据源（来自 /datasources）"
+            @change="formState.sourceTable = ''"
           />
         </FormItem>
-        <FormItem label="源表" name="sourceTable">
-          <Input v-model:value="formState.sourceTable" placeholder="例如：T_ORDER" />
+        <FormItem label="源表" name="sourceTable" extra="选定数据源后可输入关键字远程搜索表名">
+          <TableSelect v-model:value="formState.sourceTable" :datasource-id="formState.sourceId" />
         </FormItem>
         <FormItem label="目标数据源" name="targetId">
           <Select
@@ -114,10 +115,11 @@
             show-search
             option-filter-prop="label"
             placeholder="请选择目标数据源（来自 /datasources）"
+            @change="formState.targetTable = ''"
           />
         </FormItem>
-        <FormItem label="目标表" name="targetTable">
-          <Input v-model:value="formState.targetTable" placeholder="例如：T_ORDER_MIRROR" />
+        <FormItem label="目标表" name="targetTable" extra="选定数据源后可输入关键字远程搜索表名">
+          <TableSelect v-model:value="formState.targetTable" :datasource-id="formState.targetId" />
         </FormItem>
       </div>
     </Form>
@@ -162,6 +164,7 @@
   import type { Datasource } from '/@/api/databridge/model/datasourceModel'
   import type { FieldMapping, Task, TaskPayload } from '/@/api/databridge/model/taskModel'
   import FieldMappingEditor from '../components/FieldMappingEditor.vue'
+  import TableSelect from '../components/TableSelect.vue'
   import {
     DEFAULT_RETRY_COUNT,
     DEFAULT_RETRY_INTERVAL_SEC,
@@ -229,9 +232,9 @@
     writeMode: [{ required: true, message: '请选择写入策略', trigger: 'change' }],
     batchSize: [{ required: true, type: 'number', message: '请输入批次大小', trigger: 'change' }],
     sourceId: [{ required: true, message: '请选择源数据源', trigger: 'change' }],
-    sourceTable: [{ required: true, message: '请输入源表', trigger: 'blur' }],
+    sourceTable: [{ required: true, message: '请选择源表', trigger: 'change' }],
     targetId: [{ required: true, message: '请选择目标数据源', trigger: 'change' }],
-    targetTable: [{ required: true, message: '请输入目标表', trigger: 'blur' }],
+    targetTable: [{ required: true, message: '请选择目标表', trigger: 'change' }],
   }))
 
   const [registerModal, { setModalProps, closeModal }] = useModalInner(async (data) => {

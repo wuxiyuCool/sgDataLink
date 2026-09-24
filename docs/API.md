@@ -448,7 +448,7 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
 | POST / PUT / DELETE | `/data-apis/:id` | CRUD |
 | POST | `/data-apis/:id/publish` | 发布（生成 apiKey，状态 published） |
 | POST | `/data-apis/:id/unpublish` | 下线 |
-| POST | `/data-apis/:id/invoke` | 前端"调试"按钮代理调用（透传 runtime 结果） |
+| POST | `/data-apis/:id/invoke` | 前端"调试"按钮代理调用（透传 runtime 结果）。body `{page?, size?, queryParams?, apiKey?}`：`apiKey` 传字符串（含空串）以入参为准（可复现 40101/40102），完全不带则回落服务端已存 key |
 | GET | `/data-apis/:id/stats` | 调用统计（invokeCount/errorCount/avgLatencyMs/recentTrend 最近7天） |
 
 数据服务对象：
@@ -491,7 +491,7 @@ Header: X-API-Key: dk-9f3a...   （authEnabled=true 时必需）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/data-apis/meta/tables?datasourceId=xxx&keyword=` | 列出该数据源可查表（真实模式查 information_schema / ALL_TABLES；memory 模式返回内置演示表） |
+| GET | `/data-apis/meta/tables?datasourceId=xxx&keyword=` | 列出该数据源可查表（真实模式查 information_schema / ALL_TABLES，单次上限 5000 行；memory 模式返回内置演示表）。keyword 可选走 LIKE（Oracle 已显式 ESCAPE）；**前端约定**：切数据源时不带 keyword 拉全量，之后输入走本地内存过滤，不实时请求 |
 | GET | `/data-apis/meta/columns?datasourceId=xxx&tableName=yyy` | 列出表字段 |
 
 响应 `result`：

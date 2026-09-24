@@ -41,6 +41,20 @@
         <FormItem label="服务地址">
           <Input v-model:value="baseUrl" style="width: 220px" placeholder="http://127.0.0.1:3001" />
         </FormItem>
+        <FormItem>
+          <template #label>
+            <Tooltip title="鉴权开启时随请求携带（等价 X-API-Key 头）；已自动填入保存的 key，清空可复现 40101/40102">
+              API Key
+            </Tooltip>
+          </template>
+          <Input
+            v-model:value="apiKeyInput"
+            style="width: 260px"
+            allow-clear
+            :disabled="api?.authEnabled === false"
+            :placeholder="api?.authEnabled === false ? '该服务未开启鉴权' : 'X-API-Key'"
+          />
+        </FormItem>
       </Form>
       <Form v-if="queryParams.length" layout="inline" class="mt-2">
         <!-- 按契约 1.9.2 的 queryParams[].type 渲染输入控件；list 原样传逗号分隔串，后端逐元素绑定 -->
@@ -198,6 +212,8 @@
   const page = ref(1)
   const size = ref(20)
   const baseUrl = ref(DATA_RUNTIME_BASE)
+  /** 调试用 API Key：打开时预填保存的 key，清空后显式传空串可复现 401 */
+  const apiKeyInput = ref('')
   const paramValues = reactive<Recordable>({})
   const invoking = ref(false)
   const response = ref<DataApiInvokeResult | null>(null)
@@ -236,7 +252,7 @@
       page: Number(unref(page) || 1),
       size: Number(unref(size) || 20),
       queryParams: collectParams(),
-      apiKey: props.api?.apiKey ?? '',
+      apiKey: unref(apiKeyInput) || (props.api?.apiKey ?? ''),
       authEnabled: props.api?.authEnabled !== false,
     }),
   )
@@ -260,6 +276,7 @@
       errorText.value = ''
       errorCode.value = undefined
       costMs.value = null
+      apiKeyInput.value = String(props.api?.apiKey ?? '')
       Object.keys(paramValues).forEach((key) => delete paramValues[key])
       queryParams.value.forEach((param) => {
         // number 用 null 让 InputNumber 显示占位符；date 走 valueFormat 直接绑字符串
@@ -283,6 +300,8 @@
         page: Number(page.value || 1),
         size: Number(size.value || 20),
         queryParams: collectParams(),
+        // 始终显式传字符串：清空后传空串让网关按「未带 Key」处理，可复现 40101/40102
+        apiKey: String(apiKeyInput.value ?? ''),
       })
       costMs.value = Date.now() - startAt
       response.value = result ?? null

@@ -14,14 +14,6 @@ export function stringifySyncObjects(objects?: string[]): string {
   return (objects ?? []).join('\n')
 }
 
-/** 表名样例，作为 tags 输入的候选项，减少手输成本 */
-export const SYNC_OBJECT_SAMPLES = [
-  'APP_USER.T_ORDER',
-  'APP_USER.T_ORDER_ITEM',
-  'APP_USER.T_PRODUCT',
-  'PUBLIC.T_USER',
-]
-
 /* ------------------------------------------------------------------ */
 /* 增量轮询配置（契约 4.1 / 5：真实模式按 cdcPollColumn 每 N 秒拉一轮） */
 /* ------------------------------------------------------------------ */
