@@ -51,7 +51,18 @@ MODE=load bash deploy/build-push-harbor.sh v<N> [tar包目录，默认 /opt/data
 ## 4. K8s 生效与验证
 
 ```bash
+# 新机器（kubectl >= 1.14，支持 kustomize）：
 cd deploy/k8s && kubectl apply -k
+
+# 老机器（如 master-01，kubectl 不支持 -k —— 占位镜像名不会被替换，禁用 apply -f 直推）：
+kubectl -n databridge set image deploy/databridge-admin admin=10.45.34.167:5000/datalink/admin:v<N>
+kubectl -n databridge set image deploy/databridge-web  web=10.45.34.167:5000/datalink/web:v<N>
+kubectl -n databridge set image deploy/databridge-engine engine=10.45.34.167:5000/datalink/engine:v<N>  # 仅本轮重建了 engine 时执行
+```
+
+```bash
+# rollout status 老版本一次只能查一个资源：
+kubectl -n databridge rollout status deploy/databridge-admin
 kubectl -n databridge rollout status deploy/databridge-web
 curl -s http://<任意节点IP>:32614/ | head -c 200   # 应返回 index.html（NodePort 固定 32614）
 ```
