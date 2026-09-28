@@ -34,6 +34,7 @@ const envVarsSchema = Joi.object()
     MYSQL_CONNECT_TIMEOUT_MS: Joi.number().default(10000).description('mysql connect timeout'),
     ORACLE_POOL_MIN: Joi.number().default(2).description('oracle pool min connections per datasource'),
     ORACLE_POOL_MAX: Joi.number().default(10).description('oracle pool max connections per datasource'),
+    ADMIN_INIT_PASSWORD: Joi.string().allow('').default('').description('首次播种 admin 的初始密码，留空则随机生成并打日志'),
     MONGODB_URL: Joi.string().allow('').default('').description('Mongo DB url (empty in memory-mock mode)'),
     JWT_SECRET: Joi.string().default('databridge-mock-secret').description('JWT secret key'),
     JWT_ACCESS_EXPIRATION_MINUTES: Joi.number().default(30).description('minutes after which access tokens expire'),
@@ -105,6 +106,7 @@ module.exports = {
       poolMax: envVars.ORACLE_POOL_MAX,
     },
   },
+  adminInitPassword: envVars.ADMIN_INIT_PASSWORD,
   engine: {
     baseUrl: envVars.ENGINE_BASE_URL,
     reportUrl: envVars.ADMIN_REPORT_URL,

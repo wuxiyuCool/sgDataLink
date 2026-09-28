@@ -161,6 +161,31 @@ const databridge: AppRouteModule = {
       ],
     },
     {
+      // ------------------------- 四、系统管理（仅 admin，见契约 1.11） -------------------------
+      path: 'system',
+      name: 'DatabridgeSystem',
+      component: getParentLayout('DatabridgeSystem'),
+      meta: {
+        title: '系统管理',
+        icon: 'ion:settings-outline',
+        orderNo: 40,
+        hidePathForChildren: true,
+        roles: ['admin'],
+      },
+      children: [
+        {
+          path: '/databridge/users',
+          name: 'DatabridgeUsers',
+          component: () => import('/@/views/databridge/system/users.vue'),
+          meta: {
+            title: '用户管理',
+            icon: 'ion:people-outline',
+            roles: ['admin'],
+          },
+        },
+      ],
+    },
+    {
       // ---------------- 数据开发画布（不在菜单中，由列表页跳转进入） ----------------
       path: 'dataflow/canvas',
       name: 'DatabridgeDataflowCanvas',

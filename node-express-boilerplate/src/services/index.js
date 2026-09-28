@@ -1,7 +1,5 @@
-module.exports.authService = require('./auth.service');
-module.exports.emailService = require('./email.service');
-module.exports.tokenService = require('./token.service');
-module.exports.userService = require('./user.service');
+// 平台账号与用户管理（契约 1.11，替代脚手架 mongoose auth 链）
+module.exports.accountService = require('./account.service');
 // DataBridge 管理后端（内存 mock）
 module.exports.datasourceService = require('./datasource.service');
 module.exports.syncTaskService = require('./syncTask.service');

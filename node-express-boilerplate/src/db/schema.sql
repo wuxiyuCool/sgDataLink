@@ -333,6 +333,27 @@ CREATE TABLE IF NOT EXISTS `databridge_alert_record` (
   KEY `idx_alertrecord_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- 平台用户（契约 1.11）：密码只存 bcrypt 哈希，明文永不落库；username 唯一由应用层校验 + 本索引兜底
+CREATE TABLE IF NOT EXISTS `databridge_user` (
+  `seq`                   BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`                    VARCHAR(64)  NOT NULL COMMENT 'usr- 前缀',
+  `username`              VARCHAR(64)  NOT NULL,
+  `password_hash`         VARCHAR(128) NOT NULL COMMENT 'bcryptjs cost10，禁止任何形式回显',
+  `nickname`              VARCHAR(128) NULL,
+  `role`                  VARCHAR(16)  NOT NULL DEFAULT 'user' COMMENT 'admin | user',
+  `status`                VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active | disabled',
+  `must_change_password`  TINYINT(1)   NULL COMMENT '1=新建/被重置后首登需改密',
+  `last_login_at`         DATETIME(3)  NULL,
+  `created_at`            DATETIME(3)  NULL,
+  `updated_at`            DATETIME(3)  NULL,
+  `extra`                 JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_user_id` (`id`),
+  UNIQUE KEY `uk_user_username` (`username`),
+  KEY `idx_user_role` (`role`),
+  KEY `idx_user_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- ID 序列（复刻 memoryStore 的 prefix + 自增语义，LAST_INSERT_ID 原子取号）---------
 CREATE TABLE IF NOT EXISTS `databridge_id_seq` (
   `id_prefix` VARCHAR(8) NOT NULL COMMENT 'ds- | task- | inst- | log- | ofs- | pipe- | df- | api- | ar- | rec-',

@@ -30,6 +30,7 @@ const MYSQL_STORES = {
   dataapi: () => require('./mysql/dataapi.store'),
   alertrule: () => require('./mysql/alertrule.store'),
   alertrecord: () => require('./mysql/alertrecord.store'),
+  user: () => require('./mysql/user.store'),
 };
 
 /** 把实现对象的函数全部包一层，保证签名统一返回 Promise（非函数属性原样保留） */

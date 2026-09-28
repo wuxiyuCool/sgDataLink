@@ -1,60 +1,24 @@
 const Joi = require('joi');
-const { password } = require('./custom.validation');
 
-const register = {
-  body: Joi.object().keys({
-    email: Joi.string().required().email(),
-    password: Joi.string().required().custom(password),
-    name: Joi.string().required(),
-  }),
-};
-
+/**
+ * 鉴权路由校验（docs/API.md 1.11）：用户名 + 密码登录，无注册/邮箱验证概念，
+ * 账号生命周期由 /users 管理接口控制。
+ */
 const login = {
   body: Joi.object().keys({
-    email: Joi.string().required(),
-    password: Joi.string().required(),
+    username: Joi.string().trim().max(64).required(),
+    password: Joi.string().max(128).required(),
   }),
 };
 
-const logout = {
+const changePassword = {
   body: Joi.object().keys({
-    refreshToken: Joi.string().required(),
-  }),
-};
-
-const refreshTokens = {
-  body: Joi.object().keys({
-    refreshToken: Joi.string().required(),
-  }),
-};
-
-const forgotPassword = {
-  body: Joi.object().keys({
-    email: Joi.string().email().required(),
-  }),
-};
-
-const resetPassword = {
-  query: Joi.object().keys({
-    token: Joi.string().required(),
-  }),
-  body: Joi.object().keys({
-    password: Joi.string().required().custom(password),
-  }),
-};
-
-const verifyEmail = {
-  query: Joi.object().keys({
-    token: Joi.string().required(),
+    oldPassword: Joi.string().max(128).required(),
+    newPassword: Joi.string().min(8).max(64).required(),
   }),
 };
 
 module.exports = {
-  register,
   login,
-  logout,
-  refreshTokens,
-  forgotPassword,
-  resetPassword,
-  verifyEmail,
+  changePassword,
 };

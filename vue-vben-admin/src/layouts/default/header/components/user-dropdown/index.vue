@@ -18,6 +18,7 @@
           v-if="getShowDoc"
         />
         <MenuDivider v-if="getShowDoc" />
+        <MenuItem key="change-password" text="修改密码" icon="ion:key-outline" />
         <MenuItem
           key="logout"
           :text="t('layout.header.dropdownItemLoginOut')"
@@ -26,13 +27,14 @@
       </Menu>
     </template>
   </Dropdown>
+  <ChangePasswordModal v-model:visible="pwdVisible" :forced="pwdForced" />
 </template>
 <script lang="ts">
   // components
   import { Dropdown, Menu } from 'ant-design-vue'
   import type { MenuInfo } from 'ant-design-vue/lib/menu/src/interface'
 
-  import { defineComponent, computed } from 'vue'
+  import { defineComponent, computed, ref, watch } from 'vue'
 
   import { DOC_URL } from '/@/settings/siteSetting'
 
@@ -47,8 +49,9 @@
   import { openWindow } from '/@/utils'
 
   import { createAsyncComponent } from '/@/utils/factory/createAsyncComponent'
+  import ChangePasswordModal from './ChangePasswordModal.vue'
 
-  type MenuEvent = 'logout' | 'doc'
+  type MenuEvent = 'logout' | 'doc' | 'change-password'
 
   export default defineComponent({
     name: 'UserDropdown',
@@ -57,6 +60,7 @@
       Menu,
       MenuItem: createAsyncComponent(() => import('./DropMenuItem.vue')),
       MenuDivider: Menu.Divider,
+      ChangePasswordModal,
     },
     props: {
       theme: propTypes.oneOf(['dark', 'light']),
@@ -73,6 +77,20 @@
       })
 
       const [register] = useModal()
+
+      /** 契约 1.11：修改密码入口 + mustChangePassword 登录后强制弹窗（可延后，下次登录再提醒） */
+      const pwdVisible = ref(false)
+      const pwdForced = ref(false)
+      watch(
+        () => (userStore.getUserInfo as any)?.mustChangePassword,
+        (must) => {
+          if (must) {
+            pwdForced.value = true
+            pwdVisible.value = true
+          }
+        },
+        { immediate: true },
+      )
 
       //  login out
       function handleLoginOut() {
@@ -92,6 +110,10 @@
           case 'doc':
             openDoc()
             break
+          case 'change-password':
+            pwdForced.value = false
+            pwdVisible.value = true
+            break
         }
       }
 
@@ -102,6 +124,8 @@
         handleMenuClick,
         getShowDoc,
         register,
+        pwdVisible,
+        pwdForced,
       }
     },
   })

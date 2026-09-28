@@ -9,7 +9,7 @@ const { seed } = require('./repositories');
 const datasourceRepository = require('./repositories/datasource.repository');
 // 先加载 services 聚合入口：它会把 task / dataflow 两种「可运行体」注册进 run.service，
 // 调度器与失败重试都靠这份 registry 找到该调谁的 start()。
-const { schedulerService } = require('./services');
+const { schedulerService, accountService } = require('./services');
 
 let server;
 
@@ -44,12 +44,15 @@ const startWithMysql = async () => {
       logger.info('空库起步已生效（不注入演示种子），当前数据源 %d 条', datasourceTotal);
     }
   }
+  // 契约 1.11：用户表空表时播种唯一 admin（初始密码见 WARN 日志，首登强制改密）
+  await accountService.ensureSeedAdmin();
   listen('mysql driver ready');
 };
 
 const startInMemoryMockMode = async () => {
   logger.info('running in memory-mock mode');
   await seed();
+  await accountService.ensureSeedAdmin();
   listen();
 };
 

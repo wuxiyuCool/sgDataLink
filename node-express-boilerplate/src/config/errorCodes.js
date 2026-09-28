@@ -16,6 +16,10 @@ const ERROR_CODES = {
   IP_NOT_WHITELISTED: 40301,
   RATE_LIMIT_EXCEEDED: 42901,
   DATA_API_NOT_FOUND: 40404,
+  /** 契约 1.11：登录凭据错误（不区分用户不存在/密码错，防枚举） */
+  LOGIN_FAILED: 40103,
+  /** 契约 1.11：账号被管理员禁用 */
+  ACCOUNT_DISABLED: 40104,
   ENGINE_UNAVAILABLE: 50001,
   ENGINE_REJECTED: 50002,
   /** Data API 真实查询失败（目标库连接/SQL 报错），docs/API.md 1.9 */
@@ -32,6 +36,8 @@ const HTTP_STATUS_BY_CODE = {
   40901: 409,
   40101: 401,
   40102: 401,
+  40103: 401,
+  40104: 403,
   40301: 403,
   42901: 429,
   40404: 404,

@@ -1,54 +1,60 @@
 const Joi = require('joi');
-const { password, objectId } = require('./custom.validation');
+
+/**
+ * 用户管理校验（docs/API.md 1.11）。
+ * 密码强度规则（8~64 位、字母+数字）在这里做格式粗检，account.service 再权威校验并哈希。
+ * username 的字符集校验放 service（要小写归一后判断），这里只限长度假隔注入面。
+ */
+const id = Joi.string().trim().max(64).required();
+
+const listUsers = {
+  query: Joi.object()
+    .keys({
+      keyword: Joi.string().trim().max(64).allow(''),
+      role: Joi.string().valid('admin', 'user'),
+      status: Joi.string().valid('active', 'disabled'),
+      sort: Joi.string().trim().pattern(/^[A-Za-z._]+(:asc|:desc)?$/i),
+      page: Joi.number().integer().min(1),
+      size: Joi.number().integer().min(1).max(200),
+    })
+    .unknown(true),
+};
 
 const createUser = {
   body: Joi.object().keys({
-    email: Joi.string().required().email(),
-    password: Joi.string().required().custom(password),
-    name: Joi.string().required(),
-    role: Joi.string().required().valid('user', 'admin'),
-  }),
-};
-
-const getUsers = {
-  query: Joi.object().keys({
-    name: Joi.string(),
-    role: Joi.string(),
-    sortBy: Joi.string(),
-    limit: Joi.number().integer(),
-    page: Joi.number().integer(),
-  }),
-};
-
-const getUser = {
-  params: Joi.object().keys({
-    userId: Joi.string().custom(objectId),
+    username: Joi.string().trim().min(3).max(32).required(),
+    nickname: Joi.string().trim().max(128).allow('', null),
+    password: Joi.string().min(8).max(64).required(),
+    role: Joi.string().valid('admin', 'user'),
   }),
 };
 
 const updateUser = {
-  params: Joi.object().keys({
-    userId: Joi.required().custom(objectId),
-  }),
+  params: Joi.object().keys({ id }),
   body: Joi.object()
     .keys({
-      email: Joi.string().email(),
-      password: Joi.string().custom(password),
-      name: Joi.string(),
+      nickname: Joi.string().trim().max(128).allow(''),
+      role: Joi.string().valid('admin', 'user'),
+      status: Joi.string().valid('active', 'disabled'),
     })
     .min(1),
 };
 
 const deleteUser = {
-  params: Joi.object().keys({
-    userId: Joi.string().custom(objectId),
+  params: Joi.object().keys({ id }),
+};
+
+const resetPassword = {
+  params: Joi.object().keys({ id }),
+  body: Joi.object().keys({
+    password: Joi.string().min(8).max(64).required(),
   }),
 };
 
 module.exports = {
+  listUsers,
   createUser,
-  getUsers,
-  getUser,
   updateUser,
   deleteUser,
+  resetPassword,
 };

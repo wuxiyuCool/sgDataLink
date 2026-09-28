@@ -4,8 +4,8 @@ const httpStatus = require('http-status');
  * DataBridge 统一响应信封（docs/API.md 第 0 节，兼容 vben v2 defHttp 解析）：
  * { code: 0, message: 'success', result: <payload>, timestamp: 1700000000000 }
  *
- * 注意：脚手架自带路由（/auth /users）保持原样返回裸对象，
- * 信封只用于新增的 DataBridge 路由。
+ * 注：/auth /users 自契约 1.11 起同样走信封（真实登录），
+ * 以及这些鉴权路由。
  */
 const envelope = (result = null, message = 'success') => ({
   code: 0,

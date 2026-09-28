@@ -62,6 +62,12 @@ const dataQueryFailed = (message) => bizError(ERROR_CODES.DATA_QUERY_FAILED, mes
 /** 50003 + HTTP 502：1.9.3 API 转发目标不可达/超时/响应超限（message 不得含凭据） */
 const dataForwardFailed = (message) => bizError(ERROR_CODES.DATA_QUERY_FAILED, message, httpStatus.BAD_GATEWAY);
 
+/** 40103 登录失败（契约 1.11，message 固定不区分原因） */
+const loginFailed = (message) => bizError(ERROR_CODES.LOGIN_FAILED, message);
+
+/** 40104 账号已禁用（契约 1.11） */
+const accountDisabled = (message) => bizError(ERROR_CODES.ACCOUNT_DISABLED, message);
+
 module.exports = {
   ERROR_CODES,
   bizError,
@@ -79,4 +85,6 @@ module.exports = {
   dataApiNotFound,
   dataQueryFailed,
   dataForwardFailed,
+  loginFailed,
+  accountDisabled,
 };

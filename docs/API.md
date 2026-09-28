@@ -612,6 +612,28 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 ---
 
+### 1.11 用户与鉴权（真实登录，替代脚手架 mock）
+
+用户表 `databridge_user`（mysql 模式自动建表；空表启动自动播种 `admin`，初始密码见服务端启动日志，`mustChangePassword=true`）。密码 **bcryptjs(cost 10) 哈希存储**，任何接口/日志/错误消息不回显明文或哈希。
+
+**会话**：`POST /auth/login` 成功返回 JWT access token（`Authorization: Bearer <token>`，有效期 `JWT_ACCESS_EXPIRATION_MINUTES`，默认 30 分钟）。业务码：40103 用户名或密码错误（**不区分二者，防账号枚举**）、40104 账号已禁用。登录接口挂 `authLimiter`（15 分钟窗口失败 20 次限流）。
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| POST | `/auth/login` | 匿名 | `{username,password}` → `{token, user}`；user 含 `mustChangePassword` |
+| GET | `/auth/me` | JWT | 当前用户信息 |
+| POST | `/auth/change-password` | JWT | `{oldPassword,newPassword}`；旧密码不符 40001；成功后清 mustChangePassword |
+| GET | `/users` | JWT+admin | 分页；`keyword`（用户名/昵称）`role` `status` |
+| POST | `/users` | JWT+admin | `{username,nickname,password,role}`；username 3~32 位 `[a-z0-9_.-]` 全库唯一；新建用户 `mustChangePassword=true` |
+| PUT | `/users/:id` | JWT+admin | `{nickname,role,status}`；**不得禁用/降级自己**；系统必须保留至少一个可用 admin |
+| DELETE | `/users/:id` | JWT+admin | **不得删除自己**；最后一个 admin 不可删 |
+| POST | `/users/:id/reset-password` | JWT+admin | `{password}` 管理员重置他人密码，置 `mustChangePassword=true` |
+
+- **密码强度（服务端强制）**：8~64 位，至少含 1 字母和 1 数字；不满足 40001。
+- **越权红线**：`/users` 全部接口与用户数据访问仅限 admin 角色（passport-jwt + roleRights），普通用户访问一律 403；改密/查自己走 `/auth/*`，不接受任何 userId 参数（无 IDOR 面）。
+- **本期边界（诚实声明）**：JWT 强制覆盖 `/users`、`/auth/me`、`/auth/change-password`；其余 DataBridge 业务接口本期仍不鉴权（`/ds/{path}` 继续走 apiKey 机制，engine 回报通道待二阶段加共享密钥），前端路由守卫按角色显隐菜单。
+- 前端：登录页对接真实 `/auth/login`；「系统管理→用户管理」页（admin 可见）提供增删改/禁用/重置密码；头像菜单提供个人修改密码；`mustChangePassword=true` 时登录后强制弹出改密。
+
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）
 
 引擎响应结构（Node 调用，不直接暴露给浏览器）：
@@ -702,7 +724,7 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时） |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时）、`ADMIN_INIT_PASSWORD`（契约 1.11 首次播种 admin 的初始密码，留空随机生成并打日志）、`JWT_SECRET`/`JWT_ACCESS_EXPIRATION_MINUTES`（登录令牌签名与有效期） |
 | databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS` |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
 

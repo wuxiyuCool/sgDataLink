@@ -10,10 +10,11 @@ const verifyCallback = (req, resolve, reject, requiredRights) => async (err, use
   req.user = user;
 
   if (requiredRights.length) {
-    const userRights = roleRights.get(user.role);
+    const userRights = roleRights.get(user.role) || [];
     const hasRequiredRights = requiredRights.every((requiredRight) => userRights.includes(requiredRight));
-    if (!hasRequiredRights && req.params.userId !== user.id) {
-      return reject(new ApiError(httpStatus.FORBIDDEN, 'Forbidden'));
+    // 契约 1.11 越权红线：权限不足一律 403（去掉脚手架时代 "userId 是自己就放行" 的逃逸分支）
+    if (!hasRequiredRights) {
+      return reject(new ApiError(httpStatus.FORBIDDEN, '权限不足，该操作仅限管理员'));
     }
   }
 

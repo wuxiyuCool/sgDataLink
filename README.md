@@ -52,7 +52,7 @@ docker compose up -d --build
 | Node 管理后端 | http://localhost:3001/api/v1 （健康检查 `/health`） |
 | Go 引擎 | http://localhost:8080/health |
 
-登录（vben 内置 mock 账号）：`admin` / `123456`。
+登录（契约 1.11 真实用户体系，bcrypt + JWT，不再是 vben mock）：首次启动自动播种 `admin`——初始密码取 `ADMIN_INIT_PASSWORD` 环境变量，未配置则随机生成并打印在 Node 服务启动日志（WARN 行，仅此一次）；首登会强制修改密码。密码规则 8~64 位含字母+数字；「系统管理 → 用户管理」（仅 admin 可见）支持建用户/编辑/禁用/删除/重置密码，头像菜单可修改本人密码。
 
 ### 方式一·生产：MySQL 持久化打包（推荐上线姿势）
 
@@ -130,6 +130,9 @@ Node 管理后端支持双驱动（仓储门面按 `DB_DRIVER` 选择实现，se
 - **告警管理**：规则 CRUD（task_failed/pipeline_error/lag_over_threshold × 钉钉/企微/邮件通道占位）+ 告警记录列表/标记已读；触发链路真实生效（引擎 failed/lag 回报即写记录，webhook 为 mock-sent）。
 - **数据血缘**：`/lineage/graph` 由数据源/任务/管道/数据开发/数据服务聚合表级血缘，ECharts 力导向图展示。
 - **offset 点位**：任务实例位点查询（增量 `UPDATE_TIME=`、全量 `ROWID=`、CDC `SCN=`）。
+
+### 用户与权限（契约 1.11）
+真实登录（bcrypt 哈希 + JWT，替代 vben mock）：`databridge_user` 表空表启动自动播种 admin；「系统管理 → 用户管理」（仅 admin）提供新建/编辑/禁用/删除/重置密码，头像菜单修改本人密码，`mustChangePassword` 首登强制改密。安全红线：登录失败统一 40103 防枚举、禁用账号 40104 且旧 token 实时失效、`/users` 越权 403、不许删/禁/降级自己、保留最后一个可用 admin、密码强度服务端强制、任何接口不回显密码。
 
 ### 引擎模拟执行
 每任务一个 goroutine + `context.WithCancel`：按 `batchSize` 每秒（`MOCK_TICK_MS`）推进读/写行数，进度与日志实时回报 Node（`/api/v1/engine/report`、`/logs`）；支持 `failureRate` 随机失败（`ORA-01555` / `LOGMINER session terminated` 等 mock 错误）、停止回报 `stopped`、增量回报推进后的 `currentOffset`。
