@@ -134,9 +134,9 @@ case "$MODE" in
     harbor_login
     for s in "${SERVICES[@]}"; do
       if [[ "$SKIP_BUILD" != "1" ]]; then
-        build_image "$s" mock
+        build_image "$s" "$VERSION"
       fi
-      push_to_harbor "$s" "databridge/$s:mock"
+      push_to_harbor "$s" "databridge/$s:$VERSION"
     done
     finish
     ;;
