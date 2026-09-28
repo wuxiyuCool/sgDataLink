@@ -28,6 +28,12 @@
       <DescriptionsItem v-if="api?.sqlMode === 'custom'" label="自定义 SQL" :span="2">
         <pre class="json-pre sql-echo">{{ api?.customSql || '-' }}</pre>
       </DescriptionsItem>
+      <DescriptionsItem v-if="api?.sqlMode === 'forward'" label="转发目标" :span="2">
+        <span class="mono">{{ api?.forwardMethod || 'GET' }} {{ api?.forwardUrl || '-' }}</span>
+        <span class="text-gray-500">
+          （超时 {{ api?.forwardTimeoutMs ?? 10000 }}ms，响应原样透传，契约 1.9.3）
+        </span>
+      </DescriptionsItem>
     </Descriptions>
 
     <Card :bordered="false" size="small" class="mb-3">
@@ -242,7 +248,7 @@
     toInvokeTableData(normalized.value?.data.fields, normalized.value?.data.rows),
   )
 
-  const prettyJson = computed(() => JSON.stringify(normalized.value?.data ?? {}, null, 2))
+  const prettyJson = computed(() => JSON.stringify(normalized.value?.raw ?? {}, null, 2))
 
   const curlCommand = computed(() =>
     buildCurlCommand({

@@ -59,6 +59,9 @@ const dataApiNotFound = (message) => bizError(ERROR_CODES.DATA_API_NOT_FOUND, me
 /** 50003 Data API 真实查询失败（目标库连接/SQL 报错） */
 const dataQueryFailed = (message) => bizError(ERROR_CODES.DATA_QUERY_FAILED, message);
 
+/** 50003 + HTTP 502：1.9.3 API 转发目标不可达/超时/响应超限（message 不得含凭据） */
+const dataForwardFailed = (message) => bizError(ERROR_CODES.DATA_QUERY_FAILED, message, httpStatus.BAD_GATEWAY);
+
 module.exports = {
   ERROR_CODES,
   bizError,
@@ -75,4 +78,5 @@ module.exports = {
   rateLimitExceeded,
   dataApiNotFound,
   dataQueryFailed,
+  dataForwardFailed,
 };

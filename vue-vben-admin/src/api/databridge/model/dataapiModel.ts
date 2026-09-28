@@ -12,8 +12,14 @@ export type DataApiFieldType = 'BIGINT' | 'DECIMAL' | 'VARCHAR' | 'DATE' | 'BOOL
 /** 查询参数类型（契约 1.9.2 queryParams[].type）：list 调用时传逗号分隔字符串 */
 export type DataApiQueryType = 'string' | 'number' | 'date' | 'list'
 
-/** SQL 配置模式（契约 1.9.2 sqlMode）：builder 按 tableName+fields 拼 SELECT，custom 执行 customSql */
-export type DataApiSqlMode = 'builder' | 'custom'
+/** SQL 配置模式（契约 1.9.2/1.9.3）：builder 拼 SELECT，custom 执行 customSql，forward API 转发 */
+export type DataApiSqlMode = 'builder' | 'custom' | 'forward'
+
+/** 1.9.3 转发固定请求头（值支持 :name 占位符；调用方 header 不下传） */
+export interface DataApiForwardHeader {
+  name: string
+  value: string
+}
 
 /** GET /data-apis/meta/tables 返回单项（契约 1.9.1） */
 export interface MetaTable {
@@ -65,6 +71,13 @@ export interface DataApi {
   sqlMode?: DataApiSqlMode
   /** custom 模式执行的 SQL；:name 占位符与 queryParams 按名绑定，仅允许只读语句 */
   customSql?: string | null
+  /** 1.9.3 forward 模式字段（sqlMode=forward 时生效，datasourceId/tableName 可空） */
+  forwardUrl?: string | null
+  forwardMethod?: 'GET' | 'POST'
+  forwardHeaders?: DataApiForwardHeader[]
+  forwardBodyTemplate?: string | null
+  forwardTimeoutMs?: number
+  forwardPassthroughQuery?: boolean
   fields: DataApiField[]
   queryParams?: DataApiQueryParam[]
   authEnabled?: boolean
@@ -98,6 +111,13 @@ export interface DataApiPayload {
   sqlMode?: DataApiSqlMode
   /** 仅 custom 模式提交；builder 模式省略该键 */
   customSql?: string | null
+  /** 1.9.3 forward 模式字段（sqlMode=forward 时必填 forwardUrl，其余可缺省） */
+  forwardUrl?: string | null
+  forwardMethod?: 'GET' | 'POST'
+  forwardHeaders?: DataApiForwardHeader[]
+  forwardBodyTemplate?: string | null
+  forwardTimeoutMs?: number
+  forwardPassthroughQuery?: boolean
   fields: DataApiField[]
   queryParams: DataApiQueryParam[]
   authEnabled: boolean

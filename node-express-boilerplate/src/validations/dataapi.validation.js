@@ -16,8 +16,8 @@ const CALL_RESULTS = ['success', 'error'];
  * boolean 只有 builder 模式用得上（等值过滤），custom 模式在 service 里再收口到前四种。
  */
 const QUERY_TYPES = ['string', 'number', 'date', 'list', 'boolean'];
-/** 1.9.2 SQL 构建模式 */
-const SQL_MODES = ['builder', 'custom'];
+/** 1.9.2 SQL 构建模式 + 1.9.3 API 转发模式 */
+const SQL_MODES = ['builder', 'custom', 'forward'];
 /** customSql 长度上限（与 sqlGuard.MAX_SQL_LENGTH 同值） */
 const MAX_SQL_LENGTH = 20000;
 /** 返回字段类型：允许 SQL 风格带精度，如 DECIMAL(18,2) / VARCHAR2(200) */
@@ -63,8 +63,8 @@ const baseKeys = {
     .max(128)
     .pattern(/^[A-Za-z0-9._-]+$/),
   method: Joi.string().valid(...METHODS),
-  datasourceId: Joi.string().trim().max(64),
-  tableName: Joi.string().trim().max(128),
+  datasourceId: Joi.string().trim().max(64).allow('', null),
+  tableName: Joi.string().trim().max(128).allow('', null),
   fields: Joi.array().items(field).max(200),
   queryParams: Joi.array().items(queryParam).max(100),
   /** 1.9.2 builder（按 tableName+fields 拼 SELECT）| custom（执行 customSql） */
@@ -73,6 +73,20 @@ const baseKeys = {
     .trim()
     .max(MAX_SQL_LENGTH)
     .allow('', null),
+  /** 1.9.3 API 转发：目标地址/方法/固定头/POST 模板/超时/query 透传（协议与 SSRF 红线在 service 校验） */
+  forwardUrl: Joi.string().trim().max(1000).allow('', null),
+  forwardMethod: Joi.string().valid('GET', 'POST'),
+  forwardHeaders: Joi.array()
+    .items(
+      Joi.object().keys({
+        name: Joi.string().trim().min(1).max(64).required(),
+        value: Joi.string().trim().max(512).allow('').required(),
+      })
+    )
+    .max(50),
+  forwardBodyTemplate: Joi.string().trim().max(8000).allow('', null),
+  forwardTimeoutMs: Joi.number().integer().min(100).max(60000),
+  forwardPassthroughQuery: Joi.boolean(),
   authEnabled: Joi.boolean(),
   rateLimitQps: Joi.number().integer().min(1).max(10000),
   ipWhitelist: Joi.array().items(Joi.string().trim().max(64).regex(IP_PATTERN)).max(200),
@@ -98,7 +112,7 @@ const getDataApi = {
 };
 
 /**
- * 创建：name/path/datasourceId 恒必填；
+ * 创建：name/path 恒必填，datasourceId 在 builder/custom 必填（1.9.3 forward 不查库可空）；
  * tableName/fields 只在 builder 模式必填（custom 模式由 customSql 决定输出列），
  * 两者的必填判定统一放在 services/dataApi.service.js 的 assertDefinition 里（能给出 40001 的中文原因）。
  */
@@ -108,10 +122,11 @@ const createDataApi = {
       ...baseKeys,
       name: baseKeys.name.required(),
       path: baseKeys.path.required(),
-      datasourceId: baseKeys.datasourceId.required(),
+      datasourceId: baseKeys.datasourceId.when('sqlMode', { not: 'forward', then: baseKeys.datasourceId.required() }),
       tableName: baseKeys.tableName.when('sqlMode', { is: 'builder', then: baseKeys.tableName.required() }),
       fields: baseKeys.fields.when('sqlMode', { is: 'builder', then: baseKeys.fields.required().min(1) }),
       customSql: baseKeys.customSql.when('sqlMode', { is: 'custom', then: baseKeys.customSql.required() }),
+      forwardUrl: baseKeys.forwardUrl.when('sqlMode', { is: 'forward', then: baseKeys.forwardUrl.required() }),
     })
     .required(),
 };

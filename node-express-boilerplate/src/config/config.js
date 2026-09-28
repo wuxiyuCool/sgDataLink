@@ -32,6 +32,8 @@ const envVarsSchema = Joi.object()
     MYSQL_DATABASE: Joi.string().allow('').default('dataLink').description('mysql schema'),
     MYSQL_CONNECTION_LIMIT: Joi.number().default(10).description('mysql pool size'),
     MYSQL_CONNECT_TIMEOUT_MS: Joi.number().default(10000).description('mysql connect timeout'),
+    ORACLE_POOL_MIN: Joi.number().default(2).description('oracle pool min connections per datasource'),
+    ORACLE_POOL_MAX: Joi.number().default(10).description('oracle pool max connections per datasource'),
     MONGODB_URL: Joi.string().allow('').default('').description('Mongo DB url (empty in memory-mock mode)'),
     JWT_SECRET: Joi.string().default('databridge-mock-secret').description('JWT secret key'),
     JWT_ACCESS_EXPIRATION_MINUTES: Joi.number().default(30).description('minutes after which access tokens expire'),
@@ -97,6 +99,10 @@ module.exports = {
       database: envVars.MYSQL_DATABASE,
       connectionLimit: envVars.MYSQL_CONNECTION_LIMIT,
       connectTimeoutMs: envVars.MYSQL_CONNECT_TIMEOUT_MS,
+    },
+    oracle: {
+      poolMin: envVars.ORACLE_POOL_MIN,
+      poolMax: envVars.ORACLE_POOL_MAX,
     },
   },
   engine: {

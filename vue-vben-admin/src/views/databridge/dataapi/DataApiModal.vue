@@ -39,7 +39,7 @@
       <FormItem
         label="SQL 模式"
         name="sqlMode"
-        extra="构建模式按表 + 勾选字段自动拼 SELECT；自定义 SQL 由后端执行你编写的只读语句（契约 1.9.2）"
+        extra="构建模式按表 + 勾选字段自动拼 SELECT；自定义 SQL 由后端执行只读语句（契约 1.9.2）；API 转发把请求转调目标系统并透传响应（契约 1.9.3）"
       >
         <RadioGroup
           v-model:value="formState.sqlMode"
@@ -48,7 +48,7 @@
           @change="handleSqlModeChange"
         />
       </FormItem>
-      <FormItem label="数据源" name="datasourceId">
+      <FormItem v-if="!isForward" label="数据源" name="datasourceId">
         <Select
           v-model:value="formState.datasourceId"
           :options="datasourceOptions"
@@ -141,6 +141,101 @@
             新增字段
           </Button>
         </FormItem>
+      </template>
+
+      <template v-else-if="isForward">
+        <!-- forward：API 转发配置（契约 1.9.3），鉴权/限流照常，响应原样透传 -->
+        <FormItem
+          label="转发目标"
+          name="forwardUrl"
+          extra="http/https 完整地址；路径里可用 :name 引用下方查询参数（值自动 URL 编码）；禁止云元址/链路本地地址"
+        >
+          <Input
+            v-model:value="formState.forwardUrl"
+            placeholder="http://10.45.x.x:8080/external/bill/:billNr"
+          />
+        </FormItem>
+        <FormItem label="转发方法" name="forwardMethod">
+          <RadioGroup
+            v-model:value="formState.forwardMethod"
+            :options="[
+              { label: 'GET', value: 'GET' },
+              { label: 'POST（发送体模板）', value: 'POST' },
+            ]"
+            option-type="button"
+          />
+        </FormItem>
+        <FormItem
+          v-if="formState.forwardMethod === 'POST'"
+          label="请求体模板"
+          name="forwardBodyTemplate"
+          :wrapper-col="{ span: 19 }"
+          extra=":name 替换后若能 JSON 解析按 application/json 发送，否则 text/plain 原样发送"
+        >
+          <TextArea
+            v-model:value="formState.forwardBodyTemplate"
+            :rows="5"
+            placeholder='{"billNr": ":billNr", "from": "databridge"}'
+          />
+        </FormItem>
+        <FormItem label="固定请求头" :wrapper-col="{ span: 24 }">
+          <div class="mb-1 text-gray-500">
+            仅这些头会发给下游（值支持 :name 占位符）；调用方自带 header 一律不下传，防
+            X-API-Key / Cookie 泄漏；Authorization 等敏感值不落日志
+          </div>
+          <Table
+            :columns="forwardHeaderColumns"
+            :data-source="formState.forwardHeaders"
+            :pagination="false"
+            row-key="__key"
+            size="small"
+            :bordered="true"
+          >
+            <template #bodyCell="{ column, index, record }">
+              <template v-if="column.key === 'name'">
+                <Input v-model:value="record.name" size="small" placeholder="如 Authorization" />
+              </template>
+              <template v-else-if="column.key === 'value'">
+                <Input
+                  v-model:value="record.value"
+                  size="small"
+                  placeholder="如 Bearer :token（token 需在下方查询参数声明）"
+                />
+              </template>
+              <template v-else-if="column.key === 'action'">
+                <Button type="link" size="small" danger @click="handleRemoveForwardHeader(index)">
+                  删除
+                </Button>
+              </template>
+            </template>
+          </Table>
+          <Button size="small" class="mt-2" @click="handleAddForwardHeader">
+            <Icon icon="ant-design:plus-outlined" class="mr-1" />
+            新增请求头
+          </Button>
+        </FormItem>
+        <FormItem label="超时(ms)" name="forwardTimeoutMs" extra="取值 100~60000；超时/不可达返回 502/50003">
+          <InputNumber
+            v-model:value="formState.forwardTimeoutMs"
+            :min="100"
+            :max="60000"
+            :precision="0"
+            style="width: 100%"
+          />
+        </FormItem>
+        <FormItem
+          label="query 透传"
+          name="forwardPassthroughQuery"
+          extra="把调用方 query 合并进目标 URL（apiKey 除外；同名以转发配置为准）"
+        >
+          <Switch v-model:checked="formState.forwardPassthroughQuery" />
+        </FormItem>
+        <Alert
+          type="info"
+          show-icon
+          class="mt-1"
+          message="转发模式不查数据库：鉴权 / IP 白名单 / 限流 / 调用统计照常生效，下游状态码与响应体原样透传给调用方（契约 1.9.3）"
+        />
       </template>
 
       <template v-else>
@@ -368,6 +463,13 @@
     datasourceId: undefined as string | undefined,
     tableName: '' as string | undefined,
     customSql: '',
+    /** 1.9.3 API 转发（契约 1.9.3） */
+    forwardUrl: '',
+    forwardMethod: 'GET' as 'GET' | 'POST',
+    forwardHeaders: [] as ForwardHeaderRow[],
+    forwardBodyTemplate: '',
+    forwardTimeoutMs: 10000,
+    forwardPassthroughQuery: true,
     fields: [] as FieldRow[],
     queryParams: [] as ParamRow[],
     authEnabled: true,
@@ -377,7 +479,8 @@
 
   const formState = reactive<ReturnType<typeof defaultForm>>(defaultForm())
 
-  const isBuilder = computed(() => formState.sqlMode !== 'custom')
+  const isBuilder = computed(() => formState.sqlMode === 'builder')
+  const isForward = computed(() => formState.sqlMode === 'forward')
   /** builder 模式且已加载到字段元数据时，用勾选表格替代手动字段表 */
   const showColumnPicker = computed(() => isBuilder.value && metaColumns.value.length > 0)
 
@@ -401,8 +504,45 @@
   )
   /** 只读预检结果（空串 = 通过），红字实时展示，提交时同样拦截 */
   const sqlCheckError = computed(() =>
-    isBuilder.value ? '' : checkCustomSql(formState.customSql),
+    isBuilder.value || isForward.value ? '' : checkCustomSql(formState.customSql),
   )
+
+  /** 1.9.3 转发固定请求头行（__key 供 Table row-key 使用） */
+  interface ForwardHeaderRow {
+    __key: string
+    name: string
+    value: string
+  }
+  const forwardHeaderColumns = [
+    { title: 'Header 名', key: 'name', dataIndex: 'name', width: 200 },
+    { title: '值（支持 :name 占位符）', key: 'value', dataIndex: 'value' },
+    { title: '操作', key: 'action', width: 70 },
+  ]
+  function toForwardHeaderRow(item: { name: string; value: string }): ForwardHeaderRow {
+    return { name: String(item.name ?? ''), value: String(item.value ?? ''), __key: nextKey() }
+  }
+  function handleAddForwardHeader() {
+    formState.forwardHeaders = [...formState.forwardHeaders, toForwardHeaderRow({ name: '', value: '' })]
+  }
+  function handleRemoveForwardHeader(index: number) {
+    formState.forwardHeaders = formState.forwardHeaders.filter((_, i) => i !== index)
+  }
+  /** 契约 1.9.3 保存期红线的前端预检（后端权威校验） */
+  function checkForwardUrl(value?: string): string {
+    const text = String(value ?? '').trim()
+    if (!text) return '请填写转发目标地址 forwardUrl'
+    try {
+      const url = new URL(text)
+      if (!['http:', 'https:'].includes(url.protocol)) return 'forwardUrl 仅支持 http/https 协议'
+      if (!url.hostname) return 'forwardUrl host 不能为空'
+      if (/^169\.254\./.test(url.hostname) || url.hostname.startsWith('fe80')) {
+        return 'forwardUrl 不允许指向链路本地/云元址（SSRF 红线）'
+      }
+    } catch {
+      return 'forwardUrl 不是合法绝对地址'
+    }
+    return ''
+  }
 
   const columnRowSelection = computed(() => ({
     selectedRowKeys: selectedFieldNames.value,
@@ -423,11 +563,24 @@
       },
     ],
     method: [{ required: true, message: '请选择请求方法', trigger: 'change' }],
-    datasourceId: [{ required: true, message: '请选择数据源', trigger: 'change' }],
+    datasourceId: isForward.value
+      ? []
+      : [{ required: true, message: '请选择数据源', trigger: 'change' }],
     tableName: isBuilder.value
       ? [{ required: true, message: '请选择数据表', trigger: 'change' }]
       : [],
-    customSql: isBuilder.value
+    forwardUrl: isForward.value
+      ? [
+          {
+            validator: (_rule: any, value: string) => {
+              const error = checkForwardUrl(value)
+              return error ? Promise.reject(new Error(error)) : Promise.resolve()
+            },
+            trigger: ['blur', 'change'],
+          },
+        ]
+      : [],
+    customSql: isBuilder.value || isForward.value
       ? []
       : [
           {
@@ -459,10 +612,21 @@
         name: record.name,
         path: record.path,
         method: (record.method || 'GET') as DataApiMethod,
-        sqlMode: record.sqlMode === 'custom' ? ('custom' as DataApiSqlMode) : ('builder' as DataApiSqlMode),
+        sqlMode:
+          record.sqlMode === 'custom'
+            ? ('custom' as DataApiSqlMode)
+            : record.sqlMode === 'forward'
+              ? ('forward' as DataApiSqlMode)
+              : ('builder' as DataApiSqlMode),
         datasourceId: record.datasourceId,
         tableName: record.tableName,
         customSql: record.customSql ?? '',
+        forwardUrl: record.forwardUrl ?? '',
+        forwardMethod: record.forwardMethod === 'POST' ? ('POST' as const) : ('GET' as const),
+        forwardHeaders: (record.forwardHeaders ?? []).map((item) => toForwardHeaderRow(item)),
+        forwardBodyTemplate: record.forwardBodyTemplate ?? '',
+        forwardTimeoutMs: record.forwardTimeoutMs ?? 10000,
+        forwardPassthroughQuery: record.forwardPassthroughQuery !== false,
         fields: (record.fields ?? []).map((item) => toFieldRow(item)),
         queryParams: (record.queryParams ?? []).map((item) => toParamRow(item)),
         authEnabled: record.authEnabled !== false,
@@ -559,7 +723,7 @@
 
   function handleSqlModeChange() {
     // 切换模式后清掉另一模式字段的残留校验红字
-    formRef.value?.clearValidate?.(['tableName', 'customSql'])
+    formRef.value?.clearValidate?.(['tableName', 'customSql', 'forwardUrl', 'datasourceId'])
   }
 
   function handleSuggestPath() {
@@ -598,7 +762,24 @@
 
   /** 行编辑内容的本地自检，避免把空行写进后端 */
   function validateRows(): string {
-    if (isBuilder.value) {
+    if (isForward.value) {
+      const urlError = checkForwardUrl(formState.forwardUrl)
+      if (urlError) return urlError
+      const headers = formState.forwardHeaders ?? []
+      if (headers.some((item) => !String(item.name).trim())) return '存在未填写 Header 名的请求头行'
+      const declared = new Set(declaredParamNames.value)
+      const texts = [
+        formState.forwardUrl,
+        formState.forwardBodyTemplate,
+        ...headers.map((item) => item.value),
+      ]
+        .filter(Boolean)
+        .join(' ')
+      const unknown = Array.from(
+        new Set(Array.from(texts.matchAll(/:([A-Za-z_][A-Za-z0-9_]{0,63})/g)).map((m) => m[1])),
+      ).filter((name) => !declared.has(name))
+      if (unknown.length) return `转发配置引用了未声明的查询参数：${unknown.join('、')}`
+    } else if (isBuilder.value) {
       const fields = formState.fields ?? []
       if (!fields.length) return '请至少配置一个输出字段'
       if (fields.some((item) => !String(item.name).trim())) return '存在未填写字段名的输出字段行'
@@ -642,6 +823,22 @@
       ipWhitelist: parseIpWhitelist(formState.ipWhitelistText),
     })
     payload.sqlMode = formState.sqlMode
+    if (isForward.value) {
+      // 1.9.3：转发不查库，只提交转发配置；另一模式字段留空避免污染
+      payload.forwardUrl = String(formState.forwardUrl ?? '').trim()
+      payload.forwardMethod = formState.forwardMethod
+      payload.forwardHeaders = (formState.forwardHeaders ?? [])
+        .map((item) => ({ name: String(item.name).trim(), value: String(item.value ?? '').trim() }))
+        .filter((item) => item.name)
+      payload.forwardBodyTemplate =
+        formState.forwardMethod === 'POST' ? String(formState.forwardBodyTemplate ?? '') : null
+      payload.forwardTimeoutMs = Number(formState.forwardTimeoutMs ?? 10000)
+      payload.forwardPassthroughQuery = formState.forwardPassthroughQuery !== false
+      payload.tableName = ''
+      payload.customSql = null
+      payload.fields = []
+      return payload
+    }
     if (!isBuilder.value) payload.customSql = String(formState.customSql ?? '').trim()
     return payload
   }

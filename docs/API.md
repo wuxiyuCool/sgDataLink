@@ -534,6 +534,37 @@ Header: X-API-Key: dk-9f3a...   （authEnabled=true 时必需）
   5. builder 模式沿用表名/列名标识符白名单 + 值绑定；两种模式的过滤值都不参与 SQL 文本拼接。
 - 保存时（POST/PUT）即校验 customSql 与 queryParams 一致性（custom 模式下 customSql 必填、占位符集合 ⊆ queryParams），违规 40001。
 
+#### 1.9.3 API 转发模式（请求转调其他系统）
+
+`sqlMode` 新增第三值 `forward`：`/ds/{path}` 在**鉴权/白名单/限流/统计照常执行**的前提下，把请求转调配置的目标系统 API，并**原样透传**下游状态码与响应体（不再包 {code:0,...} 信封）。
+
+数据服务对象新增字段：
+
+```json
+{
+  "sqlMode": "forward",
+  "forwardUrl": "http://10.45.x.x:8080/external/bill/:billNr",
+  "forwardMethod": "GET",
+  "forwardHeaders": [ { "name": "Authorization", "value": "Bearer :token" } ],
+  "forwardBodyTemplate": null,
+  "forwardTimeoutMs": 10000,
+  "forwardPassthroughQuery": true
+}
+```
+
+- `forwardUrl`（必填）：仅允许 `http/https` 绝对地址；路径/查询中的 `:name` 占位符用请求参数值替换（自动 URL 编码）。
+- `forwardMethod`：`GET`（默认）| `POST`。POST 时发送 `forwardBodyTemplate`（`:name` 替换后按 JSON 解析，解析失败按 text/plain 原样发送；模板内值替换发生在服务端，调用方无法注入 header/body 结构）。
+- `forwardHeaders`：固定下游请求头（值支持 `:name` 占位符）；**调用方自带 header 一律不下传**（防 X-API-Key/Cookie 泄漏）；日志中 `Authorization`/`X-API-Key`/`Cookie` 值脱敏。
+- `forwardPassthroughQuery`（默认 true）：把调用方 query 合并进下游 URL（`apiKey` 参数除外）；同名参数以转发配置解析出的 `:name` 替换值优先。
+- `forwardTimeoutMs`：100~60000，默认 10000；超时/连接失败 → 502/50003（message 含目标 host，不含凭据）。
+- **安全红线（服务端强制）**：
+  1. 保存时校验 forwardUrl 协议与非空 host；拒绝指向链路本地/云元址（`169.254.0.0/16`、`fe80:*`）；内网地址允许（本特性就是为内网系统互调设计）。
+  2. 不自动跟随 3xx 重定向（原样返回给调用方），防重定向 SSRF。
+  3. 响应体透传上限 5MB，超限 502/50003。
+  4. 调用明细日志（/data-apis/calls）对 forward 记录下游 httpStatus 与耗时；errorMsg 不含转发头值。
+- 管理端「调试」（POST /data-apis/:id/invoke）：forward 结果同样以 `{httpStatus, body}` 透传（body 尽量 JSON 解析，失败给 `{contentType, text}`）。
+- 转发不依赖数据库：`DB_DRIVER=memory` 与 `mysql` 均可用。
+
 ### 1.10 任务运维补充
 
 **告警规则 `/alert-rules`**（CRUD）+ **告警记录 `/alert-records`**（GET 分页，支持 level/read 筛选；PATCH `/alert-records/:id/read` 标记已读）：
@@ -671,7 +702,7 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效） |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时） |
 | databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS` |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
 

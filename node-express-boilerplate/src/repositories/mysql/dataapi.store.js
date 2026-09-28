@@ -77,9 +77,15 @@ const store = defineStore({
     tableName: {},
     fields: { type: 'json' },
     queryParams: { type: 'json' },
-    /** 1.9.2：builder（拼 SELECT）| custom（执行 customSql） */
+    /** 1.9.2：builder（拼 SELECT）| custom（执行 customSql）| 1.9.3 forward（API 转发） */
     sqlMode: {},
     customSql: { type: 'text' },
+    forwardUrl: { type: 'text' },
+    forwardMethod: {},
+    forwardHeaders: { type: 'json' },
+    forwardBodyTemplate: { type: 'text' },
+    forwardTimeoutMs: { type: 'int' },
+    forwardPassthroughQuery: { type: 'bool' },
     authEnabled: { type: 'bool' },
     apiKey: {},
     rateLimitQps: { type: 'int' },

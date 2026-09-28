@@ -90,11 +90,13 @@ export const queryParamTableColumns: TableColumn[] = [
 export const DATAAPI_SQL_MODE_OPTIONS: SelectOption[] = [
   { label: '构建模式', value: 'builder' },
   { label: '自定义 SQL', value: 'custom' },
+  { label: 'API 转发', value: 'forward' },
 ]
 
 export const DATAAPI_SQL_MODE_LABELS: Record<DataApiSqlMode, string> = {
   builder: '构建模式',
   custom: '自定义 SQL',
+  forward: 'API 转发',
 }
 
 export function getSqlModeLabel(mode?: DataApiSqlMode) {
@@ -103,7 +105,9 @@ export function getSqlModeLabel(mode?: DataApiSqlMode) {
 
 /** 列表页「输出字段」列对 custom 模式的 Tag 配色 */
 export function getSqlModeColor(mode?: DataApiSqlMode) {
-  return mode === 'custom' ? 'geekblue' : 'default'
+  if (mode === 'custom') return 'geekblue'
+  if (mode === 'forward') return 'purple'
+  return 'default'
 }
 
 /** 查询参数类型下拉（契约 1.9.2：string|number|date|list，list 调用时传逗号分隔） */
@@ -199,6 +203,8 @@ export function normalizeInvokeResult(res?: DataApiInvokeResult | null): {
   code?: number
   message?: string
   data: DataApiInvokeData
+  /** 响应原始 body（1.9.3 forward 透传的下游 JSON 靠它展示，表格视图取不到 fields/rows 时兜底） */
+  raw: Recordable
 } {
   const payload = res ?? {}
   const envelope = payload as Recordable
@@ -220,6 +226,7 @@ export function normalizeInvokeResult(res?: DataApiInvokeResult | null): {
       page: data?.page,
       size: data?.size,
     },
+    raw: inner,
   }
 }
 

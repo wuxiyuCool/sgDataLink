@@ -17,6 +17,8 @@
  * 写明细自身失败只记 WARN，绝不影响本次调用的响应。
  */
 const { performance } = require('perf_hooks');
+const http = require('http');
+const https = require('https');
 const httpStatus = require('http-status');
 const logger = require('../config/logger');
 const config = require('../config/config');
@@ -34,6 +36,7 @@ const {
   ipNotWhitelisted,
   rateLimitExceeded,
   dataQueryFailed,
+  dataForwardFailed,
   paramInvalid,
 } = require('../utils/bizError');
 
@@ -182,6 +185,129 @@ const buildResult = async (api, query = {}) => {
   return { fields, rows, total, page, size };
 };
 
+/* ------------------------------------------------------------------ */
+/* 1.9.3 API 转发模式：鉴权/限流照常，请求转调下游系统并透传响应        */
+/* ------------------------------------------------------------------ */
+
+const FORWARD_DEFAULT_TIMEOUT_MS = 10000;
+/** 下游响应体透传上限（契约 1.9.3：超限 502/50003） */
+const FORWARD_MAX_BODY_BYTES = 5 * 1024 * 1024;
+/** 与 node http 客户端冲突或逐跳的头，转发头配置里出现就丢弃 */
+const FORWARD_FORBIDDEN_HEADERS = ['host', 'content-length', 'connection', 'transfer-encoding', 'keep-alive', 'upgrade', 'expect'];
+/** 转发占位符语法与 customSql 一致（:name），但提取不走 sqlGuard 掩码——JSON 模板引号内的也要替换 */
+const FORWARD_PLACEHOLDER_RE = /:([A-Za-z_][A-Za-z0-9_]{0,63})/g;
+
+/** 声明参数 → 字符串值映射（list 逗号拼接、缺省空串；必填校验复用 resolveCustomParams） */
+const forwardParamMap = (api, query) => {
+  const map = new Map();
+  resolveCustomParams(api, query).forEach(({ name, value }) => {
+    if (value === null || value === undefined) map.set(name, '');
+    else map.set(name, Array.isArray(value) ? value.join(',') : String(value));
+  });
+  return map;
+};
+
+const substituteForwardText = (text, params, encode) =>
+  String(text ?? '').replace(FORWARD_PLACEHOLDER_RE, (whole, name) => {
+    if (!params.has(name)) return whole;
+    const value = params.get(name);
+    return encode ? encodeURIComponent(value) : value;
+  });
+
+/**
+ * 组装转发请求（契约 1.9.3）：
+ * - 调用方 header 一律不下传，只发 forwardHeaders + 固定 UA（防 X-API-Key/Cookie 泄漏）；
+ * - query 透传排除 apiKey；URL 占位符值自动编码，调用方无法拼出越权路径；
+ * - POST 体模板替换后能 JSON.parse 就按 application/json，否则 text/plain。
+ */
+const buildForwardPlan = (api, query = {}) => {
+  const params = forwardParamMap(api, query);
+  const url = new URL(substituteForwardText(api.forwardUrl, params, true));
+  if (api.forwardPassthroughQuery !== false) {
+    Object.entries(query).forEach(([key, value]) => {
+      if (key === 'apiKey' || url.searchParams.has(key)) return;
+      (Array.isArray(value) ? value : [value]).forEach((item) => url.searchParams.append(key, item));
+    });
+  }
+  const headers = { 'user-agent': 'databridge-dataapi/1.0', accept: '*/*' };
+  (Array.isArray(api.forwardHeaders) ? api.forwardHeaders : []).forEach((item) => {
+    const name = String((item && item.name) || '').trim();
+    if (!name || FORWARD_FORBIDDEN_HEADERS.includes(name.toLowerCase())) return;
+    headers[name] = substituteForwardText(item && item.value, params, false);
+  });
+  const method = api.forwardMethod === 'POST' ? 'POST' : 'GET';
+  let body;
+  if (method === 'POST') {
+    body = substituteForwardText(api.forwardBodyTemplate || '', params, false);
+    try {
+      JSON.parse(body);
+      headers['content-type'] = 'application/json';
+    } catch (err) {
+      headers['content-type'] = 'text/plain;charset=utf-8';
+    }
+  }
+  const timeoutMs = Number(api.forwardTimeoutMs) || FORWARD_DEFAULT_TIMEOUT_MS;
+  return { url: url.toString(), method, headers, body, timeoutMs };
+};
+
+/**
+ * 用 node http/https 直连下游（不用 fetch：redirect 保持 http 模块默认「不跟随」，
+ * 3xx 连 Location 原样透传，防重定向 SSRF）。返回 { forward, httpStatus, contentType, body }。
+ */
+const forwardRequest = async (api, query = {}) => {
+  const plan = buildForwardPlan(api, query);
+  const target = new URL(plan.url);
+  const lib = target.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      reject(dataForwardFailed(message));
+    };
+    const req = lib.request(
+      target,
+      { method: plan.method, headers: plan.headers, timeout: plan.timeoutMs },
+      (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on('data', (chunk) => {
+          size += chunk.length;
+          if (size > FORWARD_MAX_BODY_BYTES) {
+            req.destroy();
+            fail(`下游响应体超过 ${Math.floor(FORWARD_MAX_BODY_BYTES / 1024 / 1024)}MB 上限`);
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          if (settled) return;
+          settled = true;
+          resolve({
+            forward: true,
+            httpStatus: res.statusCode || 502,
+            contentType: String(res.headers['content-type'] || ''),
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+        res.on('error', (err) => fail(`读取下游响应失败(${target.host}): ${err.message}`));
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error(`timeout`));
+    });
+    req.on('error', (err) =>
+      fail(
+        err && err.message === 'timeout'
+          ? `转发超时(${plan.timeoutMs}ms): ${target.host}`
+          : `转发目标不可达 ${target.host}: ${err.message}`
+      )
+    );
+    if (plan.body) req.write(plan.body);
+    req.end();
+  });
+};
+
 /**
  * query 脱敏（契约 1.9：明细里的 query 不得含 apiKey 明文）：
  * 浅拷贝一份，把 apiKey / X-API-Key 这类凭据键的值换成 ***，整体 JSON 串后截 QUERY_MASK_MAX。
@@ -253,6 +379,15 @@ const serve = async (api, ctx = {}) => {
   let failure = null;
   try {
     assertAccessible(api, { ...ctx, query });
+    if (api.sqlMode === 'forward') {
+      const forwarded = await forwardRequest(api, query);
+      if (forwarded.httpStatus >= 400) {
+        // 网关放行但下游报错：按失败记明细（带下游状态码，errorCount 同步累加）
+        ok = false;
+        failure = { statusCode: forwarded.httpStatus, message: `下游返回 HTTP ${forwarded.httpStatus}` };
+      }
+      return forwarded;
+    }
     return await buildResult(api, query);
   } catch (err) {
     ok = false;
@@ -327,6 +462,8 @@ module.exports = {
   resolveCustomParams,
   deriveMockFields,
   buildResult,
+  buildForwardPlan,
+  forwardRequest,
   assertAccessible,
   maskQuery,
   writeCallDetail,

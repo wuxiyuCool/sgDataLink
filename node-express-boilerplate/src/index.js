@@ -3,6 +3,7 @@ const app = require('./app');
 const config = require('./config/config');
 const logger = require('./config/logger');
 const mysql = require('./db/mysql');
+const dataQuery = require('./db/dataQuery');
 const { initMysql } = require('./db/init');
 const { seed } = require('./repositories');
 const datasourceRepository = require('./repositories/datasource.repository');
@@ -76,10 +77,11 @@ const bootstrap = async () => {
 
 bootstrap();
 
-/** mysql 驱动下把连接池关掉再退出，避免半关的连接让远端留一堆 sleep 会话 */
+/** mysql 驱动下把连接池关掉再退出，避免半关的连接让远端留一堆 sleep 会话；oracle 池同理 */
 const closeMysqlPool = async () => {
   if (config.db.driver !== 'mysql') return false;
   try {
+    await dataQuery.closeOraclePools();
     await mysql.closeMysqlPool();
     logger.info('MySQL pool closed');
     return true;

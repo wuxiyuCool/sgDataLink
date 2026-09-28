@@ -69,6 +69,12 @@ const normalizeBody = (body = {}) => {
     'queryParams',
     'sqlMode',
     'customSql',
+    'forwardUrl',
+    'forwardMethod',
+    'forwardHeaders',
+    'forwardBodyTemplate',
+    'forwardTimeoutMs',
+    'forwardPassthroughQuery',
     'authEnabled',
     'rateLimitQps',
     'ipWhitelist',
@@ -82,8 +88,8 @@ const normalizeBody = (body = {}) => {
   return payload;
 };
 
-/** sqlMode 缺省按 builder（契约：builder 是默认模式） */
-const sqlModeOf = (api = {}) => (api.sqlMode === 'custom' ? 'custom' : 'builder');
+/** sqlMode 缺省按 builder（契约：builder 是默认模式）；1.9.3 起支持 forward */
+const sqlModeOf = (api = {}) => (api.sqlMode === 'custom' || api.sqlMode === 'forward' ? api.sqlMode : 'builder');
 
 /**
  * custom 模式的定义校验（契约 1.9.2 保存期红线）：
@@ -114,21 +120,70 @@ const assertCustomSql = (payload) => {
   return { placeholders };
 };
 
-/** 定义校验：名称 / 路径唯一 / 数据源存在 / 按 sqlMode 分别校验 builder 与 custom */
+/** forward 文本（URL/头值/体模板）里的 :name 占位符提取（不走 sqlGuard 的掩码，字符串字面量里的也要算） */
+const FORWARD_PLACEHOLDER_RE = /:([A-Za-z_][A-Za-z0-9_]{0,63})/g;
+const extractForwardPlaceholders = (texts) => {
+  const names = new Set();
+  texts.filter(Boolean).forEach((text) => {
+    String(text).replace(FORWARD_PLACEHOLDER_RE, (_, name) => names.add(name) && '');
+  });
+  return Array.from(names);
+};
+
+/**
+ * forward 模式的定义校验（契约 1.9.3 保存期红线）：
+ * 1) forwardUrl 必填、http/https 绝对地址、host 非空；
+ * 2) SSRF 收口：拒绝链路本地/云元址（169.254.0.0/16、fe80:*），内网地址允许（本特性就是为内网互调设计）；
+ * 3) URL/头值/体模板里的 :name 占位符集合 ⊆ queryParams 名单。
+ */
+const assertForwardConfig = (payload) => {
+  const raw = String(payload.forwardUrl || '').trim();
+  if (!raw) throw paramInvalid('sqlMode=forward 时 forwardUrl 必填');
+  let url;
+  try {
+    url = new URL(raw);
+  } catch (err) {
+    throw paramInvalid(`forwardUrl 不是合法绝对地址: ${raw.slice(0, 200)}`);
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw paramInvalid(`forwardUrl 仅支持 http/https，当前: ${url.protocol}`);
+  }
+  const host = String(url.hostname || '').toLowerCase();
+  if (!host) throw paramInvalid('forwardUrl host 为空');
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    // 允许 localhost（同机系统互调常见），但不允许空 host
+  } else if (/^169\.254\./.test(host) || host.startsWith('fe80') || host.startsWith('0.0.0.0')) {
+    throw paramInvalid(`forwardUrl 目标地址被 SSRF 红线拒绝: ${host}`);
+  }
+  const declared = (Array.isArray(payload.queryParams) ? payload.queryParams : []).map((p) => p && p.name).filter(Boolean);
+  const headerTexts = (Array.isArray(payload.forwardHeaders) ? payload.forwardHeaders : []).map((h) => h && h.value);
+  const unknown = extractForwardPlaceholders([raw, payload.forwardBodyTemplate, ...headerTexts]).filter((name) => !declared.includes(name));
+  if (unknown.length) {
+    throw paramInvalid(`forward 配置占位符未在 queryParams 声明: ${unknown.map((n) => `:${n}`).join(', ')}`);
+  }
+};
+
+/** 定义校验：名称 / 路径唯一 / 数据源存在 / 按 sqlMode 分别校验 builder、custom 与 forward */
 const assertDefinition = async (payload, self) => {
   if (!payload.name) throw paramInvalid('name 必填');
   if (!payload.path) throw paramInvalid('path 必填（对外地址是 /ds/{path}）');
-  if (!payload.datasourceId) throw paramInvalid('datasourceId 必填');
-  if (!(await datasourceRepository.getById(payload.datasourceId))) {
-    throw paramInvalid(`datasourceId 对应的数据源不存在: ${payload.datasourceId}`);
-  }
-  if (sqlModeOf(payload) === 'custom') {
-    assertCustomSql(payload);
+  const mode = sqlModeOf(payload);
+  if (mode === 'forward') {
+    // 转发不查库，datasourceId 可空；绑定了数据源也不做存在性强校验
+    assertForwardConfig(payload);
   } else {
-    // builder：维持现状 —— 表名 + 至少一个返回字段（runtime 出数要按字段生成）
-    if (!payload.tableName) throw paramInvalid('tableName 必填');
-    if (!Array.isArray(payload.fields) || !payload.fields.length) {
-      throw paramInvalid('fields 至少需要一个返回字段');
+    if (!payload.datasourceId) throw paramInvalid('datasourceId 必填');
+    if (!(await datasourceRepository.getById(payload.datasourceId))) {
+      throw paramInvalid(`datasourceId 对应的数据源不存在: ${payload.datasourceId}`);
+    }
+    if (mode === 'custom') {
+      assertCustomSql(payload);
+    } else {
+      // builder：维持现状 —— 表名 + 至少一个返回字段（runtime 出数要按字段生成）
+      if (!payload.tableName) throw paramInvalid('tableName 必填');
+      if (!Array.isArray(payload.fields) || !payload.fields.length) {
+        throw paramInvalid('fields 至少需要一个返回字段');
+      }
     }
   }
   const occupied = await dataApiRepository.findByPath(payload.path);
@@ -271,6 +326,7 @@ const publishDataApi = async (id) => {
   const existing = await getOrThrow(id);
   // 发布是「对外可达」的开关，这里再跑一次定义校验：直接改库把 customSql 换掉的场景也会被拦下
   if (sqlModeOf(existing) === 'custom') assertCustomSql(existing);
+  else if (sqlModeOf(existing) === 'forward') assertForwardConfig(existing);
   else if (!existing.tableName || !(existing.fields || []).length) {
     throw paramInvalid('builder 模式需要 tableName 与 fields 才能发布');
   }
@@ -290,10 +346,24 @@ const unpublishDataApi = async (id) => {
 };
 
 /**
+ * 1.9.3 forward 透传对象 → 调试信封 body：能 JSON.parse 给解析结果，否则 {contentType, text}
+ */
+const parseForwardBody = (result) => {
+  const text = String(result.body ?? '');
+  const contentType = String(result.contentType || '');
+  if (/json|text|xml/i.test(contentType) || /^\s*[[{]/.test(text)) {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      /* 非 JSON 落到下面按文本返回 */
+    }
+  }
+  return { contentType: contentType || 'application/octet-stream', text };
+};
+
+/**
  * POST /data-apis/:id/invoke —— 前端「调试」按钮代理：
  * 服务端内部直接调 runtime（不经 HTTP），把结果与错误信封原样透传出来。
- * apiKey 取值规则：调用方没带（undefined）时用服务端已存的 key —— 浏览器本来就拿不到 key，
- * 调试要能出数；显式传入（含空串）则以入参为准，便于前端复现 40101（缺 key）/ 40102（无效 key）。
  * @param {string} id
  * @param {Object} input { query, apiKey, ip }
  * @returns {{ httpStatus: number, body: Object }}
@@ -307,6 +377,10 @@ const invokeDataApi = async (id, input = {}) => {
   };
   try {
     const result = await runtime.invokeById(id, ctx);
+    // 1.9.3 forward：runtime 返回透传对象（下游 status/body），不再包 success 信封
+    if (result && result.forward) {
+      return { httpStatus: result.httpStatus, body: parseForwardBody(result) };
+    }
     return { httpStatus: 200, body: envelope(result) };
   } catch (err) {
     const httpStatus = err.statusCode || 500;

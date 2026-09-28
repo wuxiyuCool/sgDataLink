@@ -18,6 +18,7 @@
 
 const mysql = require('mysql2/promise');
 const oracledb = require('oracledb');
+const crypto = require('crypto');
 const config = require('../config/config');
 const guard = require('./sqlGuard');
 const { dataQueryFailed, paramInvalid } = require('../utils/bizError');
@@ -62,15 +63,57 @@ const openMysql = async (ds) =>
     multipleStatements: false,
   });
 
-/** 一次性 oracle 短连接；callTimeout 兜住「连上但执行挂死」（thin 驱动单位毫秒） */
+/**
+ * oracle 连接池注册表（key = 数据源 id + 凭据哈希）：
+ * 池化后 conn.close() 的语义自动变成「归还连接」，各调用点 finally 结构不用改；
+ * 改密码/改地址会命中新 key 建新池，旧池不再被引用，随进程退出回收。
+ * 缓存 createPool 的 Promise，并发首查共享同一个池；建池失败（密码错等）立刻淘汰以便下次重试。
+ */
+const oraclePools = new Map();
+
+const poolKeyOf = (ds) =>
+  `${ds.id || ds.host}|${crypto
+    .createHash('sha1')
+    .update(`${ds.username}:${ds.password}@${ds.host}:${ds.port}/${ds.database}`)
+    .digest('hex')}`;
+
+const acquireOraclePool = (ds) => {
+  const key = poolKeyOf(ds);
+  let pooled = oraclePools.get(key);
+  if (!pooled) {
+    const created = oracledb
+      .createPool({
+        user: ds.username,
+        password: ds.password,
+        connectString: `${ds.host}:${Number(ds.port) || 1521}/${ds.database}`,
+        poolMin: Number(config.db.oracle.poolMin) || 2,
+        poolMax: Number(config.db.oracle.poolMax) || 10,
+        poolIncrement: 1,
+        queueTimeout: QUERY_TIMEOUT_MS,
+      })
+      .catch((err) => {
+        oraclePools.delete(key);
+        throw err;
+      });
+    pooled = created;
+    oraclePools.set(key, created);
+  }
+  return pooled;
+};
+
+/** 从池借出连接（池不存在则懒建）；callTimeout 兜住「连上但执行挂死」（thin 驱动单位毫秒） */
 const openOracle = async (ds) => {
-  const conn = await oracledb.getConnection({
-    user: ds.username,
-    password: ds.password,
-    connectString: `${ds.host}:${Number(ds.port) || 1521}/${ds.database}`,
-  });
+  const pool = await acquireOraclePool(ds);
+  const conn = await pool.getConnection();
   conn.callTimeout = QUERY_TIMEOUT_MS;
   return conn;
+};
+
+/** 进程退出时销毁全部 oracle 池（index.js 的 graceful shutdown 调用） */
+const closeOraclePools = async () => {
+  const pools = Array.from(oraclePools.values());
+  oraclePools.clear();
+  await Promise.allSettled(pools.map(async (pool) => (await pool).close(10)));
 };
 
 /**
@@ -429,5 +472,6 @@ module.exports = {
   QUERY_TIMEOUT_MS,
   MAX_META_ROWS,
   MAX_PAGE_SIZE,
+  closeOraclePools,
   configRef: config,
 };
