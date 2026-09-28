@@ -281,3 +281,171 @@ export function buildCurlCommand(options: CurlBuildOptions): string {
   if (options.authEnabled !== false) lines.push(`  -H "X-API-Key: ${key}"`)
   return lines.join(' \\\n')
 }
+
+/* ------------------------------------------------------------------ */
+/* curl 命令解析（API 转发配置快速导入，契约 1.9.3 的录入辅助）          */
+/* ------------------------------------------------------------------ */
+
+export interface ParsedCurl {
+  url: string
+  method: string
+  headers: { name: string; value: string }[]
+  body: string | null
+  /** 未能识别/被忽略的部分，展示给用户自查 */
+  warnings: string[]
+}
+
+/** shell 风格分词：单引号原样、双引号内保留空格并支持反斜杠转义、行尾 \ 续行 */
+function tokenizeCommand(input: string): string[] {
+  const text = input.replace(/\\\r?\n/g, ' ')
+  const tokens: string[] = []
+  let current = ''
+  let inSingle = false
+  let inDouble = false
+  let has = false
+  const push = () => {
+    if (has) tokens.push(current)
+    current = ''
+    has = false
+  }
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (inSingle) {
+      if (ch === "'") inSingle = false
+      else current += ch
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"') inDouble = false
+      else if (ch === '\\' && ['"', '\\', '$', '`'].includes(text[i + 1])) {
+        current += text[i + 1]
+        i += 1
+      } else current += ch
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      has = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      has = true
+      continue
+    }
+    if (ch === '\\' && text[i + 1]) {
+      current += text[i + 1]
+      has = true
+      i += 1
+      continue
+    }
+    if (/\s/.test(ch)) {
+      push()
+      continue
+    }
+    current += ch
+    has = true
+  }
+  push()
+  return tokens
+}
+
+/** 需要跟一个值的 curl 选项 */
+const VALUE_FLAGS: Record<string, string> = {
+  '-X': 'method',
+  '--request': 'method',
+  '-H': 'header',
+  '--header': 'header',
+  '-d': 'data',
+  '--data': 'data',
+  '--data-raw': 'data',
+  '--data-binary': 'data',
+  '--data-urlencode': 'data',
+  '-u': 'user',
+  '--user': 'user',
+  '-b': 'cookie',
+  '--cookie': 'cookie',
+  '--url': 'url',
+  '--connect-timeout': 'ignore',
+  '--max-time': 'ignore',
+  '-o': 'ignore',
+  '--output': 'ignore',
+  '-A': 'ignore',
+  '--user-agent': 'ignore',
+  '-e': 'ignore',
+  '--referer': 'ignore',
+}
+
+/** 纯开关型 curl 选项（解析时安全忽略） */
+const BOOLEAN_FLAGS = new Set([
+  '-s', '-S', '-L', '-k', '-v', '-i', '-G', '-I', '-f', '-N', '-J', '-O',
+  '--compressed', '--insecure', '--location', '--silent', '--show-error', '--verbose',
+  '--head', '--get', '--fail', '--no-buffer', '--http2', '--http1.1', '--tls-max',
+])
+
+/**
+ * 解析一段 curl 命令 → 转发配置（url/method/headers/body）。
+ * 覆盖常见写法：-X、-H（多个）、-d/--data*（多个以 & 拼接）、-u（转 Basic 头）、-b（转 Cookie 头）；
+ * 无法识别的选项跳过并记入 warnings，绝不静默吞掉。
+ */
+export function parseCurlCommand(input: string): ParsedCurl {
+  const tokens = tokenizeCommand(String(input || '').trim())
+  const result: ParsedCurl = { url: '', method: '', headers: [], body: null, warnings: [] }
+  const dataParts: string[] = []
+  let i = tokens[0]?.toLowerCase().startsWith('curl') ? 1 : 0
+  for (; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (token.startsWith('-') && token !== '-') {
+      const flagKey = token.split('=')[0]
+      const inlineValue = token.includes('=') ? token.slice(token.indexOf('=') + 1) : undefined
+      const kind = VALUE_FLAGS[flagKey]
+      if (kind) {
+        const value = inlineValue ?? tokens[++i] ?? ''
+        switch (kind) {
+          case 'method':
+            result.method = value.toUpperCase()
+            break
+          case 'header': {
+            const sep = value.indexOf(':')
+            if (sep > 0) {
+              result.headers.push({ name: value.slice(0, sep).trim(), value: value.slice(sep + 1).trim() })
+            } else {
+              result.warnings.push(`忽略不合法的 -H：${value}`)
+            }
+            break
+          }
+          case 'data':
+            dataParts.push(value)
+            break
+          case 'user':
+            result.headers.push({
+              name: 'Authorization',
+              value: `Basic ${btoa(value.replace(/"/g, ''))}`,
+            })
+            break
+          case 'cookie':
+            result.headers.push({ name: 'Cookie', value })
+            break
+          case 'url':
+            result.url = value
+            break
+          default:
+            break
+        }
+        continue
+      }
+      if (BOOLEAN_FLAGS.has(flagKey)) continue
+      result.warnings.push(`未识别的选项：${token}（已跳过）`)
+      continue
+    }
+    if (!result.url && /^(https?):\/\//i.test(token)) {
+      result.url = token.replace(/^["']|["']$/g, '')
+      continue
+    }
+    result.warnings.push(`忽略多余片段：${token}`)
+  }
+  if (!result.url) result.warnings.unshift('未解析到 http(s) 地址')
+  if (dataParts.length) result.body = dataParts.join('&')
+  if (!result.method) result.method = result.body ? 'POST' : 'GET'
+  return result
+}

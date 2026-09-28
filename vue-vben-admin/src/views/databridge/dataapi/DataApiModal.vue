@@ -153,7 +153,13 @@
           <Input
             v-model:value="formState.forwardUrl"
             placeholder="http://10.45.x.x:8080/external/bill/:billNr"
-          />
+          >
+            <template #addonAfter>
+              <Button type="link" size="small" class="!p-0" @click="openCurlImport">
+                解析 curl
+              </Button>
+            </template>
+          </Input>
         </FormItem>
         <FormItem label="转发方法" name="forwardMethod">
           <RadioGroup
@@ -368,6 +374,38 @@
         <TextArea v-model:value="formState.ipWhitelistText" :rows="3" placeholder="192.168.1.10&#10;10.0.0.*" />
       </FormItem>
     </Form>
+
+    <!-- curl 导入：粘贴目标系统的一条 curl 命令，一键填充转发配置 -->
+    <Modal
+      v-model:visible="curlVisible"
+      title="解析 curl 命令为转发配置"
+      width="640px"
+      ok-text="解析并填充"
+      @ok="applyCurlImport"
+    >
+      <TextArea
+        v-model:value="curlText"
+        :rows="7"
+        class="mono-text"
+        placeholder="curl 'http://10.45.x.x:8080/api/bill?orgId=3' -X POST -H 'Content-Type: application/json' -H 'token: abc' -d '{&quot;billNr&quot;:&quot;A1&quot;}'"
+      />
+      <Alert
+        v-if="curlPreview?.warnings?.length"
+        type="warning"
+        show-icon
+        class="mt-2"
+        :message="`有 ${curlPreview.warnings.length} 处未识别，请检查`"
+        :description="curlPreview.warnings.join('；')"
+      />
+      <div v-if="curlPreview?.url" class="mt-2 text-gray-500">
+        预览：{{ curlPreview.method }} {{ curlPreview.url }}
+        ｜ 头 {{ curlPreview.headers.length }} 个
+        <template v-if="curlPreview.body">｜ 体 {{ curlPreview.body.length }} 字符</template>
+      </div>
+      <div class="mt-1 text-gray-400">
+        支持 -X/-H(多个)/-d/--data*/-u(转 Basic)/-b(转 Cookie)；粘贴后可再把 URL 中的固定值改成 :name 占位符
+      </div>
+    </Modal>
   </BasicModal>
 </template>
 <script lang="ts" setup>
@@ -380,6 +418,7 @@
     Form,
     Input,
     InputNumber,
+    Modal,
     Radio,
     Select,
     Switch,
@@ -421,6 +460,7 @@
     extractSqlPlaceholders,
     fieldTableColumns,
     metaColumnTableColumns,
+    parseCurlCommand,
     queryParamTableColumns,
     suggestApiPath,
   } from './dataapi.data'
@@ -542,6 +582,38 @@
       return 'forwardUrl 不是合法绝对地址'
     }
     return ''
+  }
+
+  /** ---- curl 导入（转发配置快速录入） ---- */
+  const curlVisible = ref(false)
+  const curlText = ref('')
+  const curlPreview = computed(() => (curlText.value.trim() ? parseCurlCommand(curlText.value) : null))
+
+  function openCurlImport() {
+    curlVisible.value = true
+  }
+
+  function applyCurlImport() {
+    const parsed = parseCurlCommand(curlText.value)
+    if (!parsed.url) {
+      createMessage.warning('未解析到 http(s) 地址，请检查粘贴内容')
+      return
+    }
+    const urlError = checkForwardUrl(parsed.url)
+    if (urlError) {
+      createMessage.warning(urlError)
+      return
+    }
+    formState.forwardUrl = parsed.url
+    formState.forwardMethod = parsed.method === 'POST' ? 'POST' : 'GET'
+    formState.forwardHeaders = parsed.headers.map((item) => toForwardHeaderRow(item))
+    formState.forwardBodyTemplate = parsed.body ?? ''
+    if (parsed.warnings.length) {
+      createMessage.warning(`已填充，但 ${parsed.warnings.length} 处未识别，见弹窗提示`)
+    } else {
+      createMessage.success('curl 已解析填充；如需参数化可把固定值改成 :name 占位符')
+    }
+    curlVisible.value = false
   }
 
   const columnRowSelection = computed(() => ({

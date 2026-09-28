@@ -118,7 +118,7 @@ Node 管理后端支持双驱动（仓储门面按 `DB_DRIVER` 选择实现，se
 ### 数据服务（Data API）
 表一键发布为 REST API：管理端 CRUD + publish/unpublish（生成 apiKey）+ 调试（invoke 代理 + curl 命令生成）+ 调用统计（7 日趋势）。运行时 `GET /ds/{path}` 的 **X-API-Key 鉴权、IP 白名单、滑动窗口 QPS 限流为真实逻辑**。
 - **配置期元数据驱动**：选数据源后实时拉取真实表名（`/data-apis/meta/tables`）与字段（`/meta/columns`，MySQL information_schema / Oracle ALL_TABLES+ALL_TAB_COLUMNS），勾选字段即输出列。
-- **三种 SQL 模式**：builder（选表勾字段自动拼 SELECT）/ custom（自定义 SQL，`:name` 绑定变量；`list` 类型自动展开 Oracle `IN` 逐元素绑定、上限 1000；时间用 `TO_DATE(:t,...)` 显式声明）/ **forward（API 转发，契约 1.9.3：鉴权/限流照常，把请求转调其他系统并原样透传下游状态码与响应体；URL/头/体支持 `:name` 占位符，调用方 header 不下传，禁云元址、不跟随重定向，超时/不可达返回 502/50003）**。
+- **三种 SQL 模式**：builder（选表勾字段自动拼 SELECT）/ custom（自定义 SQL，`:name` 绑定变量；`list` 类型自动展开 Oracle `IN` 逐元素绑定、上限 1000；时间用 `TO_DATE(:t,...)` 显式声明）/ **forward（API 转发，契约 1.9.3：鉴权/限流照常，把请求转调其他系统并原样透传下游状态码与响应体；URL/头/体支持 `:name` 占位符，调用方 header 不下传，禁云元址、不跟随重定向，超时/不可达返回 502/50003；表单内置「解析 curl」——粘贴目标系统的一条 curl 命令即自动填充地址/方法/请求头/请求体，未识别项会列出提示）**。
 - **表名选择器**：切换数据源时一次性拉取表清单（上限 5000），输入关键字走本地内存过滤，不实时请求。
 - **并发与连接池**：网关单进程实测 ~2000 req/s（100 并发，鉴权+限流+统计全链路）；真实查询吞吐由连接池决定——MySQL `MYSQL_CONNECTION_LIMIT`（默认 10），Oracle 按数据源懒建池 `ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（默认 2/10，吞吐≈池上限÷单查询耗时）；多副本部署时 QPS 限流窗口按进程各算各的。
 - **调用日志（审计）页**：数据服务分组下「调用日志」，支持服务名 / 时间范围 / 成功失败 / 调用内容（脱敏 query、错误信息）组合模糊查询，行展开看完整参数；数据源 `databridge_data_api_call` 表（滚动 5000 条，apiKey 永不落明文，明细不随服务删除消失）。
