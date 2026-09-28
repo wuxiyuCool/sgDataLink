@@ -23,13 +23,20 @@ git push origin V<N>          # 标签单独推
 
 ## 3. 服务器构建镜像
 
+> **注意按改动范围选服务**：`web-dist.tar.gz` 只含前端静态产物；
+> 后端改动（Node admin / Go engine）必须重建对应镜像才会生效。
+> 例：V5 含 admin 后端改动（forward 转发、Oracle 连接池、调用日志筛选），
+> 需 `ONLY=admin,web` 一起重建；engine 未变更可省略。
+
 **A. 服务器能直连（常规）**
 
 ```bash
 cd /path/to/dataLink && git pull
-ONLY=web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v<N>
-# 自动解压 tar -> vue-vben-admin/prebuilt-dist/，走 Dockerfile.prebuilt 直接打 nginx 镜像（跳过 pnpm 安装），
-# 推送 10.45.34.167:5000/datalink/web:v<N>，并回写 deploy/k8s/kustomization.yaml 的 newTag
+ONLY=admin,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v<N>
+# admin：Dockerfile 内 npmmirror 源装依赖直接构建（内网实测可达）；
+# web：PREBUILT_WEB=1 自动解压 tar -> vue-vben-admin/prebuilt-dist/，走 Dockerfile.prebuilt 直接打 nginx 镜像（跳过 pnpm 安装），
+# 推送 10.45.34.167:5000/datalink/{admin,web}:v<N>，并回写 deploy/k8s/kustomization.yaml 的 newTag；
+# 仅动前端时改回 ONLY=web 即可
 ```
 
 **B. 内网机无外网（save/load 双机流水线）**
