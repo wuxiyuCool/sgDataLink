@@ -267,6 +267,10 @@ const queryCalls = async (filter = {}, options = {}) => {
     apiId: filter.apiId,
     result: filter.result,
     keyword: filter.keyword,
+    apiName: filter.apiName,
+    content: filter.content,
+    startTime: filter.startTime,
+    endTime: filter.endTime,
     page: options.page,
     size: options.size,
   });

@@ -108,6 +108,15 @@ const databridge: AppRouteModule = {
             icon: 'ion:code-slash-outline',
           },
         },
+        {
+          path: '/databridge/dataapi-calls',
+          name: 'DatabridgeDataApiCalls',
+          component: () => import('/@/views/databridge/dataapi/calls.vue'),
+          meta: {
+            title: '调用日志',
+            icon: 'ion:list-outline',
+          },
+        },
       ],
     },
     {

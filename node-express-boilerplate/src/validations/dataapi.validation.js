@@ -171,7 +171,8 @@ const invokeDataApi = {
 
 /**
  * 1.9 调用明细日志分页：GET /data-apis/calls（必须注册在 /:id 之前，见 routes/v1/dataapi.route.js）。
- * result 只认 success|error（对应明细的 ok=1/0），keyword 打的是服务名与路径。
+ * result 只认 success|error（对应明细的 ok=1/0）；keyword/apiName 打服务名与路径，
+ * content 打调用内容（脱敏 query / 错误信息），startTime/endTime 为 ISO 时间闭区间。
  */
 const listDataApiCalls = {
   query: Joi.object()
@@ -179,6 +180,10 @@ const listDataApiCalls = {
       apiId: Joi.string().trim().max(64),
       result: Joi.string().valid(...CALL_RESULTS),
       keyword: Joi.string().trim().max(64).allow(''),
+      apiName: Joi.string().trim().max(64).allow(''),
+      content: Joi.string().trim().max(128).allow(''),
+      startTime: Joi.string().trim().max(64),
+      endTime: Joi.string().trim().max(64),
       page: Joi.number().integer().min(1),
       size: Joi.number().integer().min(1).max(500),
     })

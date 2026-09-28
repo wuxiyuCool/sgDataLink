@@ -443,7 +443,7 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/data-apis` | 分页列表 |
-| GET | `/data-apis/calls` | **调用明细日志**分页：参数 `apiId?`、`result?`(`success|error`)、`keyword?`（服务名/路径）；item：`{id, apiId, apiName, path, method, httpStatus, bizCode, ok, latencyMs, ip, query, errorMsg, createdAt}`（query 中 apiKey 脱敏；表滚动保留最近 5000 条） |
+| GET | `/data-apis/calls` | **调用明细日志（审计）**分页：参数 `apiId?`、`result?`(`success|error`)、`keyword?`（服务名/路径）、`apiName?`（服务名模糊）、`content?`（调用内容模糊：脱敏 query 或错误信息）、`startTime?`/`endTime?`（ISO 时间，闭区间，按 UTC 存储比对）；item：`{id, apiId, apiName, path, method, httpStatus, bizCode, ok, latencyMs, ip, query, errorMsg, createdAt}`（query 中 apiKey 脱敏；表滚动保留最近 5000 条；明细不随 API 删除而消失） |
 | GET | `/data-apis/:id` | CRUD |
 | POST / PUT / DELETE | `/data-apis/:id` | CRUD |
 | POST | `/data-apis/:id/publish` | 发布（生成 apiKey，状态 published） |

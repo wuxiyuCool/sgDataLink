@@ -31,8 +31,9 @@ export function getDataApiListApi(params: DataApiPageParams) {
 }
 
 /**
- * @description: 调用明细日志分页（契约 1.9）：GET /data-apis/calls
- * 支持 apiId / result(success|error) / keyword 过滤，返回 { items, total }；
+ * @description: 调用明细日志分页（契约 1.9，审计查询页）：GET /data-apis/calls
+ * 支持 apiId / result(success|error) / apiName(服务名或路径模糊) / content(调用内容模糊) /
+ * startTime|endTime(ISO 闭区间)；返回 { items, total }；
  * 后端滚动保留最近 5000 条，query 中的 apiKey 已脱敏。
  */
 export function getApiCallsApi(params: DataApiCallPageParams = {}) {

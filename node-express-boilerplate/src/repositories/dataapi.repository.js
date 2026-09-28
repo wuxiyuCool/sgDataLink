@@ -194,22 +194,39 @@ const addCall = (record = {}) => {
 };
 
 /**
- * 明细分页（契约 1.9）：{ items, total, page, size, pages }，createdAt 倒序。
+ * 明细分页（契约 1.9 /calls，审计查询页数据源）：{ items, total, page, size, pages }，createdAt 倒序。
+ * 与 mysql 版同口径：apiId 精确、result 成败、apiName|keyword 名字/路径模糊、
+ * content 调用内容（脱敏 query / 错误信息）模糊、startTime|endTime 时间闭区间（ISO 字符串比较）。
  * 形参刻意不叫 page / size —— 那两个名字在本模块顶层是列表分页函数。
- * @param {Object} query { page, size, apiId, result: 'success'|'error', keyword }
+ * @param {Object} query { page, size, apiId, result, keyword, apiName, content, startTime, endTime }
  */
-const pageCalls = (query = {}) =>
-  queryList(callDetails, {
-    filters: {
-      apiId: query.apiId,
-      ok: query.result === 'success' || query.result === 'error' ? query.result === 'success' : undefined,
-    },
-    keyword: query.keyword,
-    keywordFields: ['apiName', 'path'],
+const pageCalls = (query = {}) => {
+  const nameKeyword = String(query.apiName || query.keyword || '').trim().toLowerCase();
+  const content = String(query.content || '').trim().toLowerCase();
+  const start = query.startTime ? new Date(query.startTime).toISOString() : null;
+  const end = query.endTime ? new Date(query.endTime).toISOString() : null;
+  const filtered = callDetails.filter((item) => {
+    if (query.apiId && item.apiId !== query.apiId) return false;
+    if (query.result === 'success' && !item.ok) return false;
+    if (query.result === 'error' && item.ok) return false;
+    if (
+      nameKeyword &&
+      !`${item.apiName || ''} ${item.path || ''}`.toLowerCase().includes(nameKeyword)
+    ) { return false; }
+    if (
+      content &&
+      !`${item.queryMasked || ''} ${item.errorMsg || ''}`.toLowerCase().includes(content)
+    ) { return false; }
+    if (start && String(item.createdAt) < start) return false;
+    if (end && String(item.createdAt) > end) return false;
+    return true;
+  });
+  return queryList(filtered, {
     sort: 'createdAt:desc',
     page: query.page,
     size: query.size,
   });
+};
 
 /**
  * 明细聚合（契约 1.5 dataApiCallStats），出参与 mysql 版逐键一致。

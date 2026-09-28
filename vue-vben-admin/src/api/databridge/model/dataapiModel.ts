@@ -157,10 +157,17 @@ export interface DataApiCallItem {
   createdAt?: string | null
 }
 
-/** GET /data-apis/calls 请求参数（契约 1.9） */
+/** GET /data-apis/calls 请求参数（契约 1.9，审计日志查询页） */
 export interface DataApiCallPageParams extends DatabridgePageParams {
   apiId?: string
   result?: DataApiCallResult
+  /** 服务名/路径模糊 */
+  apiName?: string
+  /** 调用内容模糊：脱敏 query 或错误信息 */
+  content?: string
+  /** ISO 时间闭区间 */
+  startTime?: string
+  endTime?: string
 }
 
 /**

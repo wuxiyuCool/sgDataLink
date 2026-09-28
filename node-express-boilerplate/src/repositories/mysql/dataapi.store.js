@@ -18,7 +18,7 @@
  * 滑动窗口限流器仍在内存（utils/rateWindow），不入库。
  */
 const { randomUUID } = require('crypto');
-const { defineStore } = require('./sqlStore');
+const { defineStore, normalizePaging, escapeLike, toDbDateTime } = require('./sqlStore');
 const db = require('../../db/mysql');
 const logger = require('../../config/logger');
 const { nowIso } = require('../memoryStore');
@@ -320,20 +320,56 @@ const addCall = async (record = {}) => {
 };
 
 /**
- * 明细分页（契约 1.9）：{ items, total, page, size, pages }，createdAt 倒序。
- * @param {Object} query { page, size, apiId, result: 'success'|'error', keyword }
+ * 明细分页（契约 1.9 /calls，审计查询页数据源）：{ items, total, page, size, pages }，createdAt 倒序。
+ * 条件全部参数化 LIKE/比较，支持：apiId 精确、result 成败、apiName|keyword 名字与路径模糊、
+ * content 调用内容（脱敏 query / 错误信息）模糊、startTime|endTime 时间闭区间（UTC 口径同 nowIso）。
+ * @param {Object} query { page, size, apiId, result, keyword, apiName, content, startTime, endTime }
  */
-const pageCalls = (query = {}) =>
-  callStore.page({
-    filters: {
-      apiId: query.apiId,
-      ok: query.result === 'success' || query.result === 'error' ? query.result === 'success' : undefined,
-    },
-    keyword: query.keyword,
-    sort: 'createdAt:desc',
-    page: query.page,
-    size: query.size,
-  });
+const pageCalls = async (query = {}) => {
+  const { page, size, offset } = normalizePaging(query);
+  const where = [];
+  const params = [];
+  if (query.apiId) {
+    where.push('api_id = ?');
+    params.push(query.apiId);
+  }
+  if (query.result === 'success') where.push('`ok` = 1');
+  else if (query.result === 'error') where.push('`ok` = 0');
+  const nameKeyword = String(query.apiName || query.keyword || '').trim();
+  if (nameKeyword) {
+    where.push('(api_name LIKE ? OR path LIKE ?)');
+    params.push(`%${escapeLike(nameKeyword)}%`, `%${escapeLike(nameKeyword)}%`);
+  }
+  const content = String(query.content || '').trim();
+  if (content) {
+    where.push('(query_masked LIKE ? OR error_msg LIKE ?)');
+    params.push(`%${escapeLike(content)}%`, `%${escapeLike(content)}%`);
+  }
+  const start = toDbDateTime(query.startTime);
+  const end = toDbDateTime(query.endTime);
+  if (start) {
+    where.push('created_at >= ?');
+    params.push(start);
+  }
+  if (end) {
+    where.push('created_at <= ?');
+    params.push(end);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  // LIMIT/OFFSET 为 normalizePaging 钳制后的整数，直接内联（5.7 文本协议不接受这两个位置的绑定参数）
+  const [rows, countRows] = await Promise.all([
+    db.query(`SELECT * FROM ${CALL_TABLE} ${whereSql} ORDER BY seq DESC LIMIT ${size} OFFSET ${offset}`, params),
+    db.query(`SELECT COUNT(*) AS total FROM ${CALL_TABLE} ${whereSql}`, params),
+  ]);
+  const total = Number(countRows[0] && countRows[0].total) || 0;
+  return {
+    items: rows.map((row) => callStore.fromRow(row)),
+    total,
+    page,
+    size,
+    pages: Math.ceil(total / size),
+  };
+};
 
 /**
  * 明细聚合（契约 1.5 dataApiCallStats）：总量 / 成败 / 错误率 / 平均延迟 / 今日成败 / 最近 7 天趋势。
