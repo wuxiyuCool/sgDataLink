@@ -565,6 +565,30 @@ Header: X-API-Key: dk-9f3a...   （authEnabled=true 时必需）
 - 管理端「调试」（POST /data-apis/:id/invoke）：forward 结果同样以 `{httpStatus, body}` 透传（body 尽量 JSON 解析，失败给 `{contentType, text}`）。
 - 转发不依赖数据库：`DB_DRIVER=memory` 与 `mysql` 均可用。
 
+#### 1.9.4 Swagger 文档中心（OpenAPI 3.0 自动生成）
+
+**查看需登录**：以下接口全部要求 JWT（401 未登录不可见），前端「文档中心」页位于登录态之后。
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/data-apis/swagger.json` | JWT | 生成 OpenAPI 3.0 文档：每个 Data API 一条 path（`/ds/{path}`），`tags=[数据源名]`（供按数据源筛选），parameters 来自 queryParams+page/size，responses 含字段表与示例；`?status=published\|all`（all 仅 admin，默认 published）；`?keyword=` 按 path/名称模糊过滤 |
+| GET | `/data-apis/:id/doc` | JWT | 取该服务的文档配置（apiDoc） |
+| PUT | `/data-apis/:id/doc` | JWT+admin | 保存文档配置（summary/description/paramDocs/responseExample） |
+
+**apiDoc 模板字段**（dataApi 对象新增 `apiDoc`，创建/更新定义时若为空由后端**自动生成模板**，用户可在界面上改）：
+
+```json
+{
+  "summary": "计量单查询（GET /ds/bill）",
+  "description": "构建模式：查询 IR_CM_MEASURE，过滤参数见 queryParams",
+  "paramDocs": { "ms_bill_Nr": "计量申请单号，必填" },
+  "responseExample": { "fields": ["MS_BILL_NR", "SID"], "rows": [["AQ201110J132", 30500], ["BQ201110J173", 30611]] }
+}
+```
+
+- 模板生成规则：builder 按 fields 类型造 2 行示例（数字递增/字符串取样例列值/日期取当天）；custom 用声明字段生成；forward 的 responseExample 置 `{ note: '透传下游响应' }` 并在 description 注明目标地址。
+- OpenAPI 的 `operationId` 用 `path` 连字符名；`x-databridge` 扩展字段携带 datasourceId/apiId/sqlMode，供前端筛选与跳转编辑。
+
 ### 1.10 任务运维补充
 
 **告警规则 `/alert-rules`**（CRUD）+ **告警记录 `/alert-records`**（GET 分页，支持 level/read 筛选；PATCH `/alert-records/:id/read` 标记已读）：
@@ -632,6 +656,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 - **密码强度（服务端强制）**：8~64 位，至少含 1 字母和 1 数字；不满足 40001。
 - **越权红线**：`/users` 全部接口与用户数据访问仅限 admin 角色（passport-jwt + roleRights），普通用户访问一律 403；改密/查自己走 `/auth/*`，不接受任何 userId 参数（无 IDOR 面）。
 - **本期边界（诚实声明）**：JWT 强制覆盖 `/users`、`/auth/me`、`/auth/change-password`；其余 DataBridge 业务接口本期仍不鉴权（`/ds/{path}` 继续走 apiKey 机制，engine 回报通道待二阶段加共享密钥），前端路由守卫按角色显隐菜单。
+- **登录日志（审计）**：每次 `POST /auth/login`（成功与失败）写一条 `databridge_login_log`：`{id, userId?, username, ip, ok, errorMsg?, createdAt}`（username 原样记录便于排查撞库尝试；errorMsg 不含密码）。查询：`GET /auth/login-logs`（JWT+admin，分页，参数 `keyword`（用户名模糊）/`result=success|error`/`startTime`/`endTime`），表滚动保留最近 1 万条。
 - 前端：登录页对接真实 `/auth/login`；「系统管理→用户管理」页（admin 可见）提供增删改/禁用/重置密码；头像菜单提供个人修改密码；`mustChangePassword=true` 时登录后强制弹出改密。
 
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）

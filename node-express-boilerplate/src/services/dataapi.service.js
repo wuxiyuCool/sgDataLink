@@ -75,6 +75,7 @@ const normalizeBody = (body = {}) => {
     'forwardBodyTemplate',
     'forwardTimeoutMs',
     'forwardPassthroughQuery',
+    'apiDoc',
     'authEnabled',
     'rateLimitQps',
     'ipWhitelist',
@@ -90,6 +91,70 @@ const normalizeBody = (body = {}) => {
 
 /** sqlMode 缺省按 builder（契约：builder 是默认模式）；1.9.3 起支持 forward */
 const sqlModeOf = (api = {}) => (api.sqlMode === 'custom' || api.sqlMode === 'forward' ? api.sqlMode : 'builder');
+
+/* ------------------------------------------------------------------ */
+/* 1.9.4 文档配置（apiDoc）：创建/更新时为空自动生成模板，用户在界面改  */
+/* ------------------------------------------------------------------ */
+
+/** 字符串字段示例值池（模板行确定性生成，不依赖随机数） */
+const DOC_STRING_SAMPLES = ['示例值A', '示例值B'];
+
+/** 按字段类型造示例值：数字递增 / 日期取当天 / 其它取样例串 */
+const sampleValueForField = (field = {}, rowIndex = 0) => {
+  const type = String(field.type || '').toUpperCase();
+  if (/INT|NUMBER|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|BIT/.test(type)) return rowIndex + 1;
+  if (/DATE|TIME/.test(type)) return `${new Date().toISOString().slice(0, 10)} 12:00:00`;
+  return DOC_STRING_SAMPLES[rowIndex % DOC_STRING_SAMPLES.length];
+};
+
+/** apiDoc 是否为「没填」：null/非对象/四个键全空（空串、空数组、空对象都算空） */
+const isEmptyDoc = (doc) => {
+  if (!doc || typeof doc !== 'object') return true;
+  const meaningful = (value) => {
+    if (value === undefined || value === null || value === '') return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value).length > 0;
+    return true;
+  };
+  return !Object.values(doc).some(meaningful);
+};
+
+/** 由定义生成 apiDoc 模板（契约 1.9.4 生成规则：builder/custom 按字段造 2 行示例，forward 注明透传） */
+const buildApiDocTemplate = (api = {}) => {
+  const mode = sqlModeOf(api);
+  const queryParams = Array.isArray(api.queryParams) ? api.queryParams : [];
+  const guardNote = `${api.authEnabled ? '；需 X-API-Key 鉴权' : ''}；限流 ${api.rateLimitQps || '-'} QPS`;
+  const doc = {
+    summary: `${api.name || '未命名服务'}（${api.method || 'GET'} /ds/${api.path || ''}）`,
+    description: '',
+    paramDocs: {},
+    responseExample: null,
+  };
+  if (mode === 'forward') {
+    doc.description = `API 转发模式：透传调用 ${api.forwardMethod || 'GET'} ${api.forwardUrl || '（未配置目标地址）'}${guardNote}`;
+    doc.responseExample = { note: '透传下游响应' };
+  } else {
+    doc.description =
+      mode === 'custom'
+        ? `自定义 SQL 模式：执行只读 SQL，:name 占位符绑定下方查询参数${guardNote}`
+        : `构建模式：查询 ${api.tableName || ''}，过滤参数见 queryParams${guardNote}`;
+    const fields = (Array.isArray(api.fields) ? api.fields : []).filter((f) => f && f.name);
+    doc.responseExample = fields.length
+      ? {
+          fields: fields.map((f) => f.name),
+          rows: [fields.map((f) => sampleValueForField(f, 0)), fields.map((f) => sampleValueForField(f, 1))],
+          total: 2,
+          page: 1,
+          size: 20,
+        }
+      : { note: '以实际 SQL 返回列为准' };
+  }
+  queryParams.forEach((p) => {
+    if (!p || !p.name) return;
+    doc.paramDocs[p.name] = p.remark || `${p.type || 'string'}${p.required ? '，必填' : '，可选'}`;
+  });
+  return doc;
+};
 
 /**
  * custom 模式的定义校验（契约 1.9.2 保存期红线）：
@@ -285,6 +350,8 @@ const getDataApiById = (id) => getOrThrow(id);
 const createDataApi = async (body) => {
   const payload = normalizeBody(body);
   await assertDefinition(payload);
+  // 契约 1.9.4：新增时未填文档 → 自动生成模板供用户修改
+  if (isEmptyDoc(payload.apiDoc)) payload.apiDoc = buildApiDocTemplate(payload);
   return dataApiRepository.create({
     method: 'GET',
     queryParams: [],
@@ -307,9 +374,51 @@ const updateDataApiById = async (id, body) => {
   if ('name' in payload && !payload.name) throw paramInvalid('name 必填');
   if (Object.keys(payload).length) {
     await assertDefinition({ ...existing, ...payload }, existing);
+    // 契约 1.9.4：更新定义后仍没有文档配置 → 按新定义补一份模板（已有用户编辑的内容不覆盖）
+    if (isEmptyDoc(existing.apiDoc) && isEmptyDoc(payload.apiDoc)) {
+      payload.apiDoc = buildApiDocTemplate({ ...existing, ...payload });
+    }
   }
   // running 语义：已发布的 API 改 path 会让旧地址立刻 404，这里只做提示性的重复校验（见 assertDefinition）
   return dataApiRepository.update(id, payload);
+};
+
+/** GET /data-apis/:id/doc —— 取文档配置；没填过时返回按当前定义生成的模板（不落库） */
+const getApiDoc = async (id) => {
+  const api = await getOrThrow(id);
+  return isEmptyDoc(api.apiDoc) ? buildApiDocTemplate(api) : api.apiDoc;
+};
+
+/** 文档配置长度兜底：paramDocs 逐键截断，整体 JSON 上限 20000（与 customSql 同量级） */
+const MAX_DOC_JSON_LENGTH = 20000;
+
+/** PUT /data-apis/:id/doc —— 保存用户编辑后的文档配置（仅 admin 路由可达） */
+const saveApiDoc = async (id, body = {}) => {
+  const api = await getOrThrow(id);
+  const doc = {
+    summary: String(body.summary ?? '').trim().slice(0, 200) || `${api.name}（${api.method || 'GET'} /ds/${api.path || ''}）`,
+    description: String(body.description ?? '').trim().slice(0, 4000),
+    paramDocs: {},
+    responseExample: null,
+  };
+  if (body.paramDocs && typeof body.paramDocs === 'object' && !Array.isArray(body.paramDocs)) {
+    Object.entries(body.paramDocs).forEach(([name, value]) => {
+      if (doc.paramDocs[name] !== undefined || typeof value === 'object') return;
+      doc.paramDocs[String(name).slice(0, 64)] = String(value).slice(0, 500);
+    });
+  }
+  if (body.responseExample && typeof body.responseExample === 'object') {
+    doc.responseExample = body.responseExample;
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(doc);
+  } catch (err) {
+    throw paramInvalid('responseExample 不是合法 JSON（存在循环引用等）');
+  }
+  if (serialized.length > MAX_DOC_JSON_LENGTH) throw paramInvalid(`文档配置过大（${serialized.length} > ${MAX_DOC_JSON_LENGTH}）`);
+  await dataApiRepository.update(id, { apiDoc: doc });
+  return doc;
 };
 
 const deleteDataApiById = async (id) => {
@@ -454,11 +563,15 @@ module.exports = {
   getDataApiById,
   getDataApiOrThrow: getOrThrow,
   sqlModeOf,
+  isEmptyDoc,
+  buildApiDocTemplate,
   assertCustomSql,
   listMetaTables,
   listMetaColumns,
   createDataApi,
   updateDataApiById,
+  getApiDoc,
+  saveApiDoc,
   deleteDataApiById,
   publishDataApi,
   unpublishDataApi,

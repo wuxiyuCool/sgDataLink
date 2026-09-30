@@ -25,6 +25,7 @@ export interface PlatformUserPageParams {
 
 enum Api {
   Users = '/users',
+  LoginLogs = '/auth/login-logs',
 }
 
 export function getPlatformUsersApi(params: PlatformUserPageParams) {
@@ -53,5 +54,30 @@ export function deletePlatformUserApi(id: string) {
 
 export function resetPlatformUserPasswordApi(id: string, password: string) {
   return databridgeHttp.post<PlatformUser>({ url: `${Api.Users}/${id}/reset-password`, data: { password } })
+}
+
+/** 登录日志单项（契约 1.11 审计：成功与失败都记，不含任何口令信息） */
+export interface LoginLogItem {
+  id: string
+  userId?: string | null
+  username?: string | null
+  ip?: string | null
+  ok: boolean
+  errorMsg?: string | null
+  createdAt?: string | null
+}
+
+export interface LoginLogPageParams {
+  keyword?: string
+  result?: 'success' | 'error'
+  startTime?: string
+  endTime?: string
+  page?: number
+  size?: number
+}
+
+/** GET /auth/login-logs（JWT+admin，滚动保留 1 万条） */
+export function getLoginLogsApi(params: LoginLogPageParams = {}) {
+  return databridgeHttp.get<DatabridgePageResult<LoginLogItem>>({ url: Api.LoginLogs, params })
 }
 

@@ -54,6 +54,24 @@ const queryParam = Joi.object().keys({
   remark: Joi.string().trim().max(255).allow('', null),
 });
 
+/**
+ * 1.9.4 文档配置（apiDoc）：文案键限长，paramDocs 参数名 -> 说明，
+ * responseExample 允许任意 JSON 对象（透传示例不猜结构），整体上限在 service 侧兜。
+ */
+const apiDocShape = {
+  summary: Joi.string().trim().max(200).allow('', null),
+  description: Joi.string().trim().max(4000).allow('', null),
+  paramDocs: Joi.object()
+    .pattern(
+      Joi.string().trim().max(64),
+      Joi.string().trim().max(500).allow('')
+    )
+    .unknown(false),
+  responseExample: Joi.object().unknown(true).allow(null),
+};
+
+const apiDoc = Joi.object(apiDocShape).allow(null);
+
 const baseKeys = {
   name: Joi.string().trim().min(1).max(64),
   // path 决定对外地址 /ds/{path}：express 的 :path 只吃单段，因此不允许再带斜杠
@@ -87,6 +105,8 @@ const baseKeys = {
   forwardBodyTemplate: Joi.string().trim().max(8000).allow('', null),
   forwardTimeoutMs: Joi.number().integer().min(100).max(60000),
   forwardPassthroughQuery: Joi.boolean(),
+  /** 1.9.4 文档配置：创建/更新时为空由后端生成模板 */
+  apiDoc,
   authEnabled: Joi.boolean(),
   rateLimitQps: Joi.number().integer().min(1).max(10000),
   ipWhitelist: Joi.array().items(Joi.string().trim().max(64).regex(IP_PATTERN)).max(200),
@@ -216,6 +236,29 @@ const listMetaColumns = {
     .unknown(true),
 };
 
+/**
+ * 1.9.4 GET /data-apis/swagger.json：status 默认 published（all 的 admin 判定在控制器），
+ * keyword 按 path/名称模糊过滤。
+ */
+const getSwagger = {
+  query: Joi.object()
+    .keys({
+      status: Joi.string().valid('published', 'all'),
+      keyword: Joi.string().trim().max(64).allow(''),
+    })
+    .unknown(true),
+};
+
+const getDataApiDoc = {
+  params: Joi.object().keys({ id }),
+};
+
+/** PUT /data-apis/:id/doc（仅 admin）：整体覆盖 apiDoc 四个键 */
+const updateDataApiDoc = {
+  params: Joi.object().keys({ id }),
+  body: Joi.object(apiDocShape).min(1),
+};
+
 module.exports = {
   METHODS,
   STATUSES,
@@ -233,4 +276,7 @@ module.exports = {
   getDataApiStats,
   listMetaTables,
   listMetaColumns,
+  getSwagger,
+  getDataApiDoc,
+  updateDataApiDoc,
 };

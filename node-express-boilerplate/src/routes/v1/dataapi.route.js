@@ -1,5 +1,6 @@
 const express = require('express');
 const validate = require('../../middlewares/validate');
+const auth = require('../../middlewares/auth');
 const dataApiValidation = require('../../validations/dataapi.validation');
 const dataApiController = require('../../controllers/dataapi.controller');
 
@@ -26,6 +27,16 @@ router.get('/meta/columns', validate(dataApiValidation.listMetaColumns), dataApi
  * 1.9 调用明细日志：同样**必须在 /:id 之前**，不然 'calls' 会被当成 id 查不到（→ 40401）。
  */
 router.get('/calls', validate(dataApiValidation.listDataApiCalls), dataApiController.listDataApiCalls);
+
+/**
+ * 1.9.4 Swagger 文档中心：**必须注册在 /:id 之前**（'swagger.json' 会被当成 :id）。
+ * 查看需登录（契约：JWT，401 未登录不可见）；status=all 的 admin 判定在控制器。
+ */
+router.get('/swagger.json', auth(), validate(dataApiValidation.getSwagger), dataApiController.getSwagger);
+
+/** 1.9.4 文档配置：读需登录（模板兜底在 service），保存仅 admin */
+router.get('/:id/doc', auth(), validate(dataApiValidation.getDataApiDoc), dataApiController.getDataApiDoc);
+router.put('/:id/doc', auth('manageUsers'), validate(dataApiValidation.updateDataApiDoc), dataApiController.updateDataApiDoc);
 
 router.post('/:id/publish', validate(dataApiValidation.publishDataApi), dataApiController.publishDataApi);
 router.post('/:id/unpublish', validate(dataApiValidation.publishDataApi), dataApiController.unpublishDataApi);

@@ -47,6 +47,8 @@ require('../repositories/mysql/dataflow.store');
 require('../repositories/mysql/dataapi.store');
 require('../repositories/mysql/alertrule.store');
 require('../repositories/mysql/alertrecord.store');
+require('../repositories/mysql/user.store');
+require('../repositories/mysql/loginlog.store');
 
 /**
  * 把 schema.sql 切成逐条 DDL。

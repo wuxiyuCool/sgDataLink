@@ -86,6 +86,8 @@ const store = defineStore({
     forwardBodyTemplate: { type: 'text' },
     forwardTimeoutMs: { type: 'int' },
     forwardPassthroughQuery: { type: 'bool' },
+    /** 1.9.4 文档配置 {summary,description,paramDocs,responseExample}，为空时创建/更新自动生成模板 */
+    apiDoc: { type: 'json' },
     authEnabled: { type: 'bool' },
     apiKey: {},
     rateLimitQps: { type: 'int' },

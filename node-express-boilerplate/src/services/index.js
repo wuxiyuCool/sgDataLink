@@ -9,8 +9,10 @@ module.exports.engineReportService = require('./engineReport.service');
 module.exports.runService = require('./run.service');
 module.exports.pipelineService = require('./pipeline.service');
 module.exports.dataflowService = require('./dataflow.service');
-module.exports.dataApiService = require('./dataApi.service');
+module.exports.dataApiService = require('./dataapi.service');
 module.exports.dataApiRuntimeService = require('./dataApiRuntime.service');
+// 1.9.4 Swagger 文档中心（OpenAPI 3.0 生成）
+module.exports.swaggerService = require('./swagger.service');
 module.exports.alertService = require('./alert.service');
 module.exports.lineageService = require('./lineage.service');
 module.exports.schedulerService = require('./scheduler.service');

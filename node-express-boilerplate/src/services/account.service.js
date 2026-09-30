@@ -16,6 +16,7 @@ const moment = require('moment');
 const config = require('../config/config');
 const logger = require('../config/logger');
 const userRepository = require('../repositories/user.repository');
+const loginlogRepository = require('../repositories/loginlog.repository');
 const { paramInvalid, notFound, loginFailed, accountDisabled } = require('../utils/bizError');
 
 const BCRYPT_COST = 10;
@@ -67,20 +68,43 @@ const countActiveAdmins = async () => {
 /**
  * 登录：查用户（CI 由仓储保证）→ bcrypt.compare → 状态检查 → 签发 JWT。
  * 任何一步失败都收敛到 40103/40104，message 不含「用户存在与否」的信息量。
+ * 无论成败都写一条登录日志（契约 1.11，供 admin 审计）；日志写失败只告警，不影响登录结果。
  */
-const login = async ({ username, password }) => {
+const login = async ({ username, password, ip }) => {
+  const record = async (patch) => {
+    try {
+      await loginlogRepository.add({
+        username: String(username || '').slice(0, 64),
+        ip: ip || null,
+        ...patch,
+      });
+    } catch (err) {
+      logger.warn('login log write failed (ignored): %s', err.message);
+    }
+  };
   const user = await userRepository.getByUsername(username);
   const matched = await bcrypt.compare(String(password ?? ''), user ? user.passwordHash : DUMMY_HASH);
-  if (!user || !matched) throw loginFailed('用户名或密码错误');
-  if (user.status === 'disabled') throw accountDisabled('账号已被禁用，请联系管理员');
-  await userRepository.update(user.id, { lastLoginAt: new Date().toISOString() });
+  if (!user || !matched) {
+    await record({ ok: false, errorMsg: 'bad_credentials' });
+    throw loginFailed('用户名或密码错误');
+  }
+  if (user.status === 'disabled') {
+    await record({ userId: user.id, ok: false, errorMsg: 'account_disabled' });
+    throw accountDisabled('账号已被禁用，请联系管理员');
+  }
+  const lastLoginAt = new Date().toISOString();
+  await userRepository.update(user.id, { lastLoginAt });
+  await record({ userId: user.id, ok: true });
   const expires = moment().add(config.jwt.accessExpirationMinutes, 'minutes');
   const token = jwt.sign(
     { sub: user.id, iat: moment().unix(), exp: expires.unix(), type: 'access' },
     config.jwt.secret,
   );
-  return { token, expiresInSec: (expires.diff(moment()) / 1000) | 0, user: toSafeUser({ ...user, lastLoginAt: expires.toISOString() }) };
+  return { token, expiresInSec: (expires.diff(moment()) / 1000) | 0, user: toSafeUser({ ...user, lastLoginAt }) };
 };
+
+/** 登录日志分页查询（仅 admin 路由暴露） */
+const pageLoginLogs = (query = {}) => loginlogRepository.page(query);
 
 /** passport-jwt 回调：token 有效 ≠ 账号有效，实时查库并拒绝 disabled */
 const loadUserForToken = async (id) => {
@@ -205,6 +229,7 @@ module.exports = {
   toSafeUser,
   assertPasswordStrength,
   login,
+  pageLoginLogs,
   loadUserForToken,
   listUsers,
   createUser,

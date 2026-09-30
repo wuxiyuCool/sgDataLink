@@ -117,6 +117,15 @@ const databridge: AppRouteModule = {
             icon: 'ion:list-outline',
           },
         },
+        {
+          path: '/databridge/dataapi-docs',
+          name: 'DatabridgeDataApiDocs',
+          component: () => import('/@/views/databridge/dataapi/docs.vue'),
+          meta: {
+            title: '文档中心',
+            icon: 'ion:book-outline',
+          },
+        },
       ],
     },
     {

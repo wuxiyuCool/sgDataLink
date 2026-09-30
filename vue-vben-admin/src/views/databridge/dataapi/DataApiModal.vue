@@ -373,6 +373,47 @@
       >
         <TextArea v-model:value="formState.ipWhitelistText" :rows="3" placeholder="192.168.1.10&#10;10.0.0.*" />
       </FormItem>
+
+      <Divider orientation="left" plain class="!mt-0 !mb-3">文档配置（Swagger）</Divider>
+      <Alert
+        type="info"
+        show-icon
+        class="mb-3"
+        message="全部留空时后端按当前定义自动生成文档模板（数字递增/字符串取样例值/日期取当天，forward 记透传），保存后可再次打开修改；结果发布到「数据服务 → 文档中心」的 OpenAPI 文档"
+      />
+      <FormItem label="摘要 summary">
+        <Input v-model:value="docForm.summary" :placeholder="docTemplatePreview.summary || '保存时自动生成'" />
+      </FormItem>
+      <FormItem label="描述 description">
+        <TextArea
+          v-model:value="docForm.description"
+          :rows="2"
+          :placeholder="docTemplatePreview.description || '保存时自动生成'"
+        />
+      </FormItem>
+      <FormItem label="参数说明">
+        <div v-if="declaredParamNames.length" class="w-full">
+          <div v-for="name in declaredParamNames" :key="`doc-${name}`" class="param-doc-row">
+            <span class="param-doc-name mono">{{ name }}</span>
+            <Input
+              :value="docForm.paramDocs[name]"
+              size="small"
+              placeholder="文档中该参数的说明（留空用后端模板）"
+              @input="docForm.paramDocs[name] = String($event.target.value)"
+            />
+          </div>
+        </div>
+        <span v-else class="text-gray-500">当前未声明查询参数，文档将只展示分页参数</span>
+      </FormItem>
+      <FormItem label="返回示例">
+        <TextArea
+          v-model:value="docForm.responseExampleText"
+          :rows="6"
+          class="mono-text"
+          :placeholder="docTemplatePreview.exampleText || '保存时自动生成（JSON 对象，可手工修改）'"
+        />
+        <div v-if="docExampleError" class="mt-1 text-red-500">{{ docExampleError }}</div>
+      </FormItem>
     </Form>
 
     <!-- curl 导入：粘贴目标系统的一条 curl 命令，一键填充转发配置 -->
@@ -431,11 +472,13 @@
   import { getAllDatasourcesApi } from '/@/api/databridge/datasource'
   import {
     createDataApiItemApi,
+    getDataApiDocApi,
     getMetaColumnsApi,
     updateDataApiItemApi,
   } from '/@/api/databridge/dataapi'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import type {
+    ApiDoc,
     DataApi,
     DataApiFieldType,
     DataApiMethod,
@@ -546,6 +589,108 @@
   const sqlCheckError = computed(() =>
     isBuilder.value || isForward.value ? '' : checkCustomSql(formState.customSql),
   )
+
+  /* ---- 1.9.4 文档配置（apiDoc）：留空由后端生成模板，这里只做占位预览与组装 ---- */
+  const defaultDocForm = () => ({
+    summary: '',
+    description: '',
+    paramDocs: {} as Record<string, string>,
+    responseExampleText: '',
+  })
+  const docForm = reactive(defaultDocForm())
+
+  const docExampleError = computed(() => {
+    const text = docForm.responseExampleText.trim()
+    if (!text) return ''
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object') return '返回示例需为 JSON 对象'
+      return ''
+    } catch {
+      return '返回示例不是合法 JSON'
+    }
+  })
+
+  /** 与后端模板同规则的占位预览（仅提示用，实际生成以后端为准） */
+  function sampleFor(type?: string, index = 0) {
+    const t = String(type ?? '').toUpperCase()
+    if (/INT|NUMBER|DECIMAL|NUMERIC|FLOAT|DOUBLE|REAL|BIT/.test(t)) return index + 1
+    if (/DATE|TIME/.test(t)) return `${new Date().toISOString().slice(0, 10)} 12:00:00`
+    return ['示例值A', '示例值B'][index]
+  }
+
+  const docTemplatePreview = computed(() => {
+    const name = formState.name || '未命名服务'
+    const method = formState.method || 'GET'
+    const summary = `${name}（${method} /ds/${formState.path || ''}）`
+    let description: string
+    let exampleText = ''
+    if (isForward.value) {
+      description = `API 转发模式：透传调用 ${formState.forwardMethod || 'GET'} ${formState.forwardUrl || '（未配置目标地址）'}`
+      exampleText = JSON.stringify({ note: '透传下游响应' }, null, 2)
+    } else {
+      description = isBuilder.value
+        ? `构建模式：查询 ${formState.tableName || ''}，过滤参数见 queryParams`
+        : '自定义 SQL 模式：执行只读 SQL，:name 占位符绑定下方查询参数'
+      const fields = (formState.fields ?? []).filter((item) => String(item.name).trim())
+      if (fields.length) {
+        exampleText = JSON.stringify(
+          {
+            fields: fields.map((item) => item.name),
+            rows: [
+              fields.map((item) => sampleFor(item.type, 0)),
+              fields.map((item) => sampleFor(item.type, 1)),
+            ],
+            total: 2,
+            page: 1,
+            size: 20,
+          },
+          null,
+          2,
+        )
+      }
+    }
+    return { summary, description, exampleText }
+  })
+
+  function fillDocForm(doc?: ApiDoc | null) {
+    Object.assign(docForm, defaultDocForm())
+    if (!doc) return
+    docForm.summary = doc.summary || ''
+    docForm.description = doc.description || ''
+    docForm.paramDocs = { ...(doc.paramDocs || {}) }
+    docForm.responseExampleText = doc.responseExample ? JSON.stringify(doc.responseExample, null, 2) : ''
+  }
+
+  /** 任一字段有值才组装提交；全空则省略 apiDoc 键，由后端按定义生成模板 */
+  function buildApiDoc(): ApiDoc | undefined {
+    if (docExampleError.value) return undefined
+    const summary = docForm.summary.trim()
+    const description = docForm.description.trim()
+    const paramDocs: Record<string, string> = {}
+    Object.entries(docForm.paramDocs).forEach(([key, value]) => {
+      const name = String(key).trim()
+      const text = String(value ?? '').trim()
+      if (name && text) paramDocs[name] = text
+    })
+    let responseExample: Recordable | undefined
+    if (docForm.responseExampleText.trim()) {
+      try {
+        responseExample = JSON.parse(docForm.responseExampleText)
+      } catch {
+        return undefined
+      }
+    }
+    if (!summary && !description && !Object.keys(paramDocs).length && responseExample === undefined) {
+      return undefined
+    }
+    const doc: ApiDoc = {}
+    if (summary) doc.summary = summary
+    if (description) doc.description = description
+    if (Object.keys(paramDocs).length) doc.paramDocs = paramDocs
+    if (responseExample !== undefined) doc.responseExample = responseExample
+    return doc
+  }
 
   /** 1.9.3 转发固定请求头行（__key 供 Table row-key 使用） */
   interface ForwardHeaderRow {
@@ -672,6 +817,7 @@
     isUpdate.value = !!data?.isUpdate
     submitting.value = false
     Object.assign(formState, defaultForm())
+    fillDocForm()
     metaColumns.value = []
     selectedFieldNames.value = []
     setModalProps({ confirmLoading: false })
@@ -707,6 +853,15 @@
       })
     }
     loadDatasources()
+    // 1.9.4：文档配置单独回显（未填过时后端返回按定义生成的模板，供直接修改）
+    const editId = data?.record?.id
+    if (editId) {
+      getDataApiDocApi(String(editId))
+        .then((doc) => fillDocForm(doc))
+        .catch(() => {
+          /* 老数据或无权限时退回本地占位预览 */
+        })
+    }
     // 编辑回显：builder 模式下预载字段并勾选回显（表清单项由 TableSelect 自动拉取）
     if (
       data?.record &&
@@ -872,6 +1027,7 @@
       (item, index) => params.findIndex((other) => other.name === item.name) !== index,
     )
     if (duplicatedParam) return `查询参数重复：${duplicatedParam.name}`
+    if (docExampleError.value) return `文档配置：${docExampleError.value}`
     return ''
   }
 
@@ -895,6 +1051,9 @@
       ipWhitelist: parseIpWhitelist(formState.ipWhitelistText),
     })
     payload.sqlMode = formState.sqlMode
+    // 1.9.4：文档配置有内容才带上，全空由后端生成/沿用模板
+    const apiDoc = buildApiDoc()
+    if (apiDoc) payload.apiDoc = apiDoc
     if (isForward.value) {
       // 1.9.3：转发不查库，只提交转发配置；另一模式字段留空避免污染
       payload.forwardUrl = String(formState.forwardUrl ?? '').trim()
@@ -966,5 +1125,23 @@
 
   .param-diff-line :deep(.ant-tag) {
     margin-inline-end: 4px;
+  }
+
+  .param-doc-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .param-doc-name {
+    flex: 0 0 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: rgb(0 0 0 / 65%);
+  }
+
+  .mono {
+    font-family: consolas, monospace;
   }
 </style>

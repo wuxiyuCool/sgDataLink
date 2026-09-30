@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS `databridge_data_api` (
   `forward_body_template` TEXT   NULL COMMENT '1.9.3 POST 模板（:name 替换后按 JSON 发送）',
   `forward_timeout_ms`  INT      NULL COMMENT '1.9.3 下游超时 100~60000，默认 10000',
   `forward_passthrough_query` TINYINT(1) NULL COMMENT '1.9.3 是否合并调用方 query（apiKey 除外）',
+  `api_doc`         JSON         NULL COMMENT '1.9.4 文档配置 {summary,description,paramDocs,responseExample}，创建/更新时为空则后端自动生成模板',
   `auth_enabled`    TINYINT(1)   NULL,
   `api_key`         VARCHAR(128) NULL,
   `rate_limit_qps`  INT          NULL,
@@ -331,6 +332,23 @@ CREATE TABLE IF NOT EXISTS `databridge_alert_record` (
   KEY `idx_alertrecord_target` (`target_type`, `target_id`),
   KEY `idx_alertrecord_rule_id` (`rule_id`),
   KEY `idx_alertrecord_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 登录日志（契约 1.11 /doc  Swagger 查看登录审计）：成功与失败都记，口令本身绝不落库
+CREATE TABLE IF NOT EXISTS `databridge_login_log` (
+  `seq`        BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`         VARCHAR(64)  NOT NULL COMMENT 'llg- 前缀 + UUID',
+  `user_id`    VARCHAR(64)  NULL COMMENT '登录失败（用户不存在）时为 NULL',
+  `username`   VARCHAR(64)  NULL COMMENT '登录尝试的原始用户名',
+  `ip`         VARCHAR(64)  NULL,
+  `ok`         TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 成功 0 失败',
+  `error_msg`  VARCHAR(255) NULL COMMENT '失败原因（bad_credentials | account_disabled），不含口令',
+  `created_at` DATETIME(3)  NULL,
+  `extra`      JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_loginlog_id` (`id`),
+  KEY `idx_loginlog_username` (`username`, `created_at`),
+  KEY `idx_loginlog_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- 平台用户（契约 1.11）：密码只存 bcrypt 哈希，明文永不落库；username 唯一由应用层校验 + 本索引兜底

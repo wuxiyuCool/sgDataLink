@@ -31,6 +31,7 @@ const MYSQL_STORES = {
   alertrule: () => require('./mysql/alertrule.store'),
   alertrecord: () => require('./mysql/alertrecord.store'),
   user: () => require('./mysql/user.store'),
+  loginlog: () => require('./mysql/loginlog.store'),
 };
 
 /** 把实现对象的函数全部包一层，保证签名统一返回 Promise（非函数属性原样保留） */

@@ -57,6 +57,63 @@ export interface DataApiQueryParam {
   name: string
   type: DataApiQueryType
   required?: boolean
+  /** 1.9.4：参数说明（文档模板 paramDocs 的默认来源） */
+  remark?: string
+}
+
+/** 1.9.4 文档配置（apiDoc）：创建/更新时为空由后端自动生成模板，admin 可在界面修改 */
+export interface ApiDoc {
+  summary?: string
+  description?: string
+  /** 参数名 -> 说明（swagger 参数表格的 description 来源） */
+  paramDocs?: Record<string, string>
+  /** builder/custom：{fields, rows, total, page, size}；forward：{note:'透传下游响应'} 或下游样例 */
+  responseExample?: Recordable | null
+}
+
+/** GET /data-apis/swagger.json 查询参数（契约 1.9.4，status=all 仅 admin） */
+export interface SwaggerDocParams {
+  status?: 'published' | 'all'
+  keyword?: string
+}
+
+/** OpenAPI 3.0 单项参数（只声明文档中心用到的键） */
+export interface SwaggerParameter {
+  name: string
+  in: string
+  required?: boolean
+  description?: string
+  schema?: Recordable
+  example?: any
+}
+
+/** OpenAPI operation（含 x-databridge 扩展） */
+export interface SwaggerOperation {
+  tags?: string[]
+  summary?: string
+  description?: string
+  operationId?: string
+  parameters?: SwaggerParameter[]
+  responses?: Record<string, any>
+  security?: Record<string, any>[]
+  'x-databridge'?: {
+    apiId?: string
+    apiName?: string
+    datasourceId?: string | null
+    sqlMode?: DataApiSqlMode
+    status?: DataApiStatus
+    authEnabled?: boolean
+    rateLimitQps?: number | null
+  }
+}
+
+/** OpenAPI spec 顶层（契约 1.9.4，响应为 spec 本体、不套统一信封） */
+export interface SwaggerSpec {
+  openapi?: string
+  info?: { title?: string; version?: string; description?: string }
+  tags?: { name: string; description?: string }[]
+  paths?: Record<string, Record<string, SwaggerOperation>>
+  components?: Recordable
 }
 
 export interface DataApi {
@@ -91,6 +148,8 @@ export interface DataApi {
   /** 精确 IP 或 * 前缀（如 10.0.0.*）列表，空数组表示不限制；不支持 CIDR */
   ipWhitelist?: string[]
   status?: DataApiStatus
+  /** 1.9.4 文档配置（后端在创建/更新为空时自动生成模板） */
+  apiDoc?: ApiDoc | null
   invokeCount?: number
   errorCount?: number
   avgLatencyMs?: number
@@ -123,6 +182,8 @@ export interface DataApiPayload {
   authEnabled: boolean
   rateLimitQps: number
   ipWhitelist: string[]
+  /** 1.9.4 文档配置；不传/传空由后端生成模板（编辑时传空不会覆盖已保存内容） */
+  apiDoc?: ApiDoc | null
 }
 
 export interface DataApiPageParams extends DatabridgePageParams {

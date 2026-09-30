@@ -3,55 +3,54 @@
     title="用户管理"
     content="平台账号生命周期管理（契约 1.11，仅管理员可见）：新建/编辑/禁用/删除/重置密码；密码 bcrypt 哈希存储，任何界面不回显；不允许对当前登录账号执行禁用/降级/删除"
   >
-    <Card :bordered="false" class="mb-3">
-      <Form :model="query" layout="inline" @finish="handleSearch">
-        <FormItem label="关键字" name="keyword">
-          <Input v-model:value="query.keyword" allow-clear placeholder="用户名或昵称" style="width: 180px" />
-        </FormItem>
-        <FormItem label="角色" name="role">
-          <Select
-            v-model:value="query.role"
-            :options="ROLE_OPTIONS"
-            allow-clear
-            placeholder="全部"
-            style="width: 120px"
-          />
-        </FormItem>
-        <FormItem label="状态" name="status">
-          <Select
-            v-model:value="query.status"
-            :options="STATUS_OPTIONS"
-            allow-clear
-            placeholder="全部"
-            style="width: 120px"
-          />
-        </FormItem>
-        <FormItem>
-          <Space>
-            <Button type="primary" html-type="submit">查询</Button>
-            <Button @click="handleReset">重置</Button>
-          </Space>
-        </FormItem>
-      </Form>
-    </Card>
-
     <Card :bordered="false">
-      <div class="mb-3 flex justify-end">
-        <Button type="primary" @click="openCreate">
-          <Icon icon="ant-design:plus-outlined" class="mr-1" />
-          新建用户
-        </Button>
-      </div>
-      <Table
-        :columns="userColumns"
-        :data-source="dataSource"
-        :loading="loading"
-        :pagination="getPagination"
-        row-key="id"
-        size="middle"
-        :scroll="{ x: 1000 }"
-        @change="handleTableChange"
-      >
+      <Tabs v-model:activeKey="activeTab" @change="handleTabChange">
+        <TabPane key="users" tab="用户列表">
+          <Form :model="query" layout="inline" class="mb-3 gap-y-2" @finish="handleSearch">
+            <FormItem label="关键字" name="keyword">
+              <Input v-model:value="query.keyword" allow-clear placeholder="用户名或昵称" style="width: 180px" />
+            </FormItem>
+            <FormItem label="角色" name="role">
+              <Select
+                v-model:value="query.role"
+                :options="ROLE_OPTIONS"
+                allow-clear
+                placeholder="全部"
+                style="width: 120px"
+              />
+            </FormItem>
+            <FormItem label="状态" name="status">
+              <Select
+                v-model:value="query.status"
+                :options="STATUS_OPTIONS"
+                allow-clear
+                placeholder="全部"
+                style="width: 120px"
+              />
+            </FormItem>
+            <FormItem>
+              <Space>
+                <Button type="primary" html-type="submit">查询</Button>
+                <Button @click="handleReset">重置</Button>
+              </Space>
+            </FormItem>
+          </Form>
+          <div class="mb-3 flex justify-end">
+            <Button type="primary" @click="openCreate">
+              <Icon icon="ant-design:plus-outlined" class="mr-1" />
+              新建用户
+            </Button>
+          </div>
+          <Table
+            :columns="userColumns"
+            :data-source="dataSource"
+            :loading="loading"
+            :pagination="getPagination"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 1000 }"
+            @change="handleTableChange"
+          >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'role'">
             <Tag :color="record.role === 'admin' ? 'geekblue' : 'default'">
@@ -88,7 +87,69 @@
             </Space>
           </template>
         </template>
-      </Table>
+          </Table>
+        </TabPane>
+
+        <TabPane key="loginlogs" tab="登录日志">
+          <Alert
+            class="mb-3"
+            type="info"
+            show-icon
+            message="每次登录（成功与失败）都会记录：用户名/IP/结果/失败原因，滚动保留最近 1 万条；日志不含任何口令信息"
+          />
+          <Form layout="inline" class="mb-3 gap-y-2" @finish="handleLogSearch">
+            <FormItem label="关键字" name="logKeyword">
+              <Input v-model:value="logQuery.keyword" allow-clear placeholder="用户名或 IP" style="width: 170px" />
+            </FormItem>
+            <FormItem label="结果" name="logResult">
+              <Select
+                v-model:value="logQuery.result"
+                :options="LOG_RESULT_OPTIONS"
+                allow-clear
+                placeholder="全部"
+                style="width: 110px"
+              />
+            </FormItem>
+            <FormItem label="时间" name="logRange">
+              <RangePicker
+                v-model:value="logRangeValue"
+                show-time
+                value-format="YYYY-MM-DD HH:mm:ss"
+                :placeholder="['开始时间', '结束时间']"
+                style="width: 350px"
+              />
+            </FormItem>
+            <FormItem>
+              <Space>
+                <Button type="primary" html-type="submit">查询</Button>
+                <Button @click="handleLogReset">重置</Button>
+              </Space>
+            </FormItem>
+          </Form>
+          <Table
+            :columns="logColumns"
+            :data-source="logDataSource"
+            :loading="logLoading"
+            :pagination="logGetPagination"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 800 }"
+            @change="logHandleTableChange"
+          >
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'createdAt'">
+                {{ formatTime(record.createdAt) }}
+              </template>
+              <template v-else-if="column.key === 'ok'">
+                <Tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? '成功' : '失败' }}</Tag>
+              </template>
+              <template v-else-if="column.key === 'errorMsg'">
+                {{ record.errorMsg || '-' }}
+              </template>
+            </template>
+          </Table>
+        </TabPane>
+      </Tabs>
     </Card>
 
     <!-- 新建 / 编辑共用一个弹窗，editRow 有值即编辑态 -->
@@ -152,6 +213,7 @@
     Alert,
     Button,
     Card,
+    DatePicker,
     Form,
     Input,
     Modal,
@@ -159,6 +221,7 @@
     Select,
     Space,
     Table,
+    Tabs,
     Tag,
   } from 'ant-design-vue'
 
@@ -173,12 +236,15 @@
     resetPlatformUserPasswordApi,
     updatePlatformUserApi,
   } from '/@/api/databridge/user'
-  import type { PlatformUser } from '/@/api/databridge/user'
+  import { getLoginLogsApi } from '/@/api/databridge/user'
+  import type { LoginLogItem, PlatformUser } from '/@/api/databridge/user'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { usePagedFetch } from '../hooks/usePagedFetch'
   import { formatTime } from '../data'
 
   const FormItem = Form.Item
+  const RangePicker = DatePicker.RangePicker
+  const TabPane = Tabs.TabPane
 
   const { createMessage } = useMessage()
   const userStore = useUserStore()
@@ -221,6 +287,56 @@
     query.role = undefined
     query.status = undefined
     fetch()
+  }
+
+  /** ---- 登录日志（契约 1.11 审计，首次切到页签才拉取） ---- */
+  const activeTab = ref('users')
+  const logLoaded = ref(false)
+  const logQuery = reactive<{ keyword?: string; result?: 'success' | 'error' }>({})
+  const logRangeValue = ref<[string, string] | undefined>(undefined)
+
+  const LOG_RESULT_OPTIONS = [
+    { label: '成功', value: 'success' },
+    { label: '失败', value: 'error' },
+  ]
+  const logColumns = [
+    { title: '时间', key: 'createdAt', dataIndex: 'createdAt', width: 180 },
+    { title: '用户名', dataIndex: 'username', width: 150 },
+    { title: '来源 IP', dataIndex: 'ip', width: 150 },
+    { title: '结果', key: 'ok', dataIndex: 'ok', width: 90 },
+    { title: '失败原因', key: 'errorMsg', dataIndex: 'errorMsg' },
+  ]
+
+  const {
+    dataSource: logDataSource,
+    loading: logLoading,
+    getPagination: logGetPagination,
+    fetch: fetchLogs,
+    handleTableChange: logHandleTableChange,
+  } = usePagedFetch<LoginLogItem>(
+    getLoginLogsApi,
+    computed(() => ({
+      keyword: logQuery.keyword || undefined,
+      result: logQuery.result || undefined,
+      startTime: logRangeValue.value?.[0] || undefined,
+      endTime: logRangeValue.value?.[1] || undefined,
+    })) as unknown as Recordable,
+  )
+
+  function handleTabChange(key: string) {
+    if (key === 'loginlogs' && !logLoaded.value) {
+      logLoaded.value = true
+      fetchLogs()
+    }
+  }
+  function handleLogSearch() {
+    fetchLogs()
+  }
+  function handleLogReset() {
+    logQuery.keyword = undefined
+    logQuery.result = undefined
+    logRangeValue.value = undefined
+    fetchLogs()
   }
 
   /** ---- 新建 / 编辑 ---- */

@@ -1,6 +1,7 @@
 import { databridgeHttp } from './http'
 import type { DatabridgePageResult } from './model/commonModel'
 import type {
+  ApiDoc,
   DataApi,
   DataApiCallItem,
   DataApiCallPageParams,
@@ -14,11 +15,14 @@ import type {
   DataApiStats,
   MetaColumn,
   MetaTable,
+  SwaggerDocParams,
+  SwaggerSpec,
 } from './model/dataapiModel'
 
 enum Api {
   DataApi = '/data-apis',
   Calls = '/data-apis/calls',
+  Swagger = '/data-apis/swagger.json',
   MetaTables = '/data-apis/meta/tables',
   MetaColumns = '/data-apis/meta/columns',
 }
@@ -114,4 +118,31 @@ export function getMetaTablesApi(params: DataApiMetaTablesParams) {
  */
 export function getMetaColumnsApi(params: DataApiMetaColumnsParams) {
   return databridgeHttp.get<MetaColumn[]>({ url: Api.MetaColumns, params })
+}
+
+/**
+ * @description: 1.9.4 Swagger 文档中心：GET /data-apis/swagger.json（JWT）。
+ * 响应是 OpenAPI 3.0 spec 本体、不套统一信封，因此关闭 transform；
+ * status=all（含草稿）仅 admin，keyword 按 path/名称模糊过滤（服务端执行）。
+ */
+export function getSwaggerDocApi(params: SwaggerDocParams = {}) {
+  return databridgeHttp.get<SwaggerSpec>(
+    { url: Api.Swagger, params },
+    { isTransformResponse: false },
+  )
+}
+
+/**
+ * @description: 1.9.4 取单个服务的文档配置（GET /data-apis/:id/doc，JWT）。
+ * 未填过时后端按当前定义返回模板（不落库）。
+ */
+export function getDataApiDocApi(id: string) {
+  return databridgeHttp.get<ApiDoc>({ url: `${Api.DataApi}/${id}/doc` })
+}
+
+/**
+ * @description: 1.9.4 保存文档配置（PUT /data-apis/:id/doc，仅 admin）。
+ */
+export function updateDataApiDocApi(id: string, data: ApiDoc) {
+  return databridgeHttp.put<ApiDoc>({ url: `${Api.DataApi}/${id}/doc`, data })
 }
