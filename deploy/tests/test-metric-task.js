@@ -51,7 +51,7 @@ const cleanup = async () => {
     ['DELETE FROM databridge_metric_task WHERE name LIKE ?', ['M4联调%']],
     ['DELETE c FROM databridge_metric_model_column c JOIN databridge_metric_model m ON c.model_id=m.id WHERE m.name LIKE ?', ['M4联调%']],
     ['DELETE FROM databridge_metric_model WHERE name LIKE ?', ['M4联调%']],
-    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
+    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`]],
     ['DELETE FROM databridge_datasource WHERE name LIKE ?', [`M4数据源-${RUN}%`]],
   ]
   for (const [sql, args] of stmts) {

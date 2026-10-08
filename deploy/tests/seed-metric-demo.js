@@ -63,6 +63,16 @@ const main = async () => {
     const created = await req(token, '/metric-domains', { method: 'POST', body: { name: '交易演示', code: 'dmtrade', remark: '指标中心演示/压测常驻域' } });
     domain = created.json.result;
   }
+  // 层级演示：交易演示 → 支付域 → 渠道域（幂等，存在即复用）
+  const mkDomain = async (code, name, parentId, remark) => {
+    const list = await req(token, `/metric-domains?keyword=${encodeURIComponent(name)}`);
+    const hit = (list.json.result.items || []).find((d) => d.code === code);
+    if (hit) return hit;
+    const created = await req(token, '/metric-domains', { method: 'POST', body: { name, code, parentId, remark } });
+    return created.json.result;
+  };
+  const payDomain = await mkDomain('dm_pay', '支付域', domain.id, '层级演示：二级域');
+  await mkDomain('dm_pay_channel', '渠道域', payDomain.id, '层级演示：三级域');
 
   const models = await req(token, '/metric-models?keyword=dm_order_src');
   let model = (models.json.result.items || []).find((m) => m.tableName === 'dm_order_src');

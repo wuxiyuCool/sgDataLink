@@ -18,7 +18,7 @@ ADMIN_USER=mtlint01 ADMIN_PASS=<密码> BASE=http://127.0.0.1:3001/api/v1 \
 
 | 资产 | 标识 | 供哪个页面演示 |
 | --- | --- | --- |
-| 交易演示域 | code=`dmtrade`（根域） | 指标域：右键建子域/编辑/删除联动 |
+| 交易演示域 | code=`dmtrade`（根域），下挂二级 `dm_pay` 支付域 → 三级 `dm_pay_channel` 渠道域 | 指标域：悬停「+」/右键逐层建子域、删除联动 |
 | 订单明细(DWD) 模型 | 物理表 `dm_order_src`（270 行，近 45 天，region/amt/status/pay_date） | 建模：字段角色、预览数据（真 SQL+真数据） |
 | dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额 | 原子（MEASURE，实收额带 `status='PAID'` 过滤） | 指标管理：原子定义、试跑 |
 | dm_unit 件单价 | 复合 `${dm_amt} / ${dm_cnt}` | 指标管理：公式校验、展开树、血缘、问数树回填 |

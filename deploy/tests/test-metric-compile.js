@@ -47,7 +47,7 @@ const cleanup = async () => {
     ['DELETE FROM databridge_metric_metric WHERE code LIKE ?', [`${RUN}_%`]],
     [`DELETE c FROM databridge_metric_model_column c JOIN databridge_metric_model mo ON c.model_id=mo.id WHERE mo.name LIKE '联调指标模型%'`],
     ['DELETE FROM databridge_metric_model WHERE name LIKE ?', ['联调指标模型%']],
-    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
+    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`]],
     ["DELETE FROM databridge_datasource WHERE name LIKE '联调指标数据源-%'", []],
     [`DROP TABLE IF EXISTS \`${T1}\``],
   ]

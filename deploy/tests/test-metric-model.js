@@ -42,7 +42,10 @@ const cleanup = async () => {
     ["DELETE FROM databridge_metric_model_column WHERE model_id LIKE 'mdl-%' AND model_id IN (SELECT id FROM databridge_metric_model WHERE domain_id IN (SELECT id FROM databridge_metric_domain WHERE code LIKE ?))", [`${RUN}_%`]],
     ['DELETE FROM databridge_metric_task_run WHERE id LIKE ?', ['mtr-%']],
     ['DELETE FROM databridge_metric_model WHERE id IN (SELECT id FROM (SELECT id FROM databridge_metric_model m WHERE m.domain_id IN (SELECT id FROM databridge_metric_domain WHERE code LIKE ?)) x)', [`${RUN}_%`]],
-    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
+    // 全库清扫：回归联调域码族（mtd/msq/mtk/m5c/mt+时间戳36 进制）中零模型零指标的空域
+    // （历史缺陷：code=RUN 无后缀时 LIKE RUN_% 匹配不到；套件中途崩溃也会残留）
+    ["DELETE FROM databridge_metric_domain WHERE (code LIKE 'mtd%' OR code LIKE 'msq%' OR code LIKE 'mtk%' OR code LIKE 'm5c%' OR (code LIKE 'mt%' AND code NOT LIKE 'mtd%' AND code NOT LIKE 'mtk%')) AND code <> ? AND code NOT LIKE 'dm%' AND id NOT IN (SELECT domain_id FROM databridge_metric_model) AND id NOT IN (SELECT domain_id FROM databridge_metric_metric)", [`${RUN}x`]],
+    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`]],
     ['DELETE FROM databridge_metric_setting WHERE setting_key = ?', ['llm.model']],
     // 注意：若真库已配真实 embed 独立端点/密钥，跑本测试会清掉（与 llm.model 同风险，重配即可）
     ["DELETE FROM databridge_metric_setting WHERE setting_key IN ('llm.embed.baseUrl','llm.embed.apiKey')", []],

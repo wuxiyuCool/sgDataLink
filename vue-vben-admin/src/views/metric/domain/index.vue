@@ -28,6 +28,11 @@
                   <span class="domain-counts"
                     >模型 {{ node.modelCount ?? 0 }} · 指标 {{ node.metricCount ?? 0 }}</span
                   >
+                  <Tooltip title="在此域下新建子域">
+                    <span class="node-add" @click.stop="openCreate(node)">
+                      <Icon icon="ant-design:plus-outlined" :size="12" />
+                    </span>
+                  </Tooltip>
                 </span>
                 <template #overlay>
                   <Menu @click="handleContextMenu($event, node)">
@@ -40,7 +45,9 @@
             </template>
           </Tree>
           <Empty v-else description="暂无指标域" />
-          <div class="tree-hint">提示：右键节点弹出操作菜单；单击节点在右侧查看该域的数据模型</div>
+          <div class="tree-hint">
+            提示：悬停节点出现「+」逐层新建子域；右键节点弹出操作菜单；单击节点在右侧查看该域的数据模型
+          </div>
         </Card>
       </Col>
       <Col :span="15">
@@ -189,6 +196,7 @@
     Space,
     Table,
     Tag,
+    Tooltip,
     Tree,
     TreeSelect,
   } from 'ant-design-vue'
@@ -442,6 +450,25 @@
     .domain-counts {
       color: #666;
       font-size: 12px;
+    }
+
+    .node-add {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      color: #1677ff;
+      cursor: pointer;
+    }
+  }
+
+  :deep(.ant-tree-node-content-wrapper:hover) .node-add {
+    display: inline-flex;
+
+    &:hover {
+      background: rgba(22, 119, 255, 0.1);
     }
   }
 

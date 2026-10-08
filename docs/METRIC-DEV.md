@@ -594,7 +594,7 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 
 **前端 UI 精修（2026-10-08）**：指标中心三个原生弹窗改版——域表单（600 宽居中/图标标题/提示条/两列栅格）、数据预览（980 宽/执行 SQL 代码块/行数说明/斑马纹）、运行记录（1000 宽/触发与状态中文 Tag/SQL 明细美化）；统一圆角与斑马纹样式收进 `src/design/index.less`（antd Modal 内容在 scoped 样式外，必须全局选择器）。web dist 已重打包 `deploy/web-dist/web-dist.tar.gz`。
 
-**vben 组件化 + 演示增强（2026-10-08）**：① 三个弹窗全部迁到 vben `BasicModal + useModal`（用户规则：UI 一律优先 vben 封装组件，见记忆 feedback-vben-ui-components；BasicModal 的 class/wrapClassName 到不了弹窗 DOM——`useAttrs` 过滤 class，圆角等用内容根标记类 + `:has()` 全局命中）。② 每页新增「使用指南」折叠卡（共享 `views/metric/components/GuideCard.vue` + 文案集中 `views/metric/guides.ts`）。③ 演示数据扩充：`seed-metric-demo.js` 增加派生指标 dm_paid_east（基底 dm_paid+region 过滤）、两个物化任务（dm_region_sum overwrite / dm_region_daily upsert+BETWEEN+cron+fill），并各执行一次留运行记录（日汇总含 成功→失败→成功 三条）。④ 新增 `docs/METRIC-DEMO.md` 逐页走查清单。
+**vben 组件化 + 演示增强（2026-10-08）**：① 三个弹窗全部迁到 vben `BasicModal + useModal`（用户规则：UI 一律优先 vben 封装组件，见记忆 feedback-vben-ui-components；BasicModal 的 class/wrapClassName 到不了弹窗 DOM——`useAttrs` 过滤 class，圆角等用内容根标记类 + `:has()` 全局命中）。② 每页新增「使用指南」折叠卡（共享 `views/metric/components/GuideCard.vue` + 文案集中 `views/metric/guides.ts`）。③ 演示数据扩充：`seed-metric-demo.js` 增加派生指标 dm_paid_east（基底 dm_paid+region 过滤）、两个物化任务（dm_region_sum overwrite / dm_region_daily upsert+BETWEEN+cron+fill），并各执行一次留运行记录（日汇总含 成功→失败→成功 三条）。④ 新增 `docs/METRIC-DEMO.md` 逐页走查清单。⑤ 域树逐层新增：节点悬停「+」直接建子域（右键菜单保留）；seed 固化常驻层级 dmtrade→dm_pay→dm_pay_channel；修复回归套件清理缺陷（sql/task 用 `code=RUN` 精确码逃过 `RUN_%` 清理，各域清理统一改 `RUN%` 前缀清扫 + model 套件加空域全库兜底清扫）。
 
 ## 12. 红线汇总（AI 实施时必须遵守）
 

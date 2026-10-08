@@ -167,7 +167,7 @@ const main = async () => {
   await db.run('DELETE FROM databridge_metric_model WHERE name LIKE ?', ['SQL联调%'])
   await db.run('DELETE FROM databridge_metric_version WHERE metric_id IN (SELECT id FROM databridge_metric_metric WHERE code LIKE ?)', [`${RUN}_%`])
   await db.run('DELETE FROM databridge_metric_metric WHERE code LIKE ?', [`${RUN}_%`])
-  await db.run('DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`])
+  await db.run('DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`])
   await db.run("DELETE FROM databridge_datasource WHERE name LIKE '联调SQL数据源-%'")
   console.log('  联调资产已清理')
 

@@ -63,7 +63,7 @@ const cleanup = async () => {
     ['DELETE FROM databridge_metric_metric WHERE code LIKE ?', [`${RUN}_%`]],
     ['DELETE c FROM databridge_metric_model_column c JOIN databridge_metric_model m ON c.model_id=m.id WHERE m.name LIKE ?', ['M5联调问数模型%']],
     ['DELETE FROM databridge_metric_model WHERE name LIKE ?', ['M5联调问数模型%']],
-    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
+    ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`]],
     ['DELETE FROM databridge_datasource WHERE name LIKE ?', [`M5数据源-${RUN}%`]],
     // 问数对外服务套件（test-chat-api.js）残留的测试用户：一并清，防唯一性冲突
     ["DELETE FROM databridge_metric_query_log WHERE user_name LIKE 'chat_cta%'", []],
