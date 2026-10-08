@@ -201,7 +201,7 @@
 </template>
 
 <script lang="ts" setup>
-  import { computed, onMounted, reactive, ref, nextTick } from 'vue'
+  import { computed, onMounted, reactive, ref, nextTick, watch } from 'vue'
 
   import {
     Alert,
@@ -248,7 +248,8 @@
 
   const { createMessage } = useMessage()
   const userStore = useUserStore()
-  const isAdmin = computed(() => userStore.getUserInfo?.role === 'admin')
+  // getUserInfo 无 role 字段（toUserInfoModel 只映射 roles 数组），用 vben 角色列表判定
+  const isAdmin = computed(() => (userStore.getRoleList || []).includes('admin'))
 
   const activeTab = ref('chat')
 
@@ -346,6 +347,7 @@
   // ===== 历史（审计）=====
   const logs = ref<MetricQueryLog[]>([])
   const logsLoading = ref(false)
+  const logsLoaded = ref(false)
   const logPage = ref(1)
   const logTotal = ref(0)
   const logQuery = reactive({ keyword: '', status: undefined as string | undefined, userName: '' })
@@ -402,6 +404,14 @@
   onMounted(() => {
     const q = new URLSearchParams(window.location.hash.split('?')[1] || '').get('q')
     if (q) ask(q)
+  })
+
+  // 首次切到「历史」tab 时拉取审计日志（此前无加载入口，表格永远空）
+  watch(activeTab, (tab) => {
+    if (tab === 'history' && !logsLoaded.value) {
+      logsLoaded.value = true
+      loadLogs()
+    }
   })
 </script>
 

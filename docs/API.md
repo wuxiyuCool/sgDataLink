@@ -705,6 +705,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 ```
 
 - `code` 全库唯一、`^[a-z][a-z0-9_]{2,63}$`、创建后不可改——是复合公式 `${code}` 引用的锚点。
+- `dataFormat` ∈ `DECIMAL`（默认）| `PERCENT` | `THOUSANDTH`，仅用于展示格式；留空按 DECIMAL 存储。
 - COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
 
 **路由**：

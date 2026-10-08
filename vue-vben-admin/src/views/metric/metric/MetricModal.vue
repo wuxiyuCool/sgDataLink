@@ -263,12 +263,12 @@
             <Select
               v-model:value="form.dataFormat"
               :options="[
-                { label: '原始', value: 'RAW' },
                 { label: '千分位', value: 'THOUSANDTH' },
                 { label: '百分比', value: 'PERCENT' },
-                { label: '两位小数', value: 'DECIMAL2' },
+                { label: '数值（默认）', value: 'DECIMAL' },
               ]"
               allow-clear
+              placeholder="默认数值"
             />
           </FormItem>
         </Col>
