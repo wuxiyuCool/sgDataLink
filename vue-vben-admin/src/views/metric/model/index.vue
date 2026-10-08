@@ -90,7 +90,7 @@
     <ModelModal @register="registerModelModal" @success="reload" />
     <ColumnsModal @register="registerColumnsModal" @success="reload" />
 
-    <Modal v-model:open="dataVisible" :title="`数据预览：${previewModel?.name || ''}`" width="900px" :footer="null">
+    <Modal v-model:visible="dataVisible" :title="`数据预览：${previewModel?.name || ''}`" width="900px" :footer="null">
       <Alert
         v-if="previewError"
         type="error"

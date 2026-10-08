@@ -87,7 +87,7 @@
     </Row>
 
     <Modal
-      v-model:open="formVisible"
+      v-model:visible="formVisible"
       :title="formTitle"
       :confirm-loading="submitting"
       :mask-closable="false"

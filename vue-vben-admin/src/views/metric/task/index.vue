@@ -91,7 +91,7 @@
 
     <TaskModal @register="registerTaskModal" @success="reload" />
 
-    <Modal v-model:open="runsVisible" :title="`运行记录：${runsTaskName}`" width="960px" :footer="null">
+    <Modal v-model:visible="runsVisible" :title="`运行记录：${runsTaskName}`" width="960px" :footer="null">
       <Table
         :columns="runColumns"
         :data-source="runs"

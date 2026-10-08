@@ -81,8 +81,9 @@
       /** 契约 1.11：修改密码入口 + mustChangePassword 登录后强制弹窗（可延后，下次登录再提醒） */
       const pwdVisible = ref(false)
       const pwdForced = ref(false)
+      const mustChange = computed(() => Boolean((userStore.getUserInfo as any)?.mustChangePassword))
       watch(
-        () => (userStore.getUserInfo as any)?.mustChangePassword,
+        mustChange,
         (must) => {
           if (must) {
             pwdForced.value = true
