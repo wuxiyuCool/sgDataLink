@@ -46,6 +46,14 @@ const page = (query = {}) => {
   });
 };
 
+/** 近段时间的日志（dashboard chat/hotMetrics 聚合用）：createdAt 倒序截断 */
+const recent = async (sinceIso, limit = 5000) => {
+  const since = Date.parse(sinceIso);
+  return filterList(list(), { sort: 'createdAt:desc' })
+    .filter((record) => Date.parse(record.createdAt) >= since)
+    .slice(0, limit);
+};
+
 const getById = (id) => store.get(id);
 
 const create = (data) => {
@@ -74,6 +82,7 @@ const memoryImpl = {
   list,
   find,
   page,
+  recent,
   getById,
   create,
   update,

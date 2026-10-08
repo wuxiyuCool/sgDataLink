@@ -590,7 +590,7 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 | M6b 前端·扩展 | 指标任务管理、系统配置、独立问数审计页（若 M6a 的 tab 已够用可只做前两项） | 任务/配置/审计操作闭环 |
 | M7 收尾 | RELEASE.md 补发版说明（admin+engine 双重建，`ONLY=admin,engine,web`）、回归全量 | 全绿 |
 
-**实施进度（2026-10-08）**：M0~M5 ✅（`feat/metric-center` 分支；M5 真库+真 DeepSeek 测评 19/19 通过、10 问命中 8；回归：base 40、model 37、compile 44、sql 19、task 29、chat 19）。M6a/M6b 前端待做，M7 收尾待发版。
+**实施进度（2026-10-08）**：M0~M5 ✅（`feat/metric-center` 分支；M5 真库+真 DeepSeek 测评 19/19、10 问命中 ≥7；回归：base 40、model 39、compile 44、sql 19、task 29、chat 19）。M6a 前端五页代码完成（首页概览/指标域/数据建模/指标管理/智能问数含历史审计 tab；dashboard chat/hotMetrics 接真数；vite build 通过、接口冒烟全 200），**待用户浏览器实操验收（§12 约定人工验证，不可用单测代替声明）**；M6b（任务管理页）与 M7 发版未开始。
 
 ## 12. 红线汇总（AI 实施时必须遵守）
 

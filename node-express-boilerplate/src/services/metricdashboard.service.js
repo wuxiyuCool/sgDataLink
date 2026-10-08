@@ -7,6 +7,7 @@ const metricModelRepository = require('../repositories/metricmodel.repository');
 const metricRepository = require('../repositories/metric.repository');
 const metricTaskRepository = require('../repositories/metrictask.repository');
 const metricTaskRunRepository = require('../repositories/metrictaskrun.repository');
+const metricQueryLogRepository = require('../repositories/metricquerylog.repository');
 
 const active = (items) => items.filter((item) => !item.delFlag);
 
@@ -19,12 +20,14 @@ const groupCount = (items, keyOf) =>
   }, {});
 
 const getDashboard = async () => {
-  const [domains, models, metrics, tasks, runs] = await Promise.all([
+  const since7d = new Date(Date.now() - 7 * 86400000).toISOString();
+  const [domains, models, metrics, tasks, runs, queryLogs] = await Promise.all([
     metricDomainRepository.list(),
     metricModelRepository.list(),
     metricRepository.list(),
     metricTaskRepository.list(),
     metricTaskRunRepository.list(),
+    metricQueryLogRepository.recent(since7d, 5000).catch(() => []),
   ]);
   const liveModels = active(models);
   const liveMetrics = active(metrics);
@@ -37,6 +40,22 @@ const getDashboard = async () => {
     running: recentRuns.filter((run) => run.status === 'running').length,
   };
   const finished = last24h.success + last24h.failed;
+  // chat/hotMetrics：近 7d 问数日志聚合（metric_ids 冗余列按 id 计数，映射回指标名）
+  const metricNameById = new Map(liveMetrics.map((m) => [String(m.id), m.name]));
+  const hotCount = {};
+  queryLogs.forEach((log) => {
+    String(log.metricIds || '')
+      .split(',')
+      .forEach((id) => {
+        const key = id.trim();
+        if (!key || !metricNameById.has(key)) return;
+        hotCount[key] = (hotCount[key] || 0) + 1;
+      });
+  });
+  const hotMetrics = Object.entries(hotCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([id, count]) => ({ id, name: metricNameById.get(id), count }));
   return {
     domains: { total: active(domains).length },
     models: {
@@ -61,8 +80,11 @@ const getDashboard = async () => {
       last24h,
       successRate: finished ? Math.round((last24h.success / finished) * 1000) / 1000 : 1,
     },
-    chat: { last7dQueries: 0, last7dFailed: 0 },
-    hotMetrics: [],
+    chat: {
+      last7dQueries: queryLogs.length,
+      last7dFailed: queryLogs.filter((log) => log.status === 'failed').length,
+    },
+    hotMetrics,
   };
 };
 

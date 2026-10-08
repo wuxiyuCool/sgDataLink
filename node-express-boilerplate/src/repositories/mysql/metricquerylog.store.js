@@ -101,6 +101,17 @@ const page = async (query = {}) => {
 };
 const getById = (id) => store.getById(id);
 
+/** 近段时间日志（dashboard chat/hotMetrics 聚合用，与内存版 recent 同名同义） */
+const recent = async (sinceIso, limit = 5000) => {
+  const start = toDbDateTime(sinceIso);
+  if (!start) return [];
+  const rows = await db.query(
+    `SELECT * FROM databridge_metric_query_log WHERE created_at >= ? ORDER BY seq DESC LIMIT ${Number(limit) || 5000}`,
+    [start]
+  );
+  return rows.map((row) => store.fromRow(row));
+};
+
 const create = async (data) => {
   const record = {
     userName: '',
@@ -128,6 +139,7 @@ module.exports = {
   list,
   find,
   page,
+  recent,
   getById,
   create,
   update,

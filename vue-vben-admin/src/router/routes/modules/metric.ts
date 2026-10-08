@@ -4,19 +4,64 @@ import { LAYOUT } from '/@/router/constant'
 
 /**
  * 指标中心菜单（契约 1.12，开发文档 docs/METRIC-DEV.md）。
- * M5a 先行上线「系统配置」（admin）；首页/域建模/指标/任务/问数等页面按 M6a/M6b 节奏补齐。
+ * M6a：首页概览/指标域/数据建模/指标管理/智能问数；M5a：系统配置（admin）；任务管理在 M6b。
  */
 const metric: AppRouteModule = {
   path: '/metric',
   name: 'MetricCenter',
   component: LAYOUT,
-  redirect: '/metric/setting',
+  redirect: '/metric/home',
   meta: {
     orderNo: 25,
     icon: 'ion:stats-chart-outline',
     title: '指标中心',
   },
   children: [
+    {
+      path: 'home',
+      name: 'MetricHome',
+      component: () => import('/@/views/metric/home/index.vue'),
+      meta: {
+        title: '首页概览',
+        icon: 'ion:pie-chart-outline',
+      },
+    },
+    {
+      path: 'domains',
+      name: 'MetricDomains',
+      component: () => import('/@/views/metric/domain/index.vue'),
+      meta: {
+        title: '指标域',
+        icon: 'ion:albums-outline',
+      },
+    },
+    {
+      path: 'models',
+      name: 'MetricModels',
+      component: () => import('/@/views/metric/model/index.vue'),
+      meta: {
+        title: '数据建模',
+        icon: 'ion:grid-outline',
+      },
+    },
+    {
+      path: 'metrics',
+      name: 'MetricList',
+      component: () => import('/@/views/metric/metric/index.vue'),
+      meta: {
+        title: '指标管理',
+        icon: 'ion:calc-outline',
+      },
+    },
+    {
+      path: 'chat',
+      name: 'MetricChat',
+      component: () => import('/@/views/metric/chat/index.vue'),
+      meta: {
+        title: '智能问数',
+        icon: 'ion:chatbubbles-outline',
+      },
+    },
     {
       path: 'setting',
       name: 'MetricSetting',
