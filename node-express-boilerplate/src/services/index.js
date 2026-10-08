@@ -16,3 +16,13 @@ module.exports.swaggerService = require('./swagger.service');
 module.exports.alertService = require('./alert.service');
 module.exports.lineageService = require('./lineage.service');
 module.exports.schedulerService = require('./scheduler.service');
+// 指标中心（契约 1.12）
+module.exports.metricDomainService = require('./metricdomain.service');
+module.exports.metricModelService = require('./metricmodel.service');
+module.exports.metricSettingService = require('./metricsetting.service');
+module.exports.metricDashboardService = require('./metricdashboard.service');
+module.exports.metricService = require('./metric.service');
+module.exports.metricCompilerService = require('./metricCompiler.service');
+module.exports.metricExecService = require('./metricExec.service');
+module.exports.metricTaskService = require('./metrictask.service');
+module.exports.metricChatService = require('./metricChat.service');

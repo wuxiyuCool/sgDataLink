@@ -74,3 +74,54 @@ curl -s http://<任意节点IP>:32614/ | head -c 200   # 应返回 index.html（
 
 `ONLY=web` 只重建 web 镜像；admin/engine 的 kustomization newTag 不被改写，
 `kubectl apply -k` 对未变更镜像是 no-op，无需担心连带重启。
+
+---
+
+## 本次 V9（指标中心 Metric Center 整模块上线）
+
+**改动范围**：指标中心 M0~M7 全量——域/模型/三类指标/校验器/编译器/清洗汇总物化任务/
+LLM 系统配置/智能问数（ChatBI）/问数对外服务（X-CHAT-KEY）/首页概览/前端 7 页。
+三端都有改动，**必须三镜像全重建**：
+
+- `engine`：新增 `/sql/query`（仅 SELECT）、`/sql/exec`（建表/清空/插入白名单）、
+  `X-Engine-Token` 守卫（M3）→ 必须重建。
+- `admin`：新增 12 张 `databridge_metric_*` 表（init.js 自动建，真库无需手工迁移）、
+  指标/域/模型/任务/问数/settings 全套接口、编译器、ChatBI、chatKey 对外服务、
+  Oracle 方言编译（FETCH FIRST / TO_DATE）→ 必须重建。
+- `web`：指标中心 7 个页面 + 文档中心问数 Key 卡片 + 弹窗 vben 化 + 每页使用指南 → 重建。
+
+**回归门禁（全 12 套件，2026-10-08 全绿）**：
+metric-base 40 / metric-model 39 / metric-compile 51 / metric-sql 19 / metric-task 29 /
+metric-chat 19 / chat-api 19 / users 33 / dockey 31 / swagger 40 / forward 19 / parse-curl ALL PASS。
+其中 users、swagger 是 **memory 模式**用例（需 `DB_DRIVER=memory ADMIN_INIT_PASSWORD=testpass123`
+起一个 :3001 实例再跑，跑完切回 mysql 联调实例）；其余对真库 :3001 跑。
+
+**发版命令（把 `<N>` 换成 9）**：
+
+```bash
+cd D:/code/code/go/dataLink
+bash deploy/build-web-dist.sh                       # 产出 web-dist.tar.gz
+git add -f deploy/web-dist/web-dist.tar.gz
+git commit -m "release: v9 指标中心整模块"
+git tag V9
+git push && git push origin V9                       # GitHub+Gitea 双推
+# master-01（或构建机）：
+cd /path/to/dataLink && git pull && git checkout V9
+ONLY=admin,engine,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v9
+# 三镜像推 Harbor 10.45.34.167:5000/datalink/{admin,engine,web}:v9，回写 kustomization newTag
+```
+
+**K8s 生效（master-01 kubectl 不支持 -k，用 set image）**：
+
+```bash
+kubectl -n databridge set image deploy/databridge-admin  admin=10.45.34.167:5000/datalink/admin:v9
+kubectl -n databridge set image deploy/databridge-engine engine=10.45.34.167:5000/datalink/engine:v9
+kubectl -n databridge set image deploy/databridge-web    web=10.45.34.167:5000/datalink/web:v9
+kubectl -n databridge rollout status deploy/databridge-admin
+kubectl -n databridge rollout status deploy/databridge-engine
+kubectl -n databridge rollout status deploy/databridge-web
+```
+
+**上线后验证**：浏览器 Ctrl+F5 → 指标中心 7 页可进、首页统计有真数、问数能答、
+任务能物化；生产 admin 需配 `ENGINE_SHARED_SECRET`（engine 与 admin 同值），
+本地过渡态空密钥禁止上线。回滚：`kubectl set image` 回上一 tag（如 v8）。

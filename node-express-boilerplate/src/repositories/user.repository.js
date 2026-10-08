@@ -41,6 +41,9 @@ const getByUsername = (username) =>
 /** 按 docKey 精确查（契约 1.9.5）；空 key 直接未命中 */
 const getByDocKey = (docKey) => (docKey ? list().find((item) => item.docKey === String(docKey)) || null : null);
 
+/** 按 chatKey 精确查（契约 1.12 问数对外服务）；空 key 直接未命中 */
+const getByChatKey = (chatKey) => (chatKey ? list().find((item) => item.chatKey === String(chatKey)) || null : null);
+
 const create = (data) => {
   const timestamp = nowIso();
   const record = {
@@ -70,6 +73,7 @@ module.exports = require('./facade').pickImpl('user', {
   getById,
   getByUsername,
   getByDocKey,
+  getByChatKey,
   count,
   create,
   update,

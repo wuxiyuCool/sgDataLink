@@ -38,6 +38,8 @@ const updateUser = {
       status: Joi.string().valid('active', 'disabled'),
       // 1.9.5 文档中心免登录访问权限（开通自动发 key，关闭清空）
       docAccess: Joi.boolean(),
+      // 契约 1.12 问数对外服务权限（与 docAccess 同构）
+      chatAccess: Joi.boolean(),
     })
     .min(1),
 };

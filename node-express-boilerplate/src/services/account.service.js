@@ -50,6 +50,8 @@ const toSafeUser = (user) =>
         mustChangePassword: Boolean(user.mustChangePassword),
         /** 1.9.5 文档权限位（docKey 明文只在 /auth/doc-key* 回本人） */
         docAccess: Boolean(user.docAccess),
+        /** 问数对外服务权限位（chatKey 明文只在 /auth/chat-key* 回本人） */
+        chatAccess: Boolean(user.chatAccess),
         lastLoginAt: user.lastLoginAt || null,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
@@ -163,6 +165,50 @@ const recordDocAccess = async (record = {}) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* 问数对外服务（契约 1.12 增补）：chatKey 绑定用户，权限位开通即生成   */
+/* ------------------------------------------------------------------ */
+
+const CHAT_KEY_PREFIX = 'chk-';
+
+const generateChatKey = () => `${CHAT_KEY_PREFIX}${crypto.randomBytes(16).toString('hex')}`;
+
+const maskChatKey = (key) => (key ? `${String(key).slice(0, 6)}***` : null);
+
+/** GET /auth/chat-key：本人查看问数权限位与 key 明文 */
+const getChatKey = async (operator) => {
+  const user = await userRepository.getById(operator.id);
+  return {
+    chatAccess: Boolean(user && user.chatAccess),
+    chatKey: user && user.chatAccess ? user.chatKey || null : null,
+    updatedAt: (user && user.chatKeyUpdatedAt) || null,
+  };
+};
+
+/** POST /auth/chat-key/refresh：本人刷新（旧 key 立即失效；未开通拒绝） */
+const refreshChatKey = async (operator) => {
+  const user = await userRepository.getById(operator.id);
+  if (!user || !user.chatAccess) throw paramInvalid('尚未开通问数权限，请联系管理员开通');
+  const chatKey = generateChatKey();
+  const updatedAt = new Date().toISOString();
+  await userRepository.update(user.id, { chatKey, chatKeyUpdatedAt: updatedAt });
+  return { chatAccess: true, chatKey, updatedAt };
+};
+
+/**
+ * chatKey 认证入口（POST /chat/ask）。
+ * 缺 key / key 错 / 权限未开通 → 统一 401/40102（防枚举，与 docKey 同码族）；
+ * 账号禁用 → 401/40105。
+ */
+const resolveChatKey = async (rawKey) => {
+  const key = String(rawKey || '').trim();
+  if (!key) throw docKeyInvalid('未提供问数 Key（用 X-CHAT-KEY 头或 chatKey 查询参数）');
+  const user = await userRepository.getByChatKey(key);
+  if (!user || !user.chatAccess) throw docKeyInvalid('问数 Key 无效');
+  if (user.status === 'disabled') throw docKeyStale('问数 Key 已失效（账号被禁用）');
+  return { user, keyMasked: maskChatKey(key) };
+};
+
 const pageDocAccessLogs = (query = {}) => docaccesslogRepository.page(query);
 
 /** passport-jwt 回调：token 有效 ≠ 账号有效，实时查库并拒绝 disabled */
@@ -236,6 +282,21 @@ const updateUser = async (id, body, operator) => {
       patch.docKeyUpdatedAt = null;
     }
   }
+  // 问数对外服务（契约 1.12 增补）：与 docAccess 同构，key 绑定权限位
+  if (body.chatAccess !== undefined) {
+    if (typeof body.chatAccess !== 'boolean') throw paramInvalid('chatAccess 仅支持 true|false');
+    if (body.chatAccess) {
+      patch.chatAccess = true;
+      if (!target.chatKey) {
+        patch.chatKey = generateChatKey();
+        patch.chatKeyUpdatedAt = new Date().toISOString();
+      }
+    } else {
+      patch.chatAccess = false;
+      patch.chatKey = null;
+      patch.chatKeyUpdatedAt = null;
+    }
+  }
   if (!Object.keys(patch).length) throw paramInvalid('没有需要更新的字段');
   return toSafeUser(await userRepository.update(target.id, patch));
 };
@@ -305,6 +366,11 @@ module.exports = {
   login,
   pageLoginLogs,
   DOC_KEY_PREFIX,
+  CHAT_KEY_PREFIX,
+  maskChatKey,
+  getChatKey,
+  refreshChatKey,
+  resolveChatKey,
   maskDocKey,
   getDocKey,
   refreshDocKey,

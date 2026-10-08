@@ -14,6 +14,18 @@ const dataApiRoute = require('./dataapi.route');
 const alertRuleRoute = require('./alertrule.route');
 const alertRecordRoute = require('./alertrecord.route');
 const lineageRoute = require('./lineage.route');
+// 指标中心（契约 1.12）
+const metricRoute = require('./metric.route');
+const metricDomainRoute = require('./metricdomain.route');
+const metricModelRoute = require('./metricmodel.route');
+const metricSettingRoute = require('./metricsetting.route');
+const metricDashboardRoute = require('./metricdashboard.route');
+const metricTaskRoute = require('./metrictask.route');
+const metricChatRoute = require('./metricchat.route');
+const metricTermRoute = require('./metricterm.route');
+const metricExampleRoute = require('./metricexample.route');
+const metricLogRoute = require('./metriclog.route');
+const chatRuntimeRoute = require('./chat.route');
 const config = require('../../config/config');
 
 const router = express.Router();
@@ -76,6 +88,52 @@ const defaultRoutes = [
   {
     path: '/engine',
     route: engineRoute,
+  },
+  // ---- 指标中心（契约 1.12，路由组内已挂 JWT/admin 鉴权）----
+  {
+    path: '/metric-dashboard',
+    route: metricDashboardRoute,
+  },
+  {
+    path: '/metric-domains',
+    route: metricDomainRoute,
+  },
+  {
+    path: '/metrics',
+    route: metricRoute,
+  },
+  {
+    path: '/metric-models',
+    route: metricModelRoute,
+  },
+  {
+    path: '/metric-settings',
+    route: metricSettingRoute,
+  },
+  {
+    path: '/metric-tasks',
+    route: metricTaskRoute,
+  },
+  {
+    path: '/metric-chat',
+    route: metricChatRoute,
+  },
+  {
+    path: '/metric-terms',
+    route: metricTermRoute,
+  },
+  {
+    path: '/metric-examples',
+    route: metricExampleRoute,
+  },
+  {
+    path: '/metric-logs',
+    route: metricLogRoute,
+  },
+  {
+    // 问数对外服务（契约 1.12 增补）：X-CHAT-KEY 免 JWT
+    path: '/chat',
+    route: chatRuntimeRoute,
   },
 ];
 

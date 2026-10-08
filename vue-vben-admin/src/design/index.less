@@ -42,3 +42,27 @@ svg,
 span {
   outline: none;
 }
+
+// 指标中心数据预览/运行记录弹窗（BasicModal 内容区）统一样式
+// BasicModal 的 class/wrapClassName 均到不了弹窗 DOM（useAttrs 过滤 class），
+// 故用内容根节点标记类 + :has 命中弹窗本体（Chrome-only，本项目目标浏览器）
+.ant-modal:has(.preview-modal-root),
+.ant-modal:has(.runs-modal-root),
+.ant-modal:has(.domain-modal-root) {
+  .ant-modal-content {
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .ant-modal-header {
+    border-radius: 10px 10px 0 0;
+  }
+
+  .ant-modal-body {
+    padding-top: 12px;
+  }
+
+  .striped-row > td {
+    background: rgb(0 0 0 / 2.5%);
+  }
+}

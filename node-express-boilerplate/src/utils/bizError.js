@@ -71,8 +71,24 @@ const accountDisabled = (message) => bizError(ERROR_CODES.ACCOUNT_DISABLED, mess
 /** 40102 API Key 不匹配复用为 docKey 不匹配（契约 1.9.5：缺 key/错 key/未开通统一 401/40102） */
 const docKeyInvalid = (message) => bizError(ERROR_CODES.API_KEY_INVALID, message);
 
+
 /** 40105 docKey 失效：所属用户被禁用或删除（契约 1.9.5） */
 const docKeyStale = (message) => bizError(ERROR_CODES.DOC_KEY_STALE, message);
+
+/** 40902 指标域下有模型/指标资产，禁删（契约 1.12） */
+const metricDomainHasAssets = (message) => bizError(ERROR_CODES.METRIC_DOMAIN_HAS_ASSETS, message);
+
+/** 40903 指标被其他公式引用，禁删（契约 1.12） */
+const metricReferenced = (message) => bizError(ERROR_CODES.METRIC_REFERENCED, message);
+
+/** 40904 界面建表物理表名冲突（契约 1.12） */
+const metricTableConflict = (message) => bizError(ERROR_CODES.METRIC_TABLE_CONFLICT, message);
+
+/** 40905 指标公式循环依赖（契约 1.12） */
+const metricCycle = (message) => bizError(ERROR_CODES.METRIC_CYCLE, message);
+
+/** 50201 数据源 SQL 执行失败，透传库错误（契约 1.12） */
+const datasourceExecFailed = (message) => bizError(ERROR_CODES.DATASOURCE_EXEC_FAILED, message, httpStatus.BAD_GATEWAY);
 
 module.exports = {
   ERROR_CODES,
@@ -95,4 +111,9 @@ module.exports = {
   accountDisabled,
   docKeyInvalid,
   docKeyStale,
+  metricDomainHasAssets,
+  metricReferenced,
+  metricTableConflict,
+  metricCycle,
+  datasourceExecFailed,
 };

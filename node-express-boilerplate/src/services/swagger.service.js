@@ -184,6 +184,77 @@ const jsonResp = (description, schema, example) => ({
 
 const DOC_CENTER_TAG = ['文档中心'];
 
+/** 智能问数对外服务（契约 1.12 增补）：固定「智能问数」分组，含 curl 调用模板 */
+const CHAT_BI_TAG = ['智能问数'];
+
+const buildChatBiPath = () => ({
+  '/api/v1/chat/ask': {
+    post: {
+      tags: CHAT_BI_TAG,
+      summary: '自然语言问数（对外服务，X-CHAT-KEY 鉴权）',
+      description:
+        "把用户问题翻译为指标语义查询并在真实库执行，返回答案 + 指标公式展开树（子指标回填取值）。\n\ncurl 调用模板：\n```\ncurl -X POST http://<host>:<port>/api/v1/chat/ask \\n  -H \"content-type: application/json\" \\n  -H \"X-CHAT-KEY: chk-你的问数Key\" \\n  -d '{ \"question\": \"昨天的订单额是多少\" }'\n```\nKey 获取：请管理员在「系统管理→用户管理」开通问数权限后，到文档中心页查看/刷新本人 Key（关闭权限即失效）。",
+      operationId: 'databridge-chat-ask',
+      security: [{ ChatKeyAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['question'],
+              properties: {
+                question: { type: 'string', maxLength: 1000, example: '昨天的订单额是多少' },
+                sessionId: { type: 'string', nullable: true, description: '多轮上下文会话 id（内存态，可省）' },
+                dateRange: {
+                  type: 'object',
+                  nullable: true,
+                  description: '强制时间窗（覆盖问题内解析出的日期）',
+                  properties: { start: { type: 'string', example: '2026-10-01' }, end: { type: 'string', example: '2026-10-08' } },
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: jsonResp(
+          '问数结果（status：success/corrected=已执行，clarify=需选候选指标，failed=未成）',
+          envelopeSchema({
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['success', 'corrected', 'clarify', 'failed'] },
+              answer: { type: 'string', example: 'dm_amt = 1680.5' },
+              value: { type: 'string', nullable: true, description: '单值答案（无维度时）' },
+              columns: { type: 'array', items: { type: 'string' }, nullable: true },
+              rows: { type: 'array', items: { type: 'array', items: {} }, nullable: true },
+              m2sql: { type: 'string', nullable: true, description: 'LLM 生成的指标语义 SQL' },
+              physicalSql: { type: 'string', nullable: true, description: '编译后的真实执行 SQL' },
+              metricTree: { type: 'object', nullable: true, description: '主指标公式展开树，树内同模型子指标已回填 value' },
+              candidates: { type: 'array', nullable: true, description: 'clarify 时的候选指标' },
+              warnings: { type: 'array', items: { type: 'string' } },
+            },
+          }),
+          envelopeExample({
+            status: 'success',
+            answer: 'dm_amt = 1680.5',
+            value: '1680.50',
+            m2sql: "SELECT `订单额` WHERE `数据日期` = '2026-10-07'",
+            physicalSql: 'SELECT SUM(t.amt) AS `dm_amt` FROM dm_order_src t WHERE t.pay_date BETWEEN ... LIMIT 1000',
+            metricTree: { id: 'met-13113', name: '订单额', type: 'ATOMIC', value: '1680.50', children: [] },
+            warnings: [],
+          })
+        ),
+        401: jsonResp(
+          '问数 Key 无效/未开通（40102，防枚举）或账号被禁用（40105）',
+          envelopeSchema({ type: 'object', nullable: true }),
+          { code: 40102, message: '问数 Key 无效', result: null, timestamp: 1700000000000 }
+        ),
+      },
+    },
+  },
+});
+
 const buildDocCenterPaths = () => ({
   '/api/v1/data-apis/swagger.json': {
     get: {
@@ -315,6 +386,7 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
   });
   // 文档中心自身接口固定追加（自描述，keyword 只过滤业务 /ds 条目）
   Object.assign(paths, buildDocCenterPaths());
+  Object.assign(paths, buildChatBiPath());
 
   const tags = Array.from(new Set(Object.values(paths).flatMap((item) => Object.values(item).map((op) => op.tags[0]))));
   const publishedCount = apis.filter((api) => api.status === 'published').length;
@@ -323,7 +395,7 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
     info: {
       title: 'DataBridge 数据服务 API',
       version: '1.9.5',
-      description: `由 DataBridge 自动生成的接口文档：共 ${apis.length} 个数据服务（${publishedCount} 个已发布）。运行时地址 /ds/{path}，鉴权走 X-API-Key 头（或 apiKey 查询参数）。tags 为绑定的数据源名，用于按数据源筛选；「文档中心」分组是自述——如何取本文档/登录/管理 docKey/查访问日志。`,
+      description: `由 DataBridge 自动生成的接口文档：共 ${apis.length} 个数据服务（${publishedCount} 个已发布）。运行时地址 /ds/{path}，鉴权走 X-API-Key 头（或 apiKey 查询参数）。tags 为绑定的数据源名，用于按数据源筛选；「文档中心」分组是自述——如何取本文档/登录/管理 docKey/查访问日志；「智能问数」分组是对外问数 API（X-CHAT-KEY）。`,
     },
     servers: [{ url: '/', description: '当前站点（管理端与运行时同源）' }],
     tags: tags.map((name) => ({ name })),
@@ -347,6 +419,12 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
           in: 'header',
           name: 'X-DOC-KEY',
           description: '个人文档 Key（契约 1.9.5，管理员开通后在文档中心页查看/刷新），仅用于取本文档',
+        },
+        ChatKeyAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'X-CHAT-KEY',
+          description: '个人问数 Key（契约 1.12 问数对外服务，管理员开通问数权限后在文档中心页查看/刷新；也可用查询参数 chatKey）',
         },
       },
     },

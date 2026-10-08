@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	v1 "databridge-engine/api/v1"
@@ -15,14 +16,16 @@ import (
 )
 
 // HTTPBuilder 创建 httpReporter（真实 net/http 调用，指向 Node mock）。
+// token 非空时所有回报请求携带 X-Engine-Token（契约 v1.12 引擎共享密钥，双向同源）。
 type HTTPBuilder struct {
 	client  *http.Client
 	timeout time.Duration
 	log     *log.Logger
+	token   string
 }
 
 // NewHTTPBuilder 构造回报器构建器；client 可为 nil（内部按 timeout 生成）。
-func NewHTTPBuilder(client *http.Client, timeout time.Duration, logger *log.Logger) *HTTPBuilder {
+func NewHTTPBuilder(client *http.Client, timeout time.Duration, logger *log.Logger, token string) *HTTPBuilder {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
@@ -32,7 +35,7 @@ func NewHTTPBuilder(client *http.Client, timeout time.Duration, logger *log.Logg
 	if logger == nil {
 		logger = log.DefaultLogger()
 	}
-	return &HTTPBuilder{client: client, timeout: timeout, log: logger}
+	return &HTTPBuilder{client: client, timeout: timeout, log: logger, token: strings.TrimSpace(token)}
 }
 
 // Build 实现 Builder；baseURL 为空时返回 no-op 回报器（只打本地日志）。
@@ -40,7 +43,7 @@ func (b *HTTPBuilder) Build(baseURL string) Reporter {
 	if baseURL == "" {
 		return &nopReporter{log: b.log}
 	}
-	return &httpReporter{baseURL: baseURL, client: b.client, timeout: b.timeout, log: b.log}
+	return &httpReporter{baseURL: baseURL, client: b.client, timeout: b.timeout, log: b.log, token: b.token}
 }
 
 type httpReporter struct {
@@ -48,6 +51,7 @@ type httpReporter struct {
 	client  *http.Client
 	timeout time.Duration
 	log     *log.Logger
+	token   string
 }
 
 var _ Reporter = (*httpReporter)(nil)
@@ -78,6 +82,9 @@ func (r *httpReporter) post(ctx context.Context, path string, payload any) error
 		return fmt.Errorf("reporter: 构造请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if r.token != "" {
+		req.Header.Set("X-Engine-Token", r.token)
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {

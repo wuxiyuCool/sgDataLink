@@ -12,4 +12,6 @@ var (
 	ErrDuplicateInstance = errors.New("duplicate instance")
 	// ErrInternal 内部错误 -> 500 / 50001
 	ErrInternal = errors.New("internal error")
+	// ErrSQLExecFail SQL 在目标库执行失败 -> 502 / 50002（契约 2.5）
+	ErrSQLExecFail = errors.New("sql exec failed")
 )

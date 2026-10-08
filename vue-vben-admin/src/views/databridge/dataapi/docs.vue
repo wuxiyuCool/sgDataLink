@@ -75,6 +75,35 @@
       </div>
     </Card>
 
+    <Card :bordered="false" class="mb-3" title="我的问数 Key（对外调用 /api/v1/chat/ask）">
+      <template #extra>
+        <Tag :color="chatKeyInfo?.chatAccess ? 'success' : 'default'">
+          {{ chatKeyInfo?.chatAccess ? '已开通' : '未开通' }}
+        </Tag>
+      </template>
+      <template v-if="chatKeyInfo?.chatAccess && chatKeyInfo?.chatKey">
+        <Space :size="8" wrap>
+          <span class="mono doc-key-text">{{ chatKeyVisible ? chatKeyInfo.chatKey : chatKeyMasked }}</span>
+          <Button size="small" @click="chatKeyVisible = !chatKeyVisible">
+            {{ chatKeyVisible ? '隐藏' : '显示' }}
+          </Button>
+          <Button size="small" @click="handleCopyChatKey">复制</Button>
+          <Button size="small" danger :loading="chatKeyRefreshing" @click="handleRefreshChatKey">
+            刷新生成
+          </Button>
+        </Space>
+        <div class="mt-2 text-gray-500">
+          {{ chatKeyInfo.updatedAt ? `key 生成时间：${formatTime(chatKeyInfo.updatedAt)}；` : '' }}
+          刷新后旧 key 立即失效；账号禁用或问数权限被回收时同步失效；每次带 key 的问数调用都会记入审计日志（仅管理员可见）
+        </div>
+        <pre class="json-pre mt-2">{{ chatKeyCurlHint }}</pre>
+      </template>
+      <div v-else class="text-gray-500">
+        尚未开通问数权限：请联系管理员在「系统管理 → 用户管理 → 编辑」中开启「问数权限」，开通后自动生成个人 Key，
+        调用方式见「智能问数」分组文档
+      </div>
+    </Card>
+
     <Card :bordered="false">
       <Alert
         v-if="spec"
@@ -175,8 +204,14 @@
   import { useMessage } from '/@/hooks/web/useMessage'
   import { useUserStore } from '/@/store/modules/user'
   import { getSwaggerDocApi } from '/@/api/databridge/dataapi'
-  import { getMyDocKeyApi, refreshMyDocKeyApi } from '/@/api/databridge/user'
-  import type { MyDocKeyInfo } from '/@/api/databridge/user'
+  import {
+    getMyChatKeyApi,
+    getMyDocKeyApi,
+    refreshMyChatKeyApi,
+    refreshMyDocKeyApi,
+    type MyChatKeyInfo,
+    type MyDocKeyInfo,
+  } from '/@/api/databridge/user'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import type { SwaggerOperation, SwaggerSpec } from '/@/api/databridge/model/dataapiModel'
   import { formatTime } from '../data'
@@ -346,6 +381,59 @@
     return `curl "${origin}/ds/${item.path}${params ? `?${params}` : ''}"${keyHeader}`
   }
 
+  /* ---- 契约 1.12 我的问数 Key（对外调用 /chat/ask） ---- */
+  const chatKeyInfo = ref<MyChatKeyInfo | null>(null)
+  const chatKeyVisible = ref(false)
+  const chatKeyRefreshing = ref(false)
+
+  const chatKeyMasked = computed(() => {
+    const k = chatKeyInfo.value?.chatKey || ''
+    return k ? `${k.slice(0, 8)}••••••${k.slice(-4)}` : ''
+  })
+
+  const chatKeyCurlHint = computed(() => {
+    const origin = typeof window === 'undefined' ? 'http://<host>' : window.location.origin
+    const shown = chatKeyVisible.value && chatKeyInfo.value?.chatKey ? chatKeyInfo.value.chatKey : '<粘贴你的问数 Key>'
+    return `curl -X POST ${origin}/api/v1/chat/ask -H "content-type: application/json" -H "X-CHAT-KEY: ${shown}" -d '{\"question\":\"昨天的订单额是多少\"}'`
+  })
+
+  async function loadChatKey() {
+    try {
+      chatKeyInfo.value = await getMyChatKeyApi()
+    } catch {
+      chatKeyInfo.value = null
+    }
+  }
+
+  function handleCopyChatKey() {
+    const k = chatKeyInfo.value?.chatKey
+    if (!k) return
+    navigator.clipboard
+      .writeText(k)
+      .then(() => createMessage.success('问数 Key 已复制（请视为密码保管，勿截图/入库）'))
+      .catch(() => createMessage.warning('浏览器拒绝剪贴板访问，请手动选择复制'))
+  }
+
+  function handleRefreshChatKey() {
+    createConfirm({
+      iconType: 'warning',
+      title: '刷新问数 Key',
+      content: '刷新后旧 key 立即失效，使用旧 key 的外部脚本需同步更换。确认继续？',
+      onOk: async () => {
+        chatKeyRefreshing.value = true
+        try {
+          chatKeyInfo.value = await refreshMyChatKeyApi()
+          chatKeyVisible.value = true
+          createMessage.success('已生成新问数 Key（旧 key 即刻作废）')
+        } catch (error: any) {
+          createMessage.error(getApiErrorMessage(error, '刷新失败'))
+        } finally {
+          chatKeyRefreshing.value = false
+        }
+      },
+    })
+  }
+
   /* ---- 1.9.5 我的文档 Key（免登录取 swagger.json） ---- */
   const docKeyInfo = ref<MyDocKeyInfo | null>(null)
   const keyVisible = ref(false)
@@ -402,6 +490,7 @@
   onMounted(() => {
     load()
     loadDocKey()
+    loadChatKey()
   })
 </script>
 

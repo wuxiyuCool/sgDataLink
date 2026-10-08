@@ -30,6 +30,16 @@ const ID_SEQUENCES = [
   { prefix: 'api-', startId: 8000, table: 'databridge_data_api' },
   { prefix: 'ar-', startId: 9000, table: 'databridge_alert_rule' },
   { prefix: 'rec-', startId: 9500, table: 'databridge_alert_record' },
+  // ---- 指标中心（契约 1.12；startId 段 11000~，避开 doc/log 表用的 9xxx/10xxx）----
+  { prefix: 'dom-', startId: 11000, table: 'databridge_metric_domain' },
+  { prefix: 'mdl-', startId: 12000, table: 'databridge_metric_model' },
+  { prefix: 'met-', startId: 13000, table: 'databridge_metric_metric' },
+  { prefix: 'mver-', startId: 13900, table: 'databridge_metric_version' },
+  { prefix: 'mtk-', startId: 14000, table: 'databridge_metric_task' },
+  { prefix: 'mtr-', startId: 14900, table: 'databridge_metric_task_run' },
+  { prefix: 'mterm-', startId: 16000, table: 'databridge_metric_term' },
+  { prefix: 'mex-', startId: 17000, table: 'databridge_metric_example' },
+  { prefix: 'mlg-', startId: 18000, table: 'databridge_metric_query_log' },
 ];
 
 /**
@@ -50,6 +60,16 @@ require('../repositories/mysql/alertrecord.store');
 require('../repositories/mysql/user.store');
 require('../repositories/mysql/loginlog.store');
 require('../repositories/mysql/docaccesslog.store');
+// 指标中心（契约 1.12）；metricsetting 是 bespoke kv 仓储，不经 defineStore、无需列校验
+require('../repositories/mysql/metricdomain.store');
+require('../repositories/mysql/metricmodel.store');
+require('../repositories/mysql/metric.store');
+require('../repositories/mysql/metricversion.store'); // metricdep 为自然键 bespoke 仓储，不经 defineStore
+require('../repositories/mysql/metrictask.store');
+require('../repositories/mysql/metrictaskrun.store');
+require('../repositories/mysql/metricterm.store');
+require('../repositories/mysql/metricexample.store');
+require('../repositories/mysql/metricquerylog.store');
 
 /**
  * 把 schema.sql 切成逐条 DDL。
@@ -120,7 +140,10 @@ const validateColumns = async () => {
     expected: Object.values(spec.columns)
       .map((column) => ({ col: column.col.toLowerCase(), type: column.type }))
       // extra / seq 是 sqlStore 的公共列（seq 是自增主键），缺失不能自动补，只能报错
-      .concat([{ col: 'extra', type: 'json' }, { col: 'seq', type: null }]),
+      .concat([
+        { col: 'extra', type: 'json' },
+        { col: 'seq', type: null },
+      ]),
   }));
   const actual = await loadActualColumns(entries.map((entry) => entry.table).concat(SEQ_TABLE));
   const problems = [];

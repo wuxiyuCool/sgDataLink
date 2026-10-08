@@ -27,6 +27,9 @@ const store = defineStore({
     docAccess: { type: 'bool' },
     docKey: {},
     docKeyUpdatedAt: { type: 'datetime' },
+    chatAccess: { type: 'bool' },
+    chatKey: {},
+    chatKeyUpdatedAt: { type: 'datetime' },
     lastLoginAt: { type: 'datetime' },
     createdAt: { type: 'datetime' },
     updatedAt: { type: 'datetime' },
@@ -67,6 +70,13 @@ const getByDocKey = async (docKey) => {
   return rows.length ? rows[0] : null;
 };
 
+/** 按 chatKey 精确查（契约 1.12 问数对外）；空 key 直接未命中，绝不退化成全表 */
+const getByChatKey = async (chatKey) => {
+  if (!chatKey) return null;
+  const rows = await store.find({ filters: { chatKey: String(chatKey) } });
+  return rows.length ? rows[0] : null;
+};
+
 const create = (data) => {
   const timestamp = nowIso();
   return store.insert({
@@ -88,4 +98,4 @@ const update = async (id, patch = {}) => {
 
 const remove = (id) => store.deleteById(id);
 
-module.exports = { list, find, page, getById, getByUsername, getByDocKey, count, create, update, remove };
+module.exports = { list, find, page, getById, getByUsername, getByDocKey, getByChatKey, count, create, update, remove };

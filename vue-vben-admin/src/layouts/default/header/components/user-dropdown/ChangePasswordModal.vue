@@ -42,6 +42,8 @@
   import { changePasswordApi } from '/@/api/sys/user'
   import { getApiErrorMessage } from '/@/api/databridge/http'
 
+  const FormItem = Form.Item
+
   const props = defineProps<{ visible: boolean; forced?: boolean }>()
   const emit = defineEmits<{ (e: 'update:visible', v: boolean): void }>()
 

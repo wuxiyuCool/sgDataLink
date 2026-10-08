@@ -20,6 +20,7 @@ const config = require('../config/config');
 const cronMatcher = require('../utils/cronMatcher');
 const instanceRepository = require('../repositories/instance.repository');
 const runService = require('./run.service');
+const metricTaskService = require('./metrictask.service');
 
 /** 扫描周期：cron 有「秒」位，所以按秒对齐（Date 的 UTC 秒变化即命中判定变化） */
 const TICK_MS = 1000;
@@ -37,6 +38,48 @@ const lastTriggerAt = new Map();
 
 /** 已经 WARN 过的非法/不支持 cron，避免重复刷屏 */
 const warnedCrons = new Set();
+
+/**
+ * 指标清洗任务扫描分支（契约 1.12 M4）：status=online 且配了 scheduleCron；
+ * 复用同一套 cronMatcher / 60s 最小间隔 / running 跳过规则，run 走 /sql/exec 不经引擎任务协议。
+ */
+const scanMetricTasks = async (now) => {
+  const started = [];
+  // eslint-disable-next-line no-restricted-syntax
+  for (const task of await metricTaskService.listSchedulable()) {
+    const key = `metrictask:${task.id}`;
+    if (!cronMatcher.isSupportedCron(task.scheduleCron)) {
+      if (!warnedCrons.has(key)) {
+        warnedCrons.add(key);
+        logger.warn('metric task %s 的 scheduleCron「%s」不在支持子集，已跳过调度', task.id, task.scheduleCron);
+      }
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    if (!cronMatcher.matchesCron(task.scheduleCron, now)) {
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    const previous = lastTriggerAt.get(key) || 0;
+    if (now.getTime() - previous < MIN_TRIGGER_GAP_MS) {
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    if (task.lastStatus === 'running') {
+      logger.warn('指标任务 %s 正在运行中，本次定时触发跳过', task.id);
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    lastTriggerAt.set(key, now.getTime());
+    logger.info('cron trigger: metric task %s (cron=%s)', task.id, task.scheduleCron);
+    started.push(
+      metricTaskService.runTask(task.id, 'cron').catch((err) => {
+        logger.warn('metric task cron run failed for %s: %s', task.id, err.message);
+      })
+    );
+  }
+  return started;
+};
 
 /**
  * 扫描一次（导出纯函数式入口，便于单测直接传 now）。
@@ -90,6 +133,8 @@ const scanOnce = async (now = new Date()) => {
       })
     );
   }
+  // eslint-disable-next-line no-restricted-syntax
+  for (const outcome of await scanMetricTasks(now)) pending.push(outcome);
   return pending;
 };
 

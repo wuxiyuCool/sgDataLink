@@ -47,6 +47,11 @@
 | 管道状态 `pipeline.status` | `running` \| `stopped` |
 | 数据服务状态 `dataApi.status` | `draft` \| `published` |
 | 告警通道 `channel` | `dingtalk` \| `wecom` \| `email` |
+| 指标类型 `metric.type`（1.12） | `ATOMIC`（原子）\| `DERIVED`（派生）\| `COMPOSITE`（复合）；由 defineType+defineParams 规则推导，不人工填 |
+| 指标定义方式 `metric.defineType`（1.12） | `MEASURE`（字段+聚合）\| `FIELD`（手写聚合 SQL 片段）\| `METRIC`（引用其他指标） |
+| 数据分层 `model.layer`（1.12） | `ODS` \| `DIM` \| `DWD` \| `DWS` \| `ADS` |
+| 指标状态 `metric.status`（1.12） | `draft` \| `online` \| `offline` |
+| 问数结果 `chat.status`（1.12） | `success` \| `corrected` \| `clarify` \| `failed` |
 
 字段命名统一 camelCase；时间统一 ISO 8601 字符串（UTC）。ID 为字符串（mock 用 ULID/自增前缀，如 `ds-1001`、`task-2001`、`inst-3001`）。
 
@@ -230,7 +235,7 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
 }
 ```
 
-### 1.4 引擎回调 `/engine`（仅供 Go 引擎调用，Mock 阶段不鉴权）
+### 1.4 引擎回调 `/engine`（仅供 Go 引擎调用；共享密钥鉴权见第 2 节开头，空配置期放行）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -677,10 +682,70 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 - **密码强度（服务端强制）**：8~64 位，至少含 1 字母和 1 数字；不满足 40001。
 - **越权红线**：`/users` 全部接口与用户数据访问仅限 admin 角色（passport-jwt + roleRights），普通用户访问一律 403；改密/查自己走 `/auth/*`，不接受任何 userId 参数（无 IDOR 面）。
-- **本期边界（诚实声明）**：JWT 强制覆盖 `/users`、`/auth/me`、`/auth/change-password`；其余 DataBridge 业务接口本期仍不鉴权（`/ds/{path}` 继续走 apiKey 机制，engine 回报通道待二阶段加共享密钥），前端路由守卫按角色显隐菜单。
+- **本期边界（诚实声明）**：JWT 强制覆盖 `/users`、`/auth/me`、`/auth/change-password`；其余 DataBridge 业务接口本期仍不鉴权（`/ds/{path}` 继续走 apiKey 机制；engine 回报通道共享密钥已由契约 1.12 排期，随指标中心 M3 落地，空配置 WARN 兼容，见第 2 节「引擎共享密钥」），前端路由守卫按角色显隐菜单。
 - **登录日志（审计）**：每次 `POST /auth/login`（成功与失败）写一条 `databridge_login_log`：`{id, userId?, username, ip, ok, errorMsg?, createdAt}`（username 原样记录便于排查撞库尝试；errorMsg 不含密码）。查询：`GET /auth/login-logs`（JWT+admin，分页，参数 `keyword`（用户名模糊）/`result=success|error`/`startTime`/`endTime`），表滚动保留最近 1 万条。
 - 前端：登录页对接真实 `/auth/login`；「系统管理→用户管理」页（admin 可见）提供增删改/禁用/重置密码；头像菜单提供个人修改密码；`mustChangePassword=true` 时登录后强制弹出改密。
 - **出参安全**：用户对象带 `docAccess`（布尔）供界面显隐，**docKey 明文只出现在本人 `GET/POST /auth/doc-key*` 响应**，列表/详情/me 一律不回传。
+
+---
+
+### 1.12 指标中心 `/metric*`（v1.12 新增；本节为接口契约，实施规格/公式编译/完整 DDL 见 `docs/METRIC-DEV.md`）
+
+**鉴权与错误码**：全部 `/metric*` 路由需 JWT；`GET/PUT /metric-settings`、`POST /metric-logs/:id/to-example` 仅 admin。新错误码：`40902` 域下有模型/指标禁删、`40903` 指标被引用禁删、`40904` 界面建表物理表名冲突、`40905` 公式循环依赖、`50201` 数据源 SQL 执行失败（HTTP 502，message 透传真实库错误）。
+
+**指标对象**（`type` 由 `defineType+defineParams` 在保存时推导）：
+
+```json
+{ "id": "met-13000", "code": "order_amt", "name": "订单总金额", "alias": ["成交额"],
+  "type": "ATOMIC", "defineType": "MEASURE", "modelId": "mdl-12000", "domainId": "dom-11000",
+  "expr": "SUM(t.order_amt)",
+  "defineParams": { "measureColumn": "order_amt", "agg": "sum", "timeColumn": "pay_date", "filterSql": "t.status='PAID'" },
+  "unit": "元", "dataFormat": "THOUSANDTH", "caliber": "成交后实收金额，不含取消",
+  "owner": "data-team", "status": "online", "version": 3 }
+```
+
+- `code` 全库唯一、`^[a-z][a-z0-9_]{2,63}$`、创建后不可改——是复合公式 `${code}` 引用的锚点。
+- `dataFormat` ∈ `DECIMAL`（默认）| `PERCENT` | `THOUSANDTH`，仅用于展示格式；留空按 DECIMAL 存储。
+- COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
+
+**路由**：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/metric-dashboard` | 首页概览：域/模型/指标计数（按类型/状态/分层分组）、任务近 24h 运行统计与成功率、近 7d 问数量与失败数、hotMetrics Top10 |
+| GET/POST | `/metric-domains`；GET `/metric-domains/tree`；PUT/DELETE `/metric-domains/:id` | 指标域树（`dom-`；删除撞 40902；code `^[a-z][a-z0-9_]{1,30}$` 兼建表前缀） |
+| GET/POST | `/metric-models`（筛选 domainId/layer/datasourceId/keyword）；GET/PUT/DELETE `/metric-models/:id` | 模型（`mdl-`；createType=`reference`\|`ddl`；详情含 columns[{columnName,bizName,dataType,role:dimension\|time\|measure,aggDefault}]） |
+| POST | `/metric-models/preview-ddl` | 列定义 → CREATE TABLE SQL 回显（不执行；表名=域前缀+分层+名称，撞库 40904） |
+| GET | `/metric-models/:id/preview` | 前 20 行真实数据（engine `/sql/query`，失败 50201） |
+| GET/POST | `/metrics`；GET/PUT/DELETE `/metrics/:id` | 指标分页（domainId/type/status/keyword 搜 name/code/alias）；保存即写版本；删除撞 40903 |
+| POST | `/metrics/validate` | 草稿校验（语法/聚合规则/循环 40905/维度合法性），返回 `{errors, warnings}`，无副作用 |
+| GET | `/metrics/:id/tree` | 子指标展开树（type/expr/model/children，深度 ≤8） |
+| GET | `/metrics/:id/lineage` | 双向血缘 `{parents, children}`（LogicFlow 数据，边带引用表达式） |
+| POST | `/metrics/:id/preview` | 试跑 `{dateRange, dimensions[], limit}` → `{sql, columns, rows, elapsedMs}`（编译产物真实执行，黄金对照入口） |
+| GET/POST | `/metrics/:id/versions`；`/metrics/:id/rollback` | 版本列表（`mver-`）/ 指定版本回滚为新草稿 |
+| CRUD | `/metric-tasks`（`mtk-`）；POST `/metric-tasks/:id/run`；GET `/metric-tasks/:id/runs`；POST `/metric-tasks/preview` | 清洗汇总任务：sourceModelId/metricIds/dimensionColumnIds/cleanRules/timePreset/target(writeMode ∈ overwrite\|append\|upsert，upsert 仅 MySQL)/scheduleCron（格式同 1.2，调度走 Node 现有 scheduler）；执行记录 `mtr-` 含 sqlText/readRows/writeRows/elapsedMs；preview 返回将要执行的语句数组（不落库）。cleanRules 一期支持 filter/fill/rename，**dedup 明确 40001 拒绝**（5.7 无窗口函数，去重放上游同步任务）；全部指标必须同挂源模型（跨模型复合不可物化）；保存即组一次计划生成，配置错误挡在保存期 |
+| CRUD | `/metric-terms`（`mterm-`）、`/metric-examples`（`mex-`） | LLM 术语与示例问答 few-shot（example={question, m2sql, enabled}） |
+| POST | `/metric-chat/ask` | `{question, sessionId?, dateRange?}` → `{status: success\|corrected\|clarify\|failed, answer, value?\|columns?/rows?, m2sql, physicalSql, metricTree（子指标逐层展开并回填 value）, candidates?（clarify 时的候选指标）}`；每次问答落 `mlg-` 日志 |
+| GET/POST | `/metric-chat/sessions/:id/history` | 多轮上下文查询/清空（内存态，重启即失） |
+| GET | `/metric-logs`（筛选 keyword/result/user/时间段）；POST `/metric-logs/:id/to-example` | 问数审计（滚动 5 万条）；审核转示例（admin） |
+| GET/PUT | `/metric-settings` | 系统配置（metric_setting 表，优先于 env）：`llm.baseUrl/llm.model/llm.apiKey/llm.timeoutMs/llm.embed.enabled/llm.embedModel/llm.embed.baseUrl/llm.embed.apiKey`——embedding 可与对话模型不同供应商，`llm.embed.baseUrl/apiKey` 未配置时回落主 `llm.baseUrl/apiKey`（env：LLM_EMBED_BASE_URL/LLM_EMBED_API_KEY）；**apiKey 掩码回显**（`sk-xx***`，仿 docKey 做法），PUT 传空串=保持不变。PUT 请求体为**嵌套形态** `{settings:{llm:{baseUrl:"",model:"",apiKey:"",timeoutMs:"",embedModel:"",embed:{enabled:"",baseUrl:"",apiKey:""}}}}`（全局 mongo-sanitize 会把点分键拆嵌套，契约顺势定义嵌套；服务端扁平化为点分 key 后按白名单校验） |
+
+- **对外服务边界**：指标结果对外交付复用 1.9 `/data-apis`（ADS 表/SQL 发布为 API）与 `/ds` runtime（apiKey/白名单/限流/调用日志/swagger/docKey 全套）；本节不提供独立对外查询端点。
+- **落库**：`databridge_metric_*` 共 12 张（domain/model/model_column/metric/metric_dep/metric_version/task/task_run/term/example/query_log/setting），mysql 模式启动自动建表（DDL 见 METRIC-DEV §5，utf8mb4 显式）；memory 模式走内存实现。
+- **engine 交互**：所有 SQL 执行经第 2 节「通用 SQL 执行接口」，携带 `X-Engine-Token`（见引擎共享密钥）。
+
+**问数对外服务（v1.12 增补，仿 1.9.5 docKey 模式）**：把智能问数发布为外部可调用 API，权限位绑定用户、密钥走 API 头、审计仅 admin。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/chat/ask` | **X-Chat-Key 头**（或 `chatKey` 查询参数，二选一；不要求 JWT） | 请求体同 `/metric-chat/ask`（`{question, sessionId?, dateRange?}`），响应 result 同构（status/answer/value/columns/rows/m2sql/physicalSql/metricTree/candidates/warnings）。错误：key 缺失/无效/权限未开通统一 `401/40102`（防枚举，复用 docKey 语义；`chatKey` 查询参数仅当未带 X-CHAT-KEY 头时生效）；账号被禁用 `401/40105`。每次调用（成败）落 `metric_query_log`，`userName` 为绑定用户并带 `(apikey)` 后缀，`matched.source='chatKey'` |
+| GET | `/auth/chat-key` | JWT（本人） | 返回 `{chatAccess, chatKey, updatedAt}`：开通时 chatKey 明文**只回本人**，未开通 chatKey=null |
+| POST | `/auth/chat-key/refresh` | JWT（本人） | 本人刷新 key（旧 key 立即失效；未开通 40001） |
+
+- **权限模型**：用户新增 `chatAccess`（布尔，**仅 admin 在用户管理中开通**）+ `chatKey`（`chk-`+32hex，绑定用户）。开通即自动生成（已有则保留），**关闭权限立即清空**——key 生命周期绑定权限位；账号禁用实时失效。`GET/PUT /metric-settings` 之外，`GET /metric-logs`（问数审计）由「登录即可」收紧为**仅 admin（manageMetrics）**，前端问数页「历史」tab 按 admin 显隐。
+- **文档中心集成**：swagger.json 固定含「智能问数」分组（`POST /api/v1/chat/ask` 自描述：请求/响应 schema、`ChatKeyAuth` securityScheme、**curl 调用模板**）；文档中心页对已开通用户在 docKey 区下方展示 chatKey（掩码/明文切换/复制/刷新）与问数 curl 模板。
+- **用户对象增字段**：`chatAccess: boolean`（列表可见）；`chatKey` 明文不出 `/users*` 接口（toSafeUser 剔除，仅 `/auth/chat-key*` 回本人）。落库列 `databridge_user.chat_access/chat_key/chat_key_updated_at`（启动自动 ALTER 补列）。
+- **实施状态（2026-10-08）**：M0~M5 后端全部落地（含 `/metric-chat/ask` 主链路、术语/示例/日志/会话、`/metric-settings` 配置页）。真实联调验收：`deploy/tests/test-metric-chat.js` 真库+真 DeepSeek 全绿（10 问命中 ≥7 为通过线，metricTree 子指标随主指标并入同一次查询后整树回填 value）。
 
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）
 
@@ -697,6 +762,37 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 | POST | `/api/v1/engine/tasks/stop` | 接收停止指令 |
 | GET | `/api/v1/engine/tasks` | 当前引擎内运行中任务列表 |
 | GET | `/api/v1/engine/tasks/:instanceId` | 单实例模拟状态快照 |
+| POST | `/api/v1/engine/sql/query` | 执行单条 SELECT 返回结果集（同步；v1.12 指标中心，见「通用 SQL 执行接口」） |
+| POST | `/api/v1/engine/sql/exec` | 依序执行 DDL/DML（界面建表/清洗物化；v1.12，见「通用 SQL 执行接口」） |
+
+### 引擎共享密钥（契约 v1.12 新增，M3 已落地）
+
+env `ENGINE_SHARED_SECRET`（admin/engine 双侧同值；K8s 经 Secret `databridge-db-secret` 注入）。
+
+- 配置后：Node→engine **全部请求**（含 tasks/start、sql/* 等）与 engine→Node 回报（1.4 `/engine/report`、`/engine/logs`）必须携带请求头 `X-Engine-Token: <secret>`，不匹配返回 HTTP 401 + `code: 40101`。
+- 未配置（空串）：双侧维持放行并启动时打一条 WARN（平滑过渡期态）；**生产与本地生产测试态禁止空配置长期使用**（METRIC-DEV §12 红线）。
+- 上线顺序：先发带空配置兼容的双侧版本 → ConfigMap/Secret 配好同值 → 重启后自动强制；该切换写入 RELEASE.md。对既有回归脚本向后兼容（空配置态不带 token 仍通过）。
+
+### 通用 SQL 执行接口（v1.12 指标中心专用，仅 admin 调用）
+
+```
+POST /api/v1/engine/sql/query
+  req  { "endpoint": { "id":"ds-1001","type":"mysql","host":"...","port":3306,
+                      "username":"...","password":"...","database":"..." },   // 第 5 节同款真实快照
+         "sql": "SELECT ...", "limit": 1000, "timeoutSec": 30 }
+  resp data { "columns": ["c1","c2"], "rows": [[...]], "rowCount": 20, "elapsedMs": 150 }
+  校验：仅允许单条语句且必须以 SELECT 开头（不区分大小写），否则 40001；
+        执行失败 HTTP 502 + code 50002（message 透传真实库错误）
+
+POST /api/v1/engine/sql/exec
+  req  { "instanceId": "mtr-14900", "endpoint": { ... },
+         "statements": ["CREATE TABLE IF NOT EXISTS ...", "TRUNCATE TABLE ...", "INSERT INTO t (c1,c2) SELECT ..."],
+         "reportUrl": "可选；携带则异步：立即 accepted，完成后按 1.4 ProgressReport 回报" }
+  resp（同步）data { "results": [ { "affectedRows": 1200, "elapsedMs": 340 } ] }
+  校验：每条语句首关键字 ∈ {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD COLUMN}；
+        DROP/DELETE/UPDATE/GRANT/分号多语句拼接一律 40001；
+        标识符白名单与口令处理同第 5 节（凭据不进日志与回报）；type ∈ {mysql, oracle} 仅
+```
 
 `POST /tasks/start` 请求体（Node 下发完整任务快照，引擎无状态依赖）：
 
@@ -772,13 +868,13 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时）、`ADMIN_INIT_PASSWORD`（契约 1.11 首次播种 admin 的初始密码，留空随机生成并打日志）、`JWT_SECRET`/`JWT_ACCESS_EXPIRATION_MINUTES`（登录令牌签名与有效期） |
-| databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS` |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时）、`ADMIN_INIT_PASSWORD`（契约 1.11 首次播种 admin 的初始密码，留空随机生成并打日志）、`JWT_SECRET`/`JWT_ACCESS_EXPIRATION_MINUTES`（登录令牌签名与有效期）、`ENGINE_SHARED_SECRET`（v1.12 可选；配置后所有引擎调用带 X-Engine-Token）、`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_TIMEOUT_MS`/`LLM_EMBED_ENABLED`/`LLM_EMBED_MODEL`/`LLM_EMBED_BASE_URL`/`LLM_EMBED_API_KEY`（v1.12 指标问数，OpenAI 兼容协议；embedding 端点/密钥未配置时回落主 LLM 值；可被 metric_setting 表覆盖） |
+| databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS`、`ENGINE_SHARED_SECRET`（v1.12 可选，需与 admin 同值） |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
 
 `DB_DRIVER=mysql` 时管理后端把 11 类实体落到同一 MySQL 库的 `databridge_*` 表
 （datasource / sync_task / task_instance / run_log / offset / pipeline / dataflow / data_api /
-data_api_call_day / alert_rule / alert_record + `databridge_id_seq` 取号表），
+data_api_call_day / alert_rule / alert_record + `databridge_id_seq` 取号表；契约 1.12 起另有指标中心 `databridge_metric_*` 12 张表，清单见 1.12，同走自动建表/补列机制），
 启动时逐表 `CREATE TABLE IF NOT EXISTS`（MySQL 5.7+，逐表显式 `utf8mb4 / utf8mb4_unicode_ci`），
 **默认不注入演示种子**（空库起步，见 4.1；`SEED_DEMO=true` 才注入，且仍受「已有数据即跳过」的幂等保护）；
 接口路径、出入参结构与错误码与 `DB_DRIVER=memory` 完全一致（契约不变），
