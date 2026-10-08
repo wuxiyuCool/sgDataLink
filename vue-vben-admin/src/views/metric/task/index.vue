@@ -91,19 +91,37 @@
 
     <TaskModal @register="registerTaskModal" @success="reload" />
 
-    <Modal v-model:visible="runsVisible" :title="`运行记录：${runsTaskName}`" width="960px" :footer="null">
+    <Modal
+      v-model:visible="runsVisible"
+      :width="1000"
+      centered
+      :footer="null"
+      class="runs-modal"
+    >
+      <template #title>
+        <span class="modal-title">
+          <Icon icon="ion:time-outline" :size="18" />
+          运行记录 · {{ runsTaskName }}
+        </span>
+      </template>
       <Table
         :columns="runColumns"
         :data-source="runs"
         :loading="runsLoading"
-        :pagination="{ pageSize: 10 }"
+        :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 条` }"
         row-key="id"
         size="small"
+        :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
-            <Tag :color="record.status === 'success' ? 'success' : record.status === 'failed' ? 'error' : 'processing'">
-              {{ record.status }}
+          <template v-if="column.key === 'trigger'">
+            <Tag :color="record.trigger === 'cron' ? 'purple' : 'blue'" :bordered="false">
+              {{ record.trigger === 'cron' ? '定时' : '手动' }}
+            </Tag>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <Tag :color="record.status === 'success' ? 'success' : record.status === 'failed' ? 'error' : 'processing'" :bordered="false">
+              {{ LAST_STATUS_LABELS[record.status] || record.status }}
             </Tag>
           </template>
           <template v-else-if="column.key === 'createdAt'">{{ formatTime(record.createdAt) }}</template>
@@ -112,7 +130,7 @@
           </template>
         </template>
       </Table>
-      <Collapse v-if="currentSql" ghost class="mt-2">
+      <Collapse v-if="currentSql" ghost class="mt-2 sql-collapse">
         <CollapsePanel key="sql" header="SQL 明细">
           <pre class="sql-block">{{ currentSql }}</pre>
         </CollapsePanel>
@@ -270,13 +288,28 @@
 </script>
 
 <style lang="less" scoped>
+  .modal-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+
+  .sql-collapse {
+    border-top: 1px dashed #e8e8e8;
+  }
+
   .sql-block {
     font-family: Consolas, Monaco, monospace;
     font-size: 12px;
+    line-height: 1.7;
     background: #f6f8fa;
-    padding: 8px 12px;
-    border-radius: 4px;
+    border: 1px solid #eaecef;
+    border-left: 3px solid #1677ff;
+    padding: 10px 14px;
+    border-radius: 6px;
     white-space: pre-wrap;
     word-break: break-all;
+    margin: 0;
   }
 </style>

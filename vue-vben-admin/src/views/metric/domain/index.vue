@@ -88,40 +88,69 @@
 
     <Modal
       v-model:visible="formVisible"
-      :title="formTitle"
+      :width="600"
+      centered
       :confirm-loading="submitting"
       :mask-closable="false"
+      ok-text="保存"
+      cancel-text="取消"
+      class="domain-modal"
       @ok="handleSubmit"
     >
-      <Form ref="formRef" :model="formState" :rules="formRules" layout="vertical" class="mt-3">
-        <FormItem label="域名称" name="name">
-          <Input v-model:value="formState.name" placeholder="如 交易域" />
-        </FormItem>
-        <FormItem label="编码（创建后不可改）" name="code">
-          <Input
-            v-model:value="formState.code"
-            :disabled="!!formState.id"
-            placeholder="^[a-z][a-z0-9_]{1,30}$，如 trade"
-          />
-        </FormItem>
-        <FormItem label="父域" name="parentId">
-          <TreeSelect
-            v-model:value="formState.parentId"
-            :tree-data="parentOptions"
-            tree-default-expand-all
-            allow-clear
-            placeholder="留空 = 根域"
-            style="width: 100%"
-          />
-        </FormItem>
-        <FormItem label="负责人" name="owner">
-          <Input v-model:value="formState.owner" placeholder="如 data-team" />
-        </FormItem>
+      <template #title>
+        <span class="modal-title">
+          <Icon :icon="formState.id ? 'ion:create-outline' : 'ion:add-circle-outline'" :size="18" />
+          {{ formTitle }}
+        </span>
+      </template>
+      <Alert
+        class="mb-4"
+        type="info"
+        show-icon
+        :bordered="false"
+        message="域编码创建后不可修改，并作为该域界面建表的物理表前缀；删除时若域下已有模型/指标将被拒绝"
+      />
+      <Form ref="formRef" :model="formState" :rules="formRules" layout="vertical">
+        <Row :gutter="16">
+          <Col :span="12">
+            <FormItem label="域名称" name="name">
+              <Input v-model:value="formState.name" placeholder="如 交易域" />
+            </FormItem>
+          </Col>
+          <Col :span="12">
+            <FormItem label="编码（建表前缀）" name="code">
+              <Input
+                v-model:value="formState.code"
+                :disabled="!!formState.id"
+                placeholder="^[a-z][a-z0-9_]{1,30}$，如 trade"
+              />
+            </FormItem>
+          </Col>
+          <Col :span="12">
+            <FormItem label="父域" name="parentId">
+              <TreeSelect
+                v-model:value="formState.parentId"
+                :tree-data="parentOptions"
+                tree-default-expand-all
+                allow-clear
+                placeholder="留空 = 根域"
+                style="width: 100%"
+              />
+            </FormItem>
+          </Col>
+          <Col :span="6">
+            <FormItem label="排序" name="sort" extra="小的排前">
+              <InputNumber v-model:value="formState.sort" :min="0" :max="9999" style="width: 100%" />
+            </FormItem>
+          </Col>
+          <Col :span="6">
+            <FormItem label="负责人" name="owner">
+              <Input v-model:value="formState.owner" placeholder="如 data-team" />
+            </FormItem>
+          </Col>
+        </Row>
         <FormItem label="备注" name="remark">
           <Textarea v-model:value="formState.remark" :rows="2" placeholder="业务口径说明" />
-        </FormItem>
-        <FormItem label="排序（小的在前）" name="sort">
-          <InputNumber v-model:value="formState.sort" :min="0" :max="9999" style="width: 100%" />
         </FormItem>
       </Form>
     </Modal>
@@ -132,6 +161,7 @@
   import { computed, onMounted, reactive, ref } from 'vue'
 
   import {
+    Alert,
     Button,
     Card,
     Col,
@@ -163,6 +193,7 @@
     type MetricModel,
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
+  import { Icon } from '/@/components/Icon'
   import { PageWrapper } from '/@/components/Page'
   import { useMessage } from '/@/hooks/web/useMessage'
 
@@ -402,5 +433,12 @@
     color: #999;
     font-size: 12px;
     font-weight: normal;
+  }
+
+  .modal-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
   }
 </style>

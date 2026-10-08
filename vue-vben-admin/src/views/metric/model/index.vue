@@ -90,7 +90,19 @@
     <ModelModal @register="registerModelModal" @success="reload" />
     <ColumnsModal @register="registerColumnsModal" @success="reload" />
 
-    <Modal v-model:visible="dataVisible" :title="`数据预览：${previewModel?.name || ''}`" width="900px" :footer="null">
+    <Modal
+      v-model:visible="dataVisible"
+      :width="980"
+      centered
+      :footer="null"
+      class="preview-modal"
+    >
+      <template #title>
+        <span class="modal-title">
+          <Icon icon="ion:eye-outline" :size="18" />
+          数据预览 · {{ previewModel?.name || '' }}
+        </span>
+      </template>
       <Alert
         v-if="previewError"
         type="error"
@@ -98,15 +110,22 @@
         :message="previewError"
         class="mb-3"
       />
-      <div v-if="previewResult?.sql" class="sql-block mb-3">{{ previewResult.sql }}</div>
+      <div v-if="previewResult?.sql" class="sql-block mb-3">
+        <span class="sql-label">执行 SQL</span>
+        <code>{{ previewResult.sql }}</code>
+      </div>
+      <div v-if="previewResult?.rows" class="preview-meta mb-2">
+        共 <b>{{ previewRows.length }}</b> 行 · 只读预览，最多返回前 100 行
+      </div>
       <Table
         v-if="previewResult?.rows"
         :columns="previewColumns"
         :data-source="previewRows"
-        :pagination="{ pageSize: 10 }"
+        :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 行` }"
         size="small"
         :scroll="{ x: true }"
         row-key="__idx"
+        :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
       />
     </Modal>
   </PageWrapper>
@@ -299,12 +318,43 @@
 </script>
 
 <style lang="less" scoped>
+  .modal-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+
+  .preview-meta {
+    color: #8c8c8c;
+    font-size: 12px;
+
+    b {
+      color: #1677ff;
+    }
+  }
+
   .sql-block {
     font-family: Consolas, Monaco, monospace;
     font-size: 12px;
     background: #f6f8fa;
-    padding: 8px 12px;
-    border-radius: 4px;
+    border: 1px solid #eaecef;
+    border-left: 3px solid #1677ff;
+    padding: 10px 14px;
+    border-radius: 6px;
     word-break: break-all;
+
+    .sql-label {
+      display: block;
+      color: #8c8c8c;
+      font-size: 11px;
+      margin-bottom: 4px;
+      letter-spacing: 1px;
+    }
+
+    code {
+      background: transparent;
+      color: #24292e;
+    }
   }
 </style>

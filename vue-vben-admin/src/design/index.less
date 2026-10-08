@@ -42,3 +42,25 @@ svg,
 span {
   outline: none;
 }
+
+// 指标中心原生弹窗统一精修（域表单/数据预览/运行记录）
+.domain-modal,
+.preview-modal,
+.runs-modal {
+  .ant-modal-content {
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .ant-modal-header {
+    border-radius: 10px 10px 0 0;
+  }
+
+  .ant-modal-body {
+    padding-top: 12px;
+  }
+
+  .striped-row > td {
+    background: rgb(0 0 0 / 2.5%);
+  }
+}

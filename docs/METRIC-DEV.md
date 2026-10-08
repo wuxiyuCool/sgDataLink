@@ -592,6 +592,8 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 
 **实施进度（2026-10-08）**：M0~M6b ✅（`feat/metric-center`；六套件回归 base40/model39/compile44/sql19/task29/chat19 全绿）。问数对外服务 ✅（X-CHAT-KEY 用户绑定 key/文档中心自描述含 curl 模板/审计仅 admin，`test-chat-api.js` 19/19）。剩：浏览器人工验收 + M7 发版。
 
+**前端 UI 精修（2026-10-08）**：指标中心三个原生弹窗改版——域表单（600 宽居中/图标标题/提示条/两列栅格）、数据预览（980 宽/执行 SQL 代码块/行数说明/斑马纹）、运行记录（1000 宽/触发与状态中文 Tag/SQL 明细美化）；统一圆角与斑马纹样式收进 `src/design/index.less`（antd Modal 内容在 scoped 样式外，必须全局选择器）。web dist 已重打包 `deploy/web-dist/web-dist.tar.gz`。
+
 ## 12. 红线汇总（AI 实施时必须遵守）
 
 1. `docs/API.md` 是唯一契约真源：先写契约再实现，三端同步改。
