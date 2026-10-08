@@ -9,6 +9,7 @@
  * 脚本自建有后缀的 demo 物理表并在结束时整体清理（表/指标/域/模型/数据源/版本）。 */
 process.env.DB_DRIVER = 'mysql'
 const db = require('../../node-express-boilerplate/src/db/mysql')
+const metricCompiler = require('../../node-express-boilerplate/src/services/metricCompiler.service')
 
 const BASE = process.env.BASE || 'http://127.0.0.1:3001/api/v1'
 const ADMIN_USER = process.env.ADMIN_USER || 'admin'
@@ -191,6 +192,32 @@ const main = async () => {
   console.log('== dashboard 指标计数 ==')
   const dash = await req('/metric-dashboard', { token })
   check('dashboard 统计到 COMPOSITE/ATOMIC', dash.json.result.metrics.total > 5 && dash.json.result.metrics.byType.COMPOSITE >= 2, JSON.stringify(dash.json.result.metrics))
+
+  console.log('== Oracle 方言编译（不连真库，进程内 compileMetric）==')
+  const oraDs = await req('/datasources', {
+    method: 'POST', token,
+    body: { name: `联调指标数据源-${RUN}-ora`, type: 'oracle', host: '127.0.0.1', port: 1521, database: 'ORCLPDB', username: 'scott', password: 'tiger' },
+  })
+  check('建 oracle 数据源', oraDs.status === 200, oraDs.text.slice(0, 160))
+  const oraModel = await req('/metric-models', {
+    method: 'POST', token,
+    body: {
+      name: '联调指标模型Oracle', datasourceId: oraDs.json.result.id, domainId: dom.json.result.id, layer: 'DWD', tableName: 'HR_PROD_MATERIAL',
+      columns: [
+        { columnName: 'MATERIAL_WEIGHT', dataType: 'NUMBER', role: 'measure', aggDefault: 'sum' },
+        { columnName: 'PRODUCE_DT', dataType: 'DATE', role: 'time' },
+      ],
+    },
+  })
+  check('建 oracle 模型（手工列，不 introspect）', oraModel.status === 200, oraModel.text.slice(0, 160))
+  const oraMetric = await mk({ code: `${RUN}_ora_wt`, name: '钢捆重量', defineType: 'MEASURE', domainId: dom.json.result.id, defineParams: { modelId: oraModel.json.result.id, measureColumn: 'MATERIAL_WEIGHT', agg: 'sum', timeColumn: 'PRODUCE_DT' }, status: 'online' }, 'oracle ATOMIC 建指标')
+  const oraSql = await metricCompiler.compileMetric(oraMetric.id, { dateRange: { start: '2026-10-01', end: '2026-10-10' } })
+  check('oracle dialect 标注', oraSql.dialect === 'oracle', oraSql.dialect)
+  check('Oracle 行数用 FETCH FIRST 非 LIMIT', /FETCH FIRST \d+ ROWS ONLY/.test(oraSql.sql) && !/LIMIT/.test(oraSql.sql), oraSql.sql)
+  check('Oracle 日期包 TO_DATE', /TO_DATE\('2026-10-01','YYYY-MM-DD'\)/.test(oraSql.sql) && /TO_DATE\('2026-10-10','YYYY-MM-DD'\)/.test(oraSql.sql), oraSql.sql)
+  // 对照：mysql 模型仍用 LIMIT + 裸字符串
+  const mySql = await metricCompiler.compileMetric(orderAmt.id, { dateRange: { start: '2026-10-01', end: '2026-10-10' } })
+  check('mysql 仍 LIMIT + 字符串日期（无回归）', /LIMIT \d+/.test(mySql.sql) && /BETWEEN '2026-10-01' AND '2026-10-10'/.test(mySql.sql) && !/TO_DATE|FETCH FIRST/.test(mySql.sql), mySql.sql)
 
   console.log('== 清理 ==')
   await cleanup()

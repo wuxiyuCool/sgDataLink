@@ -596,6 +596,8 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 
 **vben 组件化 + 演示增强（2026-10-08）**：① 三个弹窗全部迁到 vben `BasicModal + useModal`（用户规则：UI 一律优先 vben 封装组件，见记忆 feedback-vben-ui-components；BasicModal 的 class/wrapClassName 到不了弹窗 DOM——`useAttrs` 过滤 class，圆角等用内容根标记类 + `:has()` 全局命中）。② 每页新增「使用指南」折叠卡（共享 `views/metric/components/GuideCard.vue` + 文案集中 `views/metric/guides.ts`）。③ 演示数据扩充：`seed-metric-demo.js` 增加派生指标 dm_paid_east（基底 dm_paid+region 过滤）、两个物化任务（dm_region_sum overwrite / dm_region_daily upsert+BETWEEN+cron+fill），并各执行一次留运行记录（日汇总含 成功→失败→成功 三条）。④ 新增 `docs/METRIC-DEMO.md` 逐页走查清单。⑤ 域树逐层新增：节点悬停「+」直接建子域（右键菜单保留）；seed 固化常驻层级 dmtrade→dm_pay→dm_pay_channel；修复回归套件清理缺陷（sql/task 用 `code=RUN` 精确码逃过 `RUN_%` 清理，各域清理统一改 `RUN%` 前缀清扫 + model 套件加空域全库兜底清扫）。
 
+**验收修复批3（2026-10-08）· Oracle 方言编译**：用户用制造域真实 Oracle 表（HR_PROD_MATERIAL）建指标试跑，暴露编译器两处 MySQL 假设：① `buildSelect` 无条件拼 `LIMIT n` → Oracle 报 ORA-00933（SQL 未正确结束）；② `timeFilter` 生成 `日期列 BETWEEN 'YYYY-MM-DD' AND ...` 裸字符串比较 → Oracle 报 ORA-01861（字面量与格式不匹配）。修复：编译器按数据源 type 出方言——Oracle 行数用 `FETCH FIRST n ROWS ONLY`（置于 ORDER BY 之后）、日期包 `TO_DATE('...','YYYY-MM-DD')`；MySQL 路径完全不变。`timeFilter` 加可选第三参 `oracle=false`（向后兼容，无外部调用者），标量/合并/原子三处调用点透传数据源方言。`test-metric-compile` 新增 7 条进程内 `compileMetric` Oracle 断言（不连真库，建 oracle 数据源+手工列模型+指标，断言 FETCH FIRST/TO_DATE 且 mysql 对照仍 LIMIT+字符串），套件 44→51 全绿；sql/task/chat 复跑无回归。注：用户该指标另有一处 `exted_col7` 笔误（真实列 EXTEND_COL7），属数据录入非平台缺陷，界面改过滤条件即可。
+
 ## 12. 红线汇总（AI 实施时必须遵守）
 
 1. `docs/API.md` 是唯一契约真源：先写契约再实现，三端同步改。

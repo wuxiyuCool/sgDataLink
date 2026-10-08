@@ -34,22 +34,24 @@ const assertDate = (label, value) => {
   if (!DATE_PATTERN.test(String(value || ''))) throw paramInvalid(`${label} 需为 YYYY-MM-DD`);
 };
 
-/** 时间过滤（BETWEEN/>=/<=）；列统一加 t. 前缀 */
-const timeFilter = (timeColumn, dateRange) => {
+/** 时间过滤（BETWEEN/>=/<=）；列统一加 t. 前缀；oracle=true 时日期包 TO_DATE */
+const timeFilter = (timeColumn, dateRange, oracle = false) => {
   if (!dateRange || (!dateRange.start && !dateRange.end)) return null;
   if (!timeColumn) throw paramInvalid('模型未配置时间列，无法按时间范围编译（可在模型上设置 timeColumn）');
   const col = `t.${timeColumn}`;
+  // Oracle 日期列不能与裸字符串比较（ORA-01861），须包 TO_DATE；MySQL 用字符串字面量即可
+  const lit = (v) => (oracle ? `TO_DATE('${v}','YYYY-MM-DD')` : `'${v}'`);
   if (dateRange.start && dateRange.end) {
     assertDate('dateRange.start', dateRange.start);
     assertDate('dateRange.end', dateRange.end);
-    return `${col} BETWEEN '${dateRange.start}' AND '${dateRange.end}'`;
+    return `${col} BETWEEN ${lit(dateRange.start)} AND ${lit(dateRange.end)}`;
   }
   if (dateRange.start) {
     assertDate('dateRange.start', dateRange.start);
-    return `${col} >= '${dateRange.start}'`;
+    return `${col} >= ${lit(dateRange.start)}`;
   }
   assertDate('dateRange.end', dateRange.end);
-  return `${col} <= '${dateRange.end}'`;
+  return `${col} <= ${lit(dateRange.end)}`;
 };
 
 const isOracle = async (datasourceId) => {
@@ -202,7 +204,8 @@ const expandScalarExpr = async (metric, dateRange, visited) => {
       const leaf = await resolveLeaf(child.id, new Set());
       if (!leaf) throw paramInvalid(`指标 ${code} 无法折叠为聚合叶子`);
       datasourceId = datasourceId || leaf.datasourceId;
-      const tf = timeFilter(leaf.timeColumn, dateRange);
+      // eslint-disable-next-line no-await-in-loop
+      const tf = timeFilter(leaf.timeColumn, dateRange, await isOracle(leaf.datasourceId));
       frag = `(SELECT ${leaf.aggExpr} FROM ${leaf.table} t${tf ? ` WHERE ${tf}` : ''})`;
     }
     expr = expr.replace(`\${${code}}`, frag);
@@ -210,11 +213,16 @@ const expandScalarExpr = async (metric, dateRange, visited) => {
   return { expr, datasourceId };
 };
 
-const buildSelect = ({ selectDims, expr, code, table, whereParts, limit }) =>
-  `SELECT ${[...selectDims, `${expr} AS ${code}`].join(', ')} FROM ${table} t` +
-  `${whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''}` +
-  `${selectDims.length ? ` GROUP BY ${selectDims.join(', ')}` : ''}` +
-  `${selectDims.length ? ` ORDER BY ${selectDims.join(', ')}` : ''} LIMIT ${limit}`;
+const buildSelect = ({ selectDims, expr, code, table, whereParts, limit, oracle }) => {
+  // Oracle 无 LIMIT：12c+ 用 FETCH FIRST n ROWS ONLY（须置于 ORDER BY 之后）
+  const limitClause = oracle ? ` FETCH FIRST ${limit} ROWS ONLY` : ` LIMIT ${limit}`;
+  return (
+    `SELECT ${[...selectDims, `${expr} AS ${code}`].join(', ')} FROM ${table} t` +
+    `${whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''}` +
+    `${selectDims.length ? ` GROUP BY ${selectDims.join(', ')}` : ''}` +
+    `${selectDims.length ? ` ORDER BY ${selectDims.join(', ')}` : ''}${limitClause}`
+  );
+};
 
 /**
  * 编译入口。preview 与后续 M3 执行、ChatBI 翻译共用此出口。
@@ -229,13 +237,15 @@ const compileMetric = async (metricId, options = {}) => {
     const leaf = await resolveLeaf(metric.id, new Set());
     assertDimensions(dimensions, leaf.columns, leaf.allowedDimensions);
     const ds = await datasourceRepository.getById(leaf.datasourceId);
+    const oracle = Boolean(ds && ds.type === 'oracle');
     const sql = buildSelect({
       selectDims: dimensions.map((dim) => `t.${dim}`),
       expr: leaf.aggExpr,
       code: metric.code,
       table: leaf.table,
-      whereParts: [timeFilter(leaf.timeColumn, dateRange)].filter(Boolean),
+      whereParts: [timeFilter(leaf.timeColumn, dateRange, oracle)].filter(Boolean),
       limit: safeLimit,
+      oracle,
     });
     return {
       sql,
@@ -256,13 +266,15 @@ const compileMetric = async (metricId, options = {}) => {
       assertDimensions(dimensions, model.columns, dimScope);
     }
     const ds = await datasourceRepository.getById(merged.scope.datasourceId);
+    const oracle = Boolean(ds && ds.type === 'oracle');
     const sql = buildSelect({
       selectDims: dimensions.map((dim) => `t.${dim}`),
       expr: merged.expr,
       code: metric.code,
       table: model.tableName,
-      whereParts: [timeFilter(merged.scope.timeColumn, dateRange)].filter(Boolean),
+      whereParts: [timeFilter(merged.scope.timeColumn, dateRange, oracle)].filter(Boolean),
       limit: safeLimit,
+      oracle,
     });
     return {
       sql,
