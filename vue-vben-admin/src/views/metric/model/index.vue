@@ -115,6 +115,8 @@
 <script lang="ts" setup>
   import { computed, onMounted, reactive, ref } from 'vue'
 
+  import { useRoute } from 'vue-router'
+
   import {
     Alert,
     Button,
@@ -159,6 +161,10 @@
     layer: undefined as string | undefined,
     keyword: undefined as string | undefined,
   })
+
+  // 域管理页「在本域新建模型」跳转带 ?domainId= 时预置筛选
+  const route = useRoute()
+  if (route.query.domainId) query.domainId = String(route.query.domainId)
 
   const domainOptions = ref<any[]>([])
 
