@@ -706,7 +706,8 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 - `code` 全库唯一、`^[a-z][a-z0-9_]{2,63}$`、创建后不可改——是复合公式 `${code}` 引用的锚点。
 - `dataFormat` ∈ `DECIMAL`（默认）| `PERCENT` | `THOUSANDTH`，仅用于展示格式；留空按 DECIMAL 存储。
-- COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
+- COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF/NVL/IFNULL/DECODE/TRUNC/GREATEST/LEAST/MOD/SUBSTR/SUBSTRING/LENGTH/CONCAT/TO_NUMBER，跨 MySQL/Oracle 通用；公式字符集不含引号故字符串常量不适用），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
+- **跨库方言三层处理**：① 语法探针（node-sql-parser）对 mysql/oracle 函数**宽容互认**（实测两方言都能解析 NVL/TO_CHAR/TO_DATE/DECODE/TRUNC/REGEXP_LIKE/`||`），故探针不按方言分支；② 编译期把 `NVL(`/`IFNULL(` **归一为 `COALESCE(`**（两库通用；不归一则 MySQL 执行期报 `FUNCTION xxx.NVL does not exist`），行数与日期按数据源方言出产物（Oracle `FETCH FIRST n ROWS ONLY` + `TO_DATE(...)`，MySQL `LIMIT n` + 字符串日期）；③ 无法等价改写的方言专有函数（Oracle DECODE/NVL2/TO_CHAR/TO_DATE/TO_NUMBER/TRUNC/REGEXP_LIKE/SYSDATE/ROWNUM，MySQL DATE_FORMAT/STR_TO_DATE/GROUP_CONCAT/SUBSTRING_INDEX）在 `POST /metrics/validate` 与保存响应里回 **warnings**（不阻断保存），提示换库执行会报错。
 
 **路由**：
 

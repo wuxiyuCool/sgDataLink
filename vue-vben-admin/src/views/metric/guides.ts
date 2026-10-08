@@ -49,6 +49,8 @@ export const PAGE_GUIDES: Record<string, PageGuide> = {
       '校验：保存即触发语法探针/字段角色/循环依赖/跨数据源校验，错误会逐条列出；草稿指标不会被新公式引用。',
       '详情弹窗：公式展开树（子指标回填取值）、血缘图、试跑（编译 SQL 并真实执行）、版本历史一键回滚。',
       '演示数据：dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额（原子）、dm_unit 件单价=${dm_amt}/${dm_cnt}（复合）、dm_paid_east 华东实收额（派生，血缘页可见对 dm_paid 的依赖）。',
+      '抄作业：关键字搜 ex_ 可筛出 15 条「示例指标库」，覆盖原子四种聚合、FIELD 手写表达式、filterSql 编译进 CASE WHEN、派生(继承基底+过滤/时间预设)、复合(四则/比率/NULLIF 防除零/CASE 分档/NVL 跨方言/GREATEST)与 dataFormat 三种显示格式——每条的「业务口径」就是配置说明。',
+      '跨库提示：公式里写 NVL/IFNULL 会在编译期自动归一为两库通用的 COALESCE；写 DECODE/TO_CHAR/DATE_FORMAT 等无法等价改写的方言函数时，保存会给出跨库告警（不阻断），换库执行可能报函数不存在。',
     ],
   },
   chat: {

@@ -193,6 +193,40 @@ const main = async () => {
   const dash = await req('/metric-dashboard', { token })
   check('dashboard 统计到 COMPOSITE/ATOMIC', dash.json.result.metrics.total > 5 && dash.json.result.metrics.byType.COMPOSITE >= 2, JSON.stringify(dash.json.result.metrics))
 
+  console.log('== 复合公式标量函数白名单（跨 MySQL/Oracle 方言；仅引用 order_amt/paid_amt 避开删除保护段）==')
+  await mk({ code: `${RUN}_sc_nvl`, name: 'NVL比', defineType: 'METRIC', domainId: dom.json.result.id, expr: `NVL(\${${RUN}_order_amt}, 0) / NULLIF(\${${RUN}_paid_amt}, 0)`, status: 'online' }, 'NVL/NULLIF 复合（Oracle 函数）')
+  await mk({ code: `${RUN}_sc_greatest`, name: '取大值', defineType: 'METRIC', domainId: dom.json.result.id, expr: `GREATEST(\${${RUN}_order_amt}, \${${RUN}_paid_amt})`, status: 'online' }, 'GREATEST 复合')
+  await mk({ code: `${RUN}_sc_mod`, name: '取余', defineType: 'METRIC', domainId: dom.json.result.id, expr: `MOD(\${${RUN}_order_amt}, 7)`, status: 'online' }, 'MOD 复合')
+  await mkFail({ code: `${RUN}_sc_badfn`, name: '坏函数', defineType: 'METRIC', domainId: dom.json.result.id, expr: `SLEEP(\${${RUN}_order_amt})`, status: 'online' }, '非白名单函数 SLEEP → 拒', /不允许的标识符/)
+  await mkFail({ code: `${RUN}_sc_str`, name: '字符串常量', defineType: 'METRIC', domainId: dom.json.result.id, expr: `\${${RUN}_order_amt} + '元'`, status: 'online' }, '公式含引号 → 拒', /非法字符/)
+  // 跨库函数归一：NVL/IFNULL 编译期改写为两库通用的 COALESCE（否则 MySQL 执行期报 FUNCTION does not exist）
+  const scNorm = await mk({ code: `${RUN}_sc_nvl_norm`, name: 'NVL归一', defineType: 'METRIC', domainId: dom.json.result.id, expr: `NVL(\${${RUN}_order_amt}, 0) + IFNULL(\${${RUN}_paid_amt}, 0)`, status: 'online' }, 'NVL+IFNULL 复合（存原样）')
+  const normSql = await metricCompiler.compileMetric(scNorm.id, { dateRange: { start: '2026-10-01', end: '2026-10-31' } })
+  check('NVL/IFNULL 编译归一为 COALESCE', /COALESCE\(/.test(normSql.sql) && !/NVL|IFNULL/.test(normSql.sql), normSql.sql)
+  // 方言专有函数：放行但给跨库告警（DECODE 在白名单内）
+  const warnProbe = await req('/metrics/validate', {
+    method: 'POST', token,
+    body: { code: `${RUN}_warn_probe`, name: '告警探针', domainId: dom.json.result.id, defineType: 'METRIC', expr: `DECODE(\${${RUN}_order_amt}, 1, 0)` },
+  })
+  check(
+    'DECODE 通过校验但带跨库告警',
+    warnProbe.status === 200 && warnProbe.json.result.valid === true
+      && warnProbe.json.result.warnings.some((w) => /Oracle 专有函数 DECODE/.test(w)),
+    JSON.stringify(warnProbe.json.result)
+  )
+  const warnFilter = await req('/metrics/validate', {
+    method: 'POST', token,
+    body: {
+      code: `${RUN}_warn_probe2`, name: '告警探针2', domainId: dom.json.result.id, defineType: 'MEASURE',
+      defineParams: { modelId: model1.json.result.id, measureColumn: 'amt', agg: 'sum', filterSql: "DATE_FORMAT(t.pay_date,'%Y') = '2026'" },
+    },
+  })
+  check(
+    'filterSql 含 MySQL 专有函数也带告警',
+    warnFilter.json.result.warnings.some((w) => /MySQL 专有函数 DATE_FORMAT/.test(w)),
+    JSON.stringify(warnFilter.json.result.warnings)
+  )
+
   console.log('== Oracle 方言编译（不连真库，进程内 compileMetric）==')
   const oraDs = await req('/datasources', {
     method: 'POST', token,

@@ -2,6 +2,9 @@
  * 资产：域 dmtrade + 引用模型 dm_order_dwd（物理表 dm_order_src，刷近 45 天数据）
  *       指标 dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额 / dm_unit 件单价(复合=amt/cnt)
  *       任务 dm_region_sum 按地区汇总(overwrite) / dm_region_daily 地区日汇总(upsert+定时)，并各执行一次留运行记录
+ *       示例指标库 ex_*：15 条覆盖原子(MEASURE 四种聚合/FIELD 手写表达式/带 filterSql)、
+ *         派生(继承基底+过滤、+时间预设)、复合(四则/比率/NULLIF 防除零/CASE 分档/跨方言函数)
+ *         与 dataFormat 三种显示格式，caliber 字段即配置说明书，供界面抄作业
  * 幂等：重复执行=刷新数据 + 复用已有对象；数据源复用库里第一个启用的 mysql 数据源。
  * 跑法（cwd=node-express-boilerplate）：
  *   set -a; source .env; set +a
@@ -116,6 +119,39 @@ const main = async () => {
     caliber: '派生示例：仅华东地区 PAID 订单金额（指标血缘页可见 华东实收额→实收额 依赖）',
   });
   console.log('指标就绪：', [amt, cnt, paid, unit].map((m) => `${m.code}(${m.id})`).join(' '), '+ dm_paid_east(派生)');
+
+  // —— 示例指标库（ex_ 前缀）：覆盖全部定义方式与常见公式写法，供配置时抄作业 ——
+  // 依赖顺序：原子 → 派生 → 复合（复合只能引用 online 指标）
+  const exSpecs = [
+    // 1-4 原子·度量聚合（MEASURE）：四种聚合方式各一例
+    { code: 'ex_sum_amt', name: '示例·订单额合计', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', timeColumn: 'pay_date' }, unit: '元', dataFormat: 'THOUSANDTH', caliber: '【原子·度量聚合】最基础形态：模型+度量列+聚合(sum)。dataFormat=THOUSANDTH 让前端按千分位显示。' },
+    { code: 'ex_cnt_orders', name: '示例·订单笔数', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'id', agg: 'count', timeColumn: 'pay_date' }, unit: '单', caliber: '【原子·度量聚合】计数用 count(主键列)；agg 可选 sum/count/avg/max/min/count_distinct。' },
+    { code: 'ex_avg_ticket', name: '示例·平均单笔', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'avg', timeColumn: 'pay_date' }, unit: '元', dataFormat: 'DECIMAL', caliber: '【原子·度量聚合】avg 直接聚合度量列，不必写成复合除法；dataFormat=DECIMAL 显示两位小数。' },
+    { code: 'ex_max_single', name: '示例·最大单笔', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'max', timeColumn: 'pay_date' }, unit: '元', caliber: '【原子·度量聚合】max/min 取极值，同样支持 filterSql。' },
+    // 5 原子·字段表达式（FIELD）：手写聚合
+    { code: 'ex_uv_region', name: '示例·覆盖区域数', defineType: 'FIELD', defineParams: { modelId, timeColumn: 'pay_date' }, expr: 'COUNT(DISTINCT t.region)', unit: '个', caliber: '【原子·字段表达式】手写聚合表达式（必须含聚合函数，否则 40001）；列名统一加 t. 前缀。' },
+    // 6-7 原子 + 业务过滤（编译进 CASE WHEN）
+    { code: 'ex_paid_amt', name: '示例·已支付金额', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', filterSql: "t.status='PAID'", timeColumn: 'pay_date' }, unit: '元', dataFormat: 'THOUSANDTH', caliber: '【原子+业务过滤】filterSql 编译进聚合内 CASE WHEN（只影响本指标，不影响 WHERE 时间窗）。' },
+    { code: 'ex_cancel_cnt', name: '示例·取消单数', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'id', agg: 'count', filterSql: "t.status='CANCEL'", timeColumn: 'pay_date' }, unit: '单', caliber: '【原子+业务过滤】同表不同过滤条件=不同口径指标，是派生/复合的基础构件。' },
+    // 8-9 派生（DERIVED）：继承基底 + 过滤 / + 时间预设
+    { code: 'ex_east_amt', name: '示例·华东订单额', defineType: 'METRIC', defineParams: { baseMetricId: 'ex_sum_amt', filterSql: "t.region='华东'", timeColumn: 'pay_date' }, expr: '${ex_sum_amt}', unit: '元', caliber: '【派生】defineType=METRIC 且 defineParams.baseMetricId 填基底 code 即自动判为 DERIVED；再叠加 filterSql 限定口径。' },
+    { code: 'ex_recent7_paid', name: '示例·近7天实付额', defineType: 'METRIC', defineParams: { baseMetricId: 'ex_paid_amt', timePreset: { mode: 'RECENT', unit: 'DAY', period: 7 } }, expr: '${ex_paid_amt}', unit: '元', caliber: '【派生+时间预设】timePreset={mode:RECENT,unit:DAY,period:7} 固化默认窗口；mode 也可 BETWEEN 配 start/end。' },
+    // 10-14 复合（COMPOSITE）：四则 / 防除零 / CASE / 百分比 / 跨方言函数
+    { code: 'ex_paid_share', name: '示例·实收占比', defineType: 'METRIC', expr: '${ex_paid_amt} / ${ex_sum_amt}', dataFormat: 'PERCENT', caliber: '【复合·四则】${code} 引用其它在线指标；dataFormat=PERCENT 前端按百分比显示。' },
+    { code: 'ex_unit_price', name: '示例·件单价(留2位)', defineType: 'METRIC', expr: 'ROUND(${ex_sum_amt} / NULLIF(${ex_cnt_orders}, 0), 2)', unit: '元', caliber: '【复合+标量函数】ROUND/NULLIF/ABS/FLOOR/CEIL/COALESCE 等白名单函数可用；NULLIF(x,0) 防除零。' },
+    { code: 'ex_cancel_rate', name: '示例·取消率', defineType: 'METRIC', expr: '${ex_cancel_cnt} / NULLIF(${ex_cnt_orders}, 0)', dataFormat: 'PERCENT', caliber: '【复合·比率】两个原子相除得比率，配 PERCENT 显示；复合公式禁聚合、禁表名/子查询。' },
+    { code: 'ex_big_flag', name: '示例·大额标记', defineType: 'METRIC', expr: 'CASE WHEN ${ex_sum_amt} > 10000 THEN 1 ELSE 0 END', caliber: '【复合·CASE WHEN】公式内支持 CASE WHEN 做分档/打标（仅引用指标，不引列名）。' },
+    { code: 'ex_nvl_safe', name: '示例·NVL防NULL', defineType: 'METRIC', expr: 'NVL(${ex_sum_amt}, 0) / NULLIF(${ex_cnt_orders}, 0)', unit: '元', caliber: '【复合·跨方言函数】NVL(Oracle)/IFNULL(MySQL)/COALESCE(通用) 均在白名单内；语法探针对方言宽容互认，真正方言差异由编译器处理。' },
+    { code: 'ex_greatest_amt', name: '示例·取较大金额', defineType: 'METRIC', expr: 'GREATEST(${ex_sum_amt}, ${ex_paid_amt})', unit: '元', caliber: '【复合·多指标比较】GREATEST/LEAST 对多个指标取极值；MOD/LENGTH/SUBSTR/CONCAT 等标量函数同样可用。' },
+  ];
+  const exCreated = [];
+  // eslint-disable-next-line no-restricted-syntax
+  for (const spec of exSpecs) {
+    // eslint-disable-next-line no-await-in-loop
+    const m = await mkMetric(spec);
+    exCreated.push(`${spec.code}(${m.type})`);
+  }
+  console.log('示例指标库就绪 15 条：', exCreated.join(' '));
 
   // —— 清洗汇总任务演示资产：两个任务各执行一次，任务页/运行记录弹窗有真数据 ——
   const detail = await req(token, `/metric-models/${modelId}`);

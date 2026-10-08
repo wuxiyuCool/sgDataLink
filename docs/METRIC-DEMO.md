@@ -26,6 +26,35 @@ ADMIN_USER=mtlint01 ADMIN_PASS=<密码> BASE=http://127.0.0.1:3001/api/v1 \
 | 交易演示·地区总览 | mtk `dm_region_sum`，overwrite 全量 | 任务管理：写模式 overwrite、成功记录 |
 | 交易演示·地区日汇总 | mtk `dm_region_daily`，upsert+BETWEEN 近14天+cron `0 30 2 * * ?`+fill 补空 | 任务管理：upsert/清洗规则/定时；含 成功→失败→成功 三条运行记录（失败为坏 filter SQL 演示，已修复重跑） |
 
+## 示例指标库（`ex_*` 15 条 · 配置抄作业用）
+
+指标管理页按关键字 `ex_` 或域「交易演示」筛选即可看到。每条的**业务口径(caliber)字段就是一句配置说明**，
+列表里可直接读；全部已用 preview 真跑验证（15/15 成功）。
+
+| code | 类型 | 公式/定义要点 | 演示的配置能力 |
+| --- | --- | --- | --- |
+| `ex_sum_amt` | 原子 | `sum(amt)` + dataFormat=THOUSANDTH | 最基础度量聚合 + 千分位显示 |
+| `ex_cnt_orders` | 原子 | `count(id)` | 计数型指标（agg 可选 sum/count/avg/max/min/count_distinct） |
+| `ex_avg_ticket` | 原子 | `avg(amt)` + DECIMAL | 均值不必写复合除法；两位小数显示 |
+| `ex_max_single` | 原子 | `max(amt)` | 极值型 |
+| `ex_uv_region` | 原子 | FIELD 手写 `COUNT(DISTINCT t.region)` | 字段表达式型原子（必须含聚合函数，列名带 `t.`） |
+| `ex_paid_amt` | 原子 | `sum(amt)` + filterSql `t.status='PAID'` | **业务过滤编译进聚合内 CASE WHEN**（不影响 WHERE 时间窗） |
+| `ex_cancel_cnt` | 原子 | `count(id)` + filterSql CANCEL | 同表不同过滤=不同口径，作复合构件 |
+| `ex_east_amt` | 派生 | baseMetricId=`ex_sum_amt` + filterSql `t.region='华东'` | **派生=defineType METRIC + baseMetricId(填 code)**，自动判 DERIVED |
+| `ex_recent7_paid` | 派生 | base=`ex_paid_amt` + timePreset RECENT/7/DAY | 派生叠加**时间预设**（mode 也可 BETWEEN+start/end） |
+| `ex_paid_share` | 复合 | `${ex_paid_amt} / ${ex_sum_amt}` + PERCENT | 四则比率 + 百分比显示 |
+| `ex_unit_price` | 复合 | `ROUND(${ex_sum_amt} / NULLIF(${ex_cnt_orders},0), 2)` | 标量函数 + **NULLIF 防除零** |
+| `ex_cancel_rate` | 复合 | `${ex_cancel_cnt} / NULLIF(${ex_cnt_orders},0)` | 复合禁聚合/禁表名（写 SUM 会被 400 拒） |
+| `ex_big_flag` | 复合 | `CASE WHEN ${ex_sum_amt} > 10000 THEN 1 ELSE 0 END` | 公式内 CASE WHEN 分档打标 |
+| `ex_nvl_safe` | 复合 | `NVL(${ex_sum_amt},0) / NULLIF(${ex_cnt_orders},0)` | **跨方言函数**：存原样，编译期归一为 COALESCE，MySQL/Oracle 都能跑 |
+| `ex_greatest_amt` | 复合 | `GREATEST(${ex_sum_amt}, ${ex_paid_amt})` | 多指标取极值（MOD/LENGTH/SUBSTR/CONCAT 同理） |
+
+**跨库语法识别要点**（详见 API.md 1.12「跨库方言三层处理」）：语法探针对 MySQL/Oracle 函数宽容互认，
+所以 `NVL`/`IFNULL` 能保存——编译器已在生成 SQL 时归一为两库通用的 `COALESCE`；
+`DECODE`/`TO_CHAR`/`DATE_FORMAT` 这类无法等价改写的，校验会回 **warning** 提示换库执行会报错（不阻断保存）。
+Oracle 侧真实例子：`gk1 钢捆重量`（制造域 / HR_PROD_MATERIAL，filterSql `t.EXTEND_COL7 = 1`），
+编译产物含 `TO_DATE(...)` + `FETCH FIRST 1000 ROWS ONLY`。
+
 ## 逐页走查（每页顶部有「使用指南」折叠卡）
 
 1. **首页概览**：域/模型/指标/任务统计应有真实数字；任务区显示近 24h 成功/失败（刚跑完 seed 即有）；问数区显示近 7 天提问量。

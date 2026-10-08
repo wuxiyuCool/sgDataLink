@@ -21,6 +21,13 @@ const datasourceRepository = require('../repositories/datasource.repository');
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const AGG_CALL = /^(SUM|COUNT|AVG|MAX|MIN)\((DISTINCT )?(.+)\)$/i;
 
+/**
+ * 跨库函数归一：语法探针（node-sql-parser）对方言函数宽容互认，故 Oracle 的 NVL、
+ * MySQL 的 IFNULL 能通过校验却会在对方库执行期报「FUNCTION does not exist」。
+ * 编译期统一改写成两库都支持的 ANSI COALESCE，用户写法保持不变。
+ */
+const normalizeDialectFns = (expr) => String(expr || '').replace(/\b(NVL|IFNULL)\s*\(/gi, 'COALESCE(');
+
 /** 聚合表达式套过滤：SUM(t.a) + f → SUM(CASE WHEN f THEN t.a END)；无法安全包裹时原样返回 */
 const wrapAggWithFilter = (aggExpr, filterSql) => {
   if (!filterSql || !String(filterSql).trim()) return aggExpr;
@@ -146,7 +153,7 @@ const expandCompositeExpr = async (metric, visited) => {
   if (missing.length) throw paramInvalid(`公式引用的指标不在依赖表: ${missing.join(',')}`);
 
   const scope = emptyScope();
-  let expr = String(metric.expr || '');
+  let expr = normalizeDialectFns(metric.expr);
   // refs 逐个替换且每步读库，必须顺序执行
   // eslint-disable-next-line no-restricted-syntax
   for (const code of refs) {
@@ -186,7 +193,7 @@ const expandScalarExpr = async (metric, dateRange, visited) => {
   const byCode = new Map(children.map((child) => [child.code, child]));
   const refs = metricService.parseRefs(metric.expr);
   let datasourceId = null;
-  let expr = String(metric.expr || '');
+  let expr = normalizeDialectFns(metric.expr);
   // eslint-disable-next-line no-restricted-syntax
   for (const code of refs) {
     const child = byCode.get(code);

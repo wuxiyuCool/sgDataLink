@@ -13,12 +13,68 @@ const metricModelRepository = require('../repositories/metricmodel.repository');
 const CODE_PATTERN = /^[a-z][a-z0-9_]{2,63}$/;
 const REF_PATTERN = /\$\{([a-z][a-z0-9_]{2,63})\}/g;
 const AGG_FUNCTIONS = /\b(SUM|COUNT|AVG|MAX|MIN)\s*\(/i;
-const SCALAR_FUNCTIONS = ['COALESCE', 'ROUND', 'ABS', 'FLOOR', 'CEIL', 'NULLIF', 'IF'];
+// 复合公式标量函数白名单：跨 MySQL/Oracle 常用无副作用标量函数（禁聚合/子查询/表名不变）
+const SCALAR_FUNCTIONS = [
+  'COALESCE',
+  'ROUND',
+  'ABS',
+  'FLOOR',
+  'CEIL',
+  'NULLIF',
+  'IF',
+  'NVL',
+  'IFNULL',
+  'DECODE',
+  'TRUNC',
+  'GREATEST',
+  'LEAST',
+  'MOD',
+  'SUBSTR',
+  'SUBSTRING',
+  'LENGTH',
+  'CONCAT',
+  'TO_NUMBER',
+];
 const DEFINED_TYPES = ['MEASURE', 'FIELD', 'METRIC'];
 const TIME_UNITS = ['DAY', 'WEEK', 'MONTH'];
 const TREE_MAX_DEPTH = 8;
 
 const active = (items) => items.filter((item) => !item.delFlag);
+
+/**
+ * 跨库方言告警：语法探针（node-sql-parser）对 mysql/oracle 函数宽容互认，
+ * 因此「写得进、跑不了」的函数只能在保存期提示。NVL/IFNULL 已由编译器归一为
+ * COALESCE（两库通用），不在此列；下列函数无等价改写，需用户按目标库自查。
+ */
+const DIALECT_ONLY_FNS = {
+  DECODE: 'Oracle',
+  NVL2: 'Oracle',
+  TO_CHAR: 'Oracle',
+  TO_DATE: 'Oracle',
+  TO_NUMBER: 'Oracle',
+  TRUNC: 'Oracle',
+  REGEXP_LIKE: 'Oracle',
+  DATE_FORMAT: 'MySQL',
+  STR_TO_DATE: 'MySQL',
+  GROUP_CONCAT: 'MySQL',
+  SUBSTRING_INDEX: 'MySQL',
+};
+// 静态正则（避免动态构造 RegExp）：带括号的函数名 + 无括号的 SYSDATE/ROWNUM 分别匹配
+const DIALECT_FN_CALL_RE =
+  /\b(DECODE|NVL2|TO_CHAR|TO_DATE|TO_NUMBER|TRUNC|REGEXP_LIKE|DATE_FORMAT|STR_TO_DATE|GROUP_CONCAT|SUBSTRING_INDEX)\s*\(/g;
+const DIALECT_BARE_RE = /\b(SYSDATE|ROWNUM)\b/g;
+const dialectFnWarnings = (label, text) => {
+  const upper = String(text || '').toUpperCase();
+  const hits = [];
+  [...upper.matchAll(DIALECT_FN_CALL_RE)].forEach((m) => hits.push(m[1]));
+  [...upper.matchAll(DIALECT_BARE_RE)].forEach((m) => hits.push(m[1]));
+  return [...new Set(hits)].map(
+    (fn) =>
+      `${label}含 ${
+        DIALECT_ONLY_FNS[fn] || 'Oracle'
+      } 专有函数 ${fn}，换库执行会报「函数/标识符不存在」；跨库请优先用 COALESCE/CASE WHEN`
+  );
+};
 
 /** 语法探针：把表达式放进 SELECT 里解析，报错即语法非法 */
 const assertSqlFragment = (label, sql) => {
@@ -263,6 +319,9 @@ const validateMetric = async (data, selfId = null) => {
       }
     }
   }
+
+  warnings.push(...dialectFnWarnings('公式', data.expr));
+  warnings.push(...dialectFnWarnings('过滤条件', defineParams.filterSql));
 
   return { errors, warnings, type, refs };
 };
