@@ -36,6 +36,8 @@ const updateUser = {
       nickname: Joi.string().trim().max(128).allow(''),
       role: Joi.string().valid('admin', 'user'),
       status: Joi.string().valid('active', 'disabled'),
+      // 1.9.5 文档中心免登录访问权限（开通自动发 key，关闭清空）
+      docAccess: Joi.boolean(),
     })
     .min(1),
 };

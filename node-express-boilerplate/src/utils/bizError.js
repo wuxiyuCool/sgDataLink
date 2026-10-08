@@ -68,6 +68,12 @@ const loginFailed = (message) => bizError(ERROR_CODES.LOGIN_FAILED, message);
 /** 40104 账号已禁用（契约 1.11） */
 const accountDisabled = (message) => bizError(ERROR_CODES.ACCOUNT_DISABLED, message);
 
+/** 40102 API Key 不匹配复用为 docKey 不匹配（契约 1.9.5：缺 key/错 key/未开通统一 401/40102） */
+const docKeyInvalid = (message) => bizError(ERROR_CODES.API_KEY_INVALID, message);
+
+/** 40105 docKey 失效：所属用户被禁用或删除（契约 1.9.5） */
+const docKeyStale = (message) => bizError(ERROR_CODES.DOC_KEY_STALE, message);
+
 module.exports = {
   ERROR_CODES,
   bizError,
@@ -87,4 +93,6 @@ module.exports = {
   dataForwardFailed,
   loginFailed,
   accountDisabled,
+  docKeyInvalid,
+  docKeyStale,
 };

@@ -351,6 +351,30 @@ CREATE TABLE IF NOT EXISTS `databridge_login_log` (
   KEY `idx_loginlog_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- 文档中心访问日志（契约 1.9.5）：swagger.json 每次请求（JWT 或 docKey，成败都记）
+-- key 只存掩码（前 6 位+***），完整 key/JWT/口令绝不落库；滚动保留最近 1 万条
+CREATE TABLE IF NOT EXISTS `databridge_doc_access_log` (
+  `seq`         BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`          VARCHAR(64)  NOT NULL COMMENT 'dal- 前缀 + UUID',
+  `user_id`     VARCHAR(64)  NULL COMMENT '认证失败时为 NULL',
+  `username`    VARCHAR(64)  NULL,
+  `auth_type`   VARCHAR(8)   NULL COMMENT 'jwt | docKey；未认证失败为 NULL',
+  `key_masked`  VARCHAR(32)  NULL COMMENT 'docKey 掩码（前 6 位+***）',
+  `ip`          VARCHAR(64)  NULL,
+  `ok`          TINYINT(1)   NOT NULL DEFAULT 0,
+  `http_status` INT          NULL,
+  `biz_code`    INT          NULL,
+  `keyword`     VARCHAR(64)  NULL COMMENT '请求携带的 path/名称模糊词',
+  `user_agent`  VARCHAR(255) NULL,
+  `error_msg`   VARCHAR(255) NULL,
+  `created_at`  DATETIME(3)  NULL,
+  `extra`       JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_docaccesslog_id` (`id`),
+  KEY `idx_doclog_username` (`username`, `created_at`),
+  KEY `idx_doclog_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- 平台用户（契约 1.11）：密码只存 bcrypt 哈希，明文永不落库；username 唯一由应用层校验 + 本索引兜底
 CREATE TABLE IF NOT EXISTS `databridge_user` (
   `seq`                   BIGINT       NOT NULL AUTO_INCREMENT,
@@ -361,6 +385,9 @@ CREATE TABLE IF NOT EXISTS `databridge_user` (
   `role`                  VARCHAR(16)  NOT NULL DEFAULT 'user' COMMENT 'admin | user',
   `status`                VARCHAR(16)  NOT NULL DEFAULT 'active' COMMENT 'active | disabled',
   `must_change_password`  TINYINT(1)   NULL COMMENT '1=新建/被重置后首登需改密',
+  `doc_access`            TINYINT(1)   NULL COMMENT '1.9.5 文档中心免登录访问权限（admin 开通）',
+  `doc_key`               VARCHAR(64)  NULL COMMENT '1.9.5 dok- 前缀个人文档密钥，明文只回本人；关闭权限即清空',
+  `doc_key_updated_at`    DATETIME(3)  NULL,
   `last_login_at`         DATETIME(3)  NULL,
   `created_at`            DATETIME(3)  NULL,
   `updated_at`            DATETIME(3)  NULL,

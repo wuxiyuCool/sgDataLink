@@ -23,6 +23,10 @@ const store = defineStore({
     role: {},
     status: {},
     mustChangePassword: { type: 'bool' },
+    /** 1.9.5 文档中心免登录访问：权限位 + 个人 docKey（明文列，仅回本人） */
+    docAccess: { type: 'bool' },
+    docKey: {},
+    docKeyUpdatedAt: { type: 'datetime' },
     lastLoginAt: { type: 'datetime' },
     createdAt: { type: 'datetime' },
     updatedAt: { type: 'datetime' },
@@ -56,6 +60,13 @@ const getByUsername = async (username) => {
   return rows.length ? rows[0] : null;
 };
 
+/** 按 docKey 精确查（契约 1.9.5 免登录取文档）；空 key 直接未命中，绝不退化成全表 */
+const getByDocKey = async (docKey) => {
+  if (!docKey) return null;
+  const rows = await store.find({ filters: { docKey: String(docKey) } });
+  return rows.length ? rows[0] : null;
+};
+
 const create = (data) => {
   const timestamp = nowIso();
   return store.insert({
@@ -77,4 +88,4 @@ const update = async (id, patch = {}) => {
 
 const remove = (id) => store.deleteById(id);
 
-module.exports = { list, find, page, getById, getByUsername, count, create, update, remove };
+module.exports = { list, find, page, getById, getByUsername, getByDocKey, count, create, update, remove };

@@ -10,6 +10,8 @@ export interface PlatformUser {
   role: 'admin' | 'user'
   status: 'active' | 'disabled'
   mustChangePassword?: boolean
+  /** 1.9.5 文档中心免登录访问权限（key 明文走 /auth/doc-key，不在这里） */
+  docAccess?: boolean
   lastLoginAt?: string | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -43,7 +45,7 @@ export function createPlatformUserApi(data: {
 
 export function updatePlatformUserApi(
   id: string,
-  data: { nickname?: string; role?: string; status?: string },
+  data: { nickname?: string; role?: string; status?: string; docAccess?: boolean },
 ) {
   return databridgeHttp.put<PlatformUser>({ url: `${Api.Users}/${id}`, data })
 }
@@ -79,5 +81,59 @@ export interface LoginLogPageParams {
 /** GET /auth/login-logs（JWT+admin，滚动保留 1 万条） */
 export function getLoginLogsApi(params: LoginLogPageParams = {}) {
   return databridgeHttp.get<DatabridgePageResult<LoginLogItem>>({ url: Api.LoginLogs, params })
+}
+
+/** 契约 1.9.5 本人文档 Key 信息（明文只在 /auth/doc-key* 出现） */
+export interface MyDocKeyInfo {
+  docAccess: boolean
+  docKey?: string | null
+  updatedAt?: string | null
+}
+
+/** 文档访问日志单项（GET /data-apis/swagger-logs，admin） */
+export interface DocAccessLogItem {
+  id: string
+  userId?: string | null
+  username?: string | null
+  authType?: 'jwt' | 'docKey' | null
+  keyMasked?: string | null
+  ip?: string | null
+  ok: boolean
+  httpStatus?: number | null
+  bizCode?: number | null
+  keyword?: string | null
+  userAgent?: string | null
+  errorMsg?: string | null
+  createdAt?: string | null
+}
+
+export interface DocAccessLogPageParams {
+  keyword?: string
+  result?: 'success' | 'error'
+  authType?: 'jwt' | 'docKey'
+  startTime?: string
+  endTime?: string
+  page?: number
+  size?: number
+}
+
+enum DocApi {
+  DocKey = '/auth/doc-key',
+  SwaggerLogs = '/data-apis/swagger-logs',
+}
+
+/** GET /auth/doc-key：本人查看文档权限与 key */
+export function getMyDocKeyApi() {
+  return databridgeHttp.get<MyDocKeyInfo>({ url: DocApi.DocKey })
+}
+
+/** POST /auth/doc-key/refresh：本人刷新 key（旧 key 立即失效） */
+export function refreshMyDocKeyApi() {
+  return databridgeHttp.post<MyDocKeyInfo>({ url: `${DocApi.DocKey}/refresh` })
+}
+
+/** GET /data-apis/swagger-logs：文档访问日志（JWT+admin） */
+export function getSwaggerLogsApi(params: DocAccessLogPageParams = {}) {
+  return databridgeHttp.get<DatabridgePageResult<DocAccessLogItem>>({ url: DocApi.SwaggerLogs, params })
 }
 

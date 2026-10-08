@@ -63,6 +63,11 @@
             </Tag>
             <Tag v-if="record.mustChangePassword" color="warning">待改密</Tag>
           </template>
+          <template v-else-if="column.key === 'docAccess'">
+            <Tag :color="record.docAccess ? 'blue' : 'default'">
+              {{ record.docAccess ? '已开通' : '未开通' }}
+            </Tag>
+          </template>
           <template v-else-if="column.key === 'lastLoginAt'">
             {{ formatTime(record.lastLoginAt) }}
           </template>
@@ -149,6 +154,77 @@
             </template>
           </Table>
         </TabPane>
+
+        <TabPane key="doclogs" tab="文档访问日志">
+          <Alert
+            class="mb-3"
+            type="info"
+            show-icon
+            message="GET /data-apis/swagger.json 每次访问（登录态 JWT 或文档 Key）都会记录，成败均含；key 只存掩码（前 6 位+***），完整 key 绝不落库；滚动保留最近 1 万条（契约 1.9.5）"
+          />
+          <Form layout="inline" class="mb-3 gap-y-2" @finish="handleDocLogSearch">
+            <FormItem label="关键字" name="docKeyword">
+              <Input v-model:value="docLogQuery.keyword" allow-clear placeholder="用户名或 IP" style="width: 170px" />
+            </FormItem>
+            <FormItem label="结果" name="docResult">
+              <Select v-model:value="docLogQuery.result" :options="LOG_RESULT_OPTIONS" allow-clear placeholder="全部" style="width: 100px" />
+            </FormItem>
+            <FormItem label="方式" name="docAuthType">
+              <Select v-model:value="docLogQuery.authType" :options="AUTH_TYPE_OPTIONS" allow-clear placeholder="全部" style="width: 110px" />
+            </FormItem>
+            <FormItem label="时间" name="docRange">
+              <RangePicker
+                v-model:value="docLogRangeValue"
+                show-time
+                value-format="YYYY-MM-DD HH:mm:ss"
+                :placeholder="['开始时间', '结束时间']"
+                style="width: 350px"
+              />
+            </FormItem>
+            <FormItem>
+              <Space>
+                <Button type="primary" html-type="submit">查询</Button>
+                <Button @click="handleDocLogReset">重置</Button>
+              </Space>
+            </FormItem>
+          </Form>
+          <Table
+            :columns="docLogColumns"
+            :data-source="docLogDataSource"
+            :loading="docLogLoading"
+            :pagination="docLogGetPagination"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 1200 }"
+            @change="docLogHandleTableChange"
+          >
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'createdAt'">
+                {{ formatTime(record.createdAt) }}
+              </template>
+              <template v-else-if="column.key === 'authType'">
+                <Tag :color="record.authType === 'docKey' ? 'purple' : 'blue'">
+                  {{ record.authType === 'docKey' ? '文档Key' : record.authType === 'jwt' ? '登录态' : '未认证' }}
+                </Tag>
+              </template>
+              <template v-else-if="column.key === 'keyMasked'">
+                <span class="mono">{{ record.keyMasked || '-' }}</span>
+              </template>
+              <template v-else-if="column.key === 'ok'">
+                <Tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? '成功' : '失败' }}</Tag>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <Space :size="4">
+                  <Tag :color="record.ok ? 'success' : 'error'">{{ record.httpStatus ?? '-' }}</Tag>
+                  <Tag v-if="record.bizCode" color="volcano">{{ record.bizCode }}</Tag>
+                </Space>
+              </template>
+              <template v-else-if="column.key === 'errorMsg'">
+                {{ record.errorMsg || '-' }}
+              </template>
+            </template>
+          </Table>
+        </TabPane>
       </Tabs>
     </Card>
 
@@ -181,6 +257,13 @@
             :options="STATUS_OPTIONS"
             :disabled="editRow.id === currentUserId"
           />
+        </FormItem>
+        <FormItem v-if="editRow" label="文档中心访问" name="docAccess">
+          <Switch v-model:checked="formState.docAccess" />
+          <div class="mt-1 text-gray-500">
+            开通后自动为该用户生成个人文档 Key（本人可在文档中心页查看/刷新，用于免登录拉取
+            swagger.json）；关闭权限或禁用账号，key 立即作废
+          </div>
         </FormItem>
       </Form>
     </Modal>
@@ -220,6 +303,7 @@
     Popconfirm,
     Select,
     Space,
+    Switch,
     Table,
     Tabs,
     Tag,
@@ -236,8 +320,8 @@
     resetPlatformUserPasswordApi,
     updatePlatformUserApi,
   } from '/@/api/databridge/user'
-  import { getLoginLogsApi } from '/@/api/databridge/user'
-  import type { LoginLogItem, PlatformUser } from '/@/api/databridge/user'
+  import { getLoginLogsApi, getSwaggerLogsApi } from '/@/api/databridge/user'
+  import type { DocAccessLogItem, LoginLogItem, PlatformUser } from '/@/api/databridge/user'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { usePagedFetch } from '../hooks/usePagedFetch'
   import { formatTime } from '../data'
@@ -264,6 +348,7 @@
     { title: '昵称', dataIndex: 'nickname', width: 140, customRender: ({ text }) => text || '-' },
     { title: '角色', key: 'role', dataIndex: 'role', width: 110 },
     { title: '状态', key: 'status', dataIndex: 'status', width: 140 },
+    { title: '文档权限', key: 'docAccess', dataIndex: 'docAccess', width: 90 },
     { title: '最近登录', key: 'lastLoginAt', dataIndex: 'lastLoginAt', width: 170 },
     { title: '创建时间', dataIndex: 'createdAt', width: 170, customRender: ({ text }) => formatTime(text) },
     { title: '操作', key: 'action', width: 260, fixed: 'right' },
@@ -328,6 +413,10 @@
       logLoaded.value = true
       fetchLogs()
     }
+    if (key === 'doclogs' && !docLogLoaded.value) {
+      docLogLoaded.value = true
+      fetchDocLogs()
+    }
   }
   function handleLogSearch() {
     fetchLogs()
@@ -339,12 +428,61 @@
     fetchLogs()
   }
 
+  /** ---- 文档访问日志（契约 1.9.5，首次切到页签才拉取） ---- */
+  const docLogLoaded = ref(false)
+  const docLogQuery = reactive<{ keyword?: string; result?: 'success' | 'error'; authType?: 'jwt' | 'docKey' }>({})
+  const docLogRangeValue = ref<[string, string] | undefined>(undefined)
+
+  const AUTH_TYPE_OPTIONS = [
+    { label: '登录态 JWT', value: 'jwt' },
+    { label: '文档 Key', value: 'docKey' },
+  ]
+  const docLogColumns = [
+    { title: '时间', key: 'createdAt', dataIndex: 'createdAt', width: 170 },
+    { title: '用户名', dataIndex: 'username', width: 130 },
+    { title: '方式', key: 'authType', dataIndex: 'authType', width: 100 },
+    { title: 'Key 掩码', key: 'keyMasked', dataIndex: 'keyMasked', width: 120 },
+    { title: '来源 IP', dataIndex: 'ip', width: 140 },
+    { title: '结果', key: 'ok', dataIndex: 'ok', width: 80 },
+    { title: '状态/业务码', key: 'status', width: 130 },
+    { title: '查询词', dataIndex: 'keyword', width: 120, customRender: ({ text }) => text || '-' },
+    { title: '失败原因', key: 'errorMsg', dataIndex: 'errorMsg' },
+  ]
+
+  const {
+    dataSource: docLogDataSource,
+    loading: docLogLoading,
+    getPagination: docLogGetPagination,
+    fetch: fetchDocLogs,
+    handleTableChange: docLogHandleTableChange,
+  } = usePagedFetch<DocAccessLogItem>(
+    getSwaggerLogsApi,
+    computed(() => ({
+      keyword: docLogQuery.keyword || undefined,
+      result: docLogQuery.result || undefined,
+      authType: docLogQuery.authType || undefined,
+      startTime: docLogRangeValue.value?.[0] || undefined,
+      endTime: docLogRangeValue.value?.[1] || undefined,
+    })) as unknown as Recordable,
+  )
+
+  function handleDocLogSearch() {
+    fetchDocLogs()
+  }
+  function handleDocLogReset() {
+    docLogQuery.keyword = undefined
+    docLogQuery.result = undefined
+    docLogQuery.authType = undefined
+    docLogRangeValue.value = undefined
+    fetchDocLogs()
+  }
+
   /** ---- 新建 / 编辑 ---- */
   const formVisible = ref(false)
   const formSubmitting = ref(false)
   const formRef = ref()
   const editRow = ref<PlatformUser | null>(null)
-  const formState = reactive({ username: '', nickname: '', password: '', role: 'user', status: 'active' })
+  const formState = reactive({ username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false })
 
   const PASSWORD_PATTERN = /^(?=.*[a-zA-Z])(?=.*\d).{8,64}$/
   const formRules = computed(() => ({
@@ -365,7 +503,7 @@
 
   function openCreate() {
     editRow.value = null
-    Object.assign(formState, { username: '', nickname: '', password: '', role: 'user', status: 'active' })
+    Object.assign(formState, { username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false })
     formVisible.value = true
   }
 
@@ -377,6 +515,7 @@
       password: '',
       role: record.role,
       status: record.status,
+      docAccess: !!record.docAccess,
     })
     formVisible.value = true
   }
@@ -394,6 +533,7 @@
           nickname: formState.nickname || undefined,
           role: formState.role,
           status: formState.status,
+          docAccess: formState.docAccess,
         })
         createMessage.success('用户已更新')
       } else {
@@ -477,3 +617,9 @@
 
   onMounted(fetch)
 </script>
+
+<style lang="less" scoped>
+  .mono {
+    font-family: consolas, monospace;
+  }
+</style>

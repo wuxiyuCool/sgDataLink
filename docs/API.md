@@ -589,6 +589,28 @@ Header: X-API-Key: dk-9f3a...   （authEnabled=true 时必需）
 - 模板生成规则：builder 按 fields 类型造 2 行示例（数字递增/字符串取样例列值/日期取当天）；custom 用声明字段生成；forward 的 responseExample 置 `{ note: '透传下游响应' }` 并在 description 注明目标地址。
 - OpenAPI 的 `operationId` 用 `path` 连字符名；`x-databridge` 扩展字段携带 datasourceId/apiId/sqlMode，供前端筛选与跳转编辑。
 
+#### 1.9.5 docKey：文档中心免登录访问 + 访问审计
+
+开发/联调频繁取文档不必每次走登录：由管理员在用户管理中给用户开通「文档权限」（`docAccess`，仅 admin 可配置），开通即自动生成个人 docKey；用户可在文档中心页查看/复制/刷新自己的 key（刷新后旧 key 立即失效，不刷新则长期保留）。
+
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/auth/doc-key` | JWT（本人） | `{docAccess, docKey?, updatedAt?}`；未开通时 docAccess=false 且无 key |
+| POST | `/auth/doc-key/refresh` | JWT（本人，需已开通） | 重新生成 key 并返回新值（仅本次与后续 GET 回显） |
+| GET | `/data-apis/swagger.json` | JWT **或** docKey | docKey 认证：请求头 `X-DOC-KEY: dok-xxxx` 或查询参数 `docKey=`；只返回 published 文档（`status=all` 仍仅限 admin JWT），参数其余同 1.9.4 |
+| GET | `/data-apis/swagger-logs` | JWT+admin | 文档访问日志分页：`keyword`（用户名）/`result`/`authType`（jwt\|docKey）/`startTime`/`endTime` |
+
+**访问审计（每次 swagger.json 请求都落库，`databridge_doc_access_log`，滚动 1 万条）**：
+`{ id, userId, username, authType: jwt|docKey, ip, ok, httpStatus, bizCode, keyword, userAgent?, errorMsg?, createdAt }`；
+docKey 只以掩码形式记录（前 6 位 + `***`），完整 key、JWT、口令一律不落日志。
+
+**安全红线（服务端强制）**：
+1. key 与用户绑定：用户被禁用 → key 实时失效（401/40105）；删除用户同样失效。
+2. 校验不过（缺 key/错 key/未开通）→ 401/40102 统一文案，不区分「key 不存在」与「不匹配」，防枚举。
+3. `status=all`、PUT 文档配置等管理动作不接受 docKey，只认 JWT（docKey 权限永远不大于登录用户本人权限）。
+4. bizCode `40105`＝docKey 无效（HTTP 401）。
+5. **自描述分组**：swagger.json 固定包含 `tags=[文档中心]` 的管理端接口条目（取本文档双通道说明、`/auth/login`、`/auth/doc-key` 查看/刷新、`/data-apis/{id}/doc` 读写、`/data-apis/swagger-logs`），不受 `keyword` 过滤影响；`components.securitySchemes` 提供 `BearerAuth`（JWT）与 `DocKeyAuth`（X-DOC-KEY）。
+
 ### 1.10 任务运维补充
 
 **告警规则 `/alert-rules`**（CRUD）+ **告警记录 `/alert-records`**（GET 分页，支持 level/read 筛选；PATCH `/alert-records/:id/read` 标记已读）：
@@ -649,7 +671,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 | POST | `/auth/change-password` | JWT | `{oldPassword,newPassword}`；旧密码不符 40001；成功后清 mustChangePassword |
 | GET | `/users` | JWT+admin | 分页；`keyword`（用户名/昵称）`role` `status` |
 | POST | `/users` | JWT+admin | `{username,nickname,password,role}`；username 3~32 位 `[a-z0-9_.-]` 全库唯一；新建用户 `mustChangePassword=true` |
-| PUT | `/users/:id` | JWT+admin | `{nickname,role,status}`；**不得禁用/降级自己**；系统必须保留至少一个可用 admin |
+| PUT | `/users/:id` | JWT+admin | `{nickname,role,status,docAccess}`；**不得禁用/降级自己**；系统必须保留至少一个可用 admin；`docAccess` 开通即自动生成 docKey、关闭即清空（契约 1.9.5） |
 | DELETE | `/users/:id` | JWT+admin | **不得删除自己**；最后一个 admin 不可删 |
 | POST | `/users/:id/reset-password` | JWT+admin | `{password}` 管理员重置他人密码，置 `mustChangePassword=true` |
 
@@ -658,6 +680,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 - **本期边界（诚实声明）**：JWT 强制覆盖 `/users`、`/auth/me`、`/auth/change-password`；其余 DataBridge 业务接口本期仍不鉴权（`/ds/{path}` 继续走 apiKey 机制，engine 回报通道待二阶段加共享密钥），前端路由守卫按角色显隐菜单。
 - **登录日志（审计）**：每次 `POST /auth/login`（成功与失败）写一条 `databridge_login_log`：`{id, userId?, username, ip, ok, errorMsg?, createdAt}`（username 原样记录便于排查撞库尝试；errorMsg 不含密码）。查询：`GET /auth/login-logs`（JWT+admin，分页，参数 `keyword`（用户名模糊）/`result=success|error`/`startTime`/`endTime`），表滚动保留最近 1 万条。
 - 前端：登录页对接真实 `/auth/login`；「系统管理→用户管理」页（admin 可见）提供增删改/禁用/重置密码；头像菜单提供个人修改密码；`mustChangePassword=true` 时登录后强制弹出改密。
+- **出参安全**：用户对象带 `docAccess`（布尔）供界面显隐，**docKey 明文只出现在本人 `GET/POST /auth/doc-key*` 响应**，列表/详情/me 一律不回传。
 
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）
 

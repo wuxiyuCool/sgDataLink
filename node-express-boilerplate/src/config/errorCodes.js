@@ -20,6 +20,8 @@ const ERROR_CODES = {
   LOGIN_FAILED: 40103,
   /** 契约 1.11：账号被管理员禁用 */
   ACCOUNT_DISABLED: 40104,
+  /** 契约 1.9.5：docKey 失效（用户被禁用/删除） */
+  DOC_KEY_STALE: 40105,
   ENGINE_UNAVAILABLE: 50001,
   ENGINE_REJECTED: 50002,
   /** Data API 真实查询失败（目标库连接/SQL 报错），docs/API.md 1.9 */
@@ -38,6 +40,7 @@ const HTTP_STATUS_BY_CODE = {
   40102: 401,
   40103: 401,
   40104: 403,
+  40105: 401,
   40301: 403,
   42901: 429,
   40404: 404,

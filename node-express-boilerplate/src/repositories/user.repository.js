@@ -38,6 +38,9 @@ const count = () => store.size();
 const getByUsername = (username) =>
   list().find((item) => String(item.username).toLowerCase() === String(username || '').toLowerCase()) || null;
 
+/** 按 docKey 精确查（契约 1.9.5）；空 key 直接未命中 */
+const getByDocKey = (docKey) => (docKey ? list().find((item) => item.docKey === String(docKey)) || null : null);
+
 const create = (data) => {
   const timestamp = nowIso();
   const record = {
@@ -66,6 +69,7 @@ module.exports = require('./facade').pickImpl('user', {
   page,
   getById,
   getByUsername,
+  getByDocKey,
   count,
   create,
   update,

@@ -162,6 +162,127 @@ const buildOperation = (api, datasourceNames) => {
 };
 
 /**
+ * 文档中心自身的接口（自描述，tag=[文档中心]，不受 keyword 过滤影响）：
+ * 开发者在文档里就能查到「怎么取本文档 / 怎么登录拿 JWT / 怎么查看与刷新自己的 docKey / 访问日志怎么查」。
+ * 这些是管理端接口，响应按统一信封 {code,message,result,timestamp}（swagger.json 本体除外）。
+ */
+const envelopeExample = (result) => ({ code: 0, message: 'success', result, timestamp: 1700000000000 });
+const envelopeSchema = (resultSchema) => ({
+  type: 'object',
+  properties: {
+    code: { type: 'integer', example: 0 },
+    message: { type: 'string', example: 'success' },
+    result: resultSchema,
+    timestamp: { type: 'integer', format: 'int64' },
+  },
+});
+
+const jsonResp = (description, schema, example) => ({
+  description,
+  content: { 'application/json': { schema, ...(example ? { example } : {}) } },
+});
+
+const DOC_CENTER_TAG = ['文档中心'];
+
+const buildDocCenterPaths = () => ({
+  '/api/v1/data-apis/swagger.json': {
+    get: {
+      tags: DOC_CENTER_TAG,
+      summary: '获取本文档（OpenAPI 3.0 本体，响应不套统一信封）',
+      description:
+        '两种认证任选其一：1) 登录 JWT（Authorization: Bearer，见 /api/v1/auth/login）；2) 个人文档 Key（X-DOC-KEY 请求头或 docKey 查询参数，免登录，需管理员在用户管理中开通，见契约 1.9.5）。docKey 通道只返回已发布文档；每次访问都会记入文档访问日志。',
+      operationId: 'databridge-swagger-spec',
+      parameters: [
+        { name: 'docKey', in: 'query', required: false, description: '个人文档 Key（与 X-DOC-KEY 头二选一）', schema: { type: 'string', example: 'dok-9f3a…32hex' } },
+        { name: 'status', in: 'query', required: false, description: '缺省 published；all=含草稿（仅管理员 JWT，docKey 传 all 会被 40001 拒绝）', schema: { type: 'string', enum: ['published', 'all'], default: 'published' } },
+        { name: 'keyword', in: 'query', required: false, description: '按 path/服务名模糊过滤 Data API 条目（不影响本分组）', schema: { type: 'string' } },
+      ],
+      security: [{ BearerAuth: [] }, { DocKeyAuth: [] }],
+      responses: {
+        200: { description: 'OpenAPI spec 本体', content: { 'application/json': { schema: { type: 'object', description: 'openapi/info/tags/paths/…（即你正在看的这份文档的结构）' } } } },
+        default: { description: '401/40101|40102 未登录且 docKey 缺失或无效；401/40105 账号被禁用导致 docKey 失效' },
+      },
+    },
+  },
+  '/api/v1/auth/login': {
+    post: {
+      tags: DOC_CENTER_TAG,
+      summary: '登录获取 JWT（页面登录用；脚本长期取文档建议改用 docKey）',
+      operationId: 'databridge-auth-login',
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object', properties: { username: { type: 'string' }, password: { type: 'string' } }, required: ['username', 'password'] }, example: { username: 'admin', password: '…' } } },
+      },
+      responses: {
+        200: jsonResp('登录成功（token 放进后续请求的 Authorization: Bearer <token>）', envelopeSchema({ type: 'object', properties: { token: { type: 'string' }, expiresInSec: { type: 'integer' }, user: { type: 'object' } } }), envelopeExample({ token: 'eyJhbGci…', expiresInSec: 1800, user: { id: 'usr-9701', username: 'admin', role: 'admin' } })),
+        default: { description: '401/40103 用户名或密码错误（防枚举不区分原因）；403/40104 账号被禁用；失败也会写登录日志' },
+      },
+    },
+  },
+  '/api/v1/auth/doc-key': {
+    get: {
+      tags: DOC_CENTER_TAG,
+      summary: '查看本人文档权限与 docKey（明文只回本人）',
+      operationId: 'databridge-get-doc-key',
+      security: [{ BearerAuth: [] }],
+      responses: {
+        200: jsonResp('当前用户的文档权限', envelopeSchema({ type: 'object', properties: { docAccess: { type: 'boolean' }, docKey: { type: 'string', nullable: true }, updatedAt: { type: 'string', nullable: true } } }), envelopeExample({ docAccess: true, docKey: 'dok-9f3a…', updatedAt: '2026-10-08T06:30:00.000Z' })),
+      },
+    },
+  },
+  '/api/v1/auth/doc-key/refresh': {
+    post: {
+      tags: DOC_CENTER_TAG,
+      summary: '刷新本人 docKey（旧 key 立即失效；未开通权限返回 40001）',
+      operationId: 'databridge-refresh-doc-key',
+      security: [{ BearerAuth: [] }],
+      responses: {
+        200: jsonResp('新 key（仅本次与 GET /auth/doc-key 可见）', envelopeSchema({ type: 'object', properties: { docAccess: { type: 'boolean' }, docKey: { type: 'string' }, updatedAt: { type: 'string' } } }), envelopeExample({ docAccess: true, docKey: 'dok-1b7c…', updatedAt: '2026-10-08T07:00:00.000Z' })),
+      },
+    },
+  },
+  '/api/v1/data-apis/{id}/doc': {
+    get: {
+      tags: DOC_CENTER_TAG,
+      summary: '取单个 Data API 的文档配置（apiDoc；未填过返回按定义生成的模板）',
+      operationId: 'databridge-get-api-doc',
+      parameters: [{ name: 'id', in: 'path', required: true, description: 'Data API id（如 api-8001，可见于各条目 x-databridge.apiId）', schema: { type: 'string' } }],
+      security: [{ BearerAuth: [] }],
+      responses: { 200: jsonResp('apiDoc', envelopeSchema({ type: 'object', properties: { summary: { type: 'string' }, description: { type: 'string' }, paramDocs: { type: 'object' }, responseExample: { type: 'object' } } }), envelopeExample({ summary: '订单查询（GET /ds/order-query）', description: '构建模式：查询 T_ORDER', paramDocs: { status: 'string，必填' }, responseExample: { fields: ['ID'], rows: [[1], [2]] } })) },
+    },
+    put: {
+      tags: DOC_CENTER_TAG,
+      summary: '保存文档配置（仅管理员 JWT；docKey 不可用）',
+      operationId: 'databridge-put-api-doc',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { summary: { type: 'string' }, description: { type: 'string' }, paramDocs: { type: 'object' }, responseExample: { type: 'object' } } } } } },
+      security: [{ BearerAuth: [] }],
+      responses: { 200: jsonResp('保存后的 apiDoc', envelopeSchema({ type: 'object' })) },
+    },
+  },
+  '/api/v1/data-apis/swagger-logs': {
+    get: {
+      tags: DOC_CENTER_TAG,
+      summary: '文档访问日志分页（仅管理员 JWT）：每次取文档（JWT 或 docKey、成败）都留痕',
+      operationId: 'databridge-swagger-logs',
+      parameters: [
+        { name: 'keyword', in: 'query', required: false, description: '用户名或 IP 模糊', schema: { type: 'string' } },
+        { name: 'result', in: 'query', required: false, schema: { type: 'string', enum: ['success', 'error'] } },
+        { name: 'authType', in: 'query', required: false, description: 'jwt=登录态访问，docKey=免登录访问', schema: { type: 'string', enum: ['jwt', 'docKey'] } },
+        { name: 'startTime', in: 'query', required: false, description: 'ISO 时间闭区间起', schema: { type: 'string' } },
+        { name: 'endTime', in: 'query', required: false, schema: { type: 'string' } },
+        { name: 'page', in: 'query', required: false, schema: { type: 'integer', default: 1 } },
+        { name: 'size', in: 'query', required: false, schema: { type: 'integer', default: 20, maximum: 500 } },
+      ],
+      security: [{ BearerAuth: [] }],
+      responses: {
+        200: jsonResp('分页信封（key 只存掩码，滚动保留 1 万条）', envelopeSchema({ type: 'object', properties: { items: { type: 'array', items: { type: 'object' } }, total: { type: 'integer' }, page: { type: 'integer' }, size: { type: 'integer' }, pages: { type: 'integer' } } }), envelopeExample({ items: [{ id: 'dal-…', username: 'zhangsan', authType: 'docKey', keyMasked: 'dok-9f***', ip: '10.45.34.12', ok: true, httpStatus: 200, keyword: 'order', createdAt: '2026-10-08T07:10:00.000Z' }], total: 1, page: 1, size: 20, pages: 1 })),
+      },
+    },
+  },
+});
+
+/**
  * 生成 OpenAPI 3.0 文档。
  * @param {Object} options { status: 'published'|'all', keyword }（all 的 admin 权限由控制器把关）
  * @returns {Promise<Object>} OpenAPI spec（直接作为 swagger.json 响应体，不套信封）
@@ -192,6 +313,8 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
     const method = String(api.method || 'GET').toLowerCase();
     paths[key] = { ...(paths[key] || {}), [method]: buildOperation(api, datasourceNames) };
   });
+  // 文档中心自身接口固定追加（自描述，keyword 只过滤业务 /ds 条目）
+  Object.assign(paths, buildDocCenterPaths());
 
   const tags = Array.from(new Set(Object.values(paths).flatMap((item) => Object.values(item).map((op) => op.tags[0]))));
   const publishedCount = apis.filter((api) => api.status === 'published').length;
@@ -199,8 +322,8 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
     openapi: OPENAPI_VERSION,
     info: {
       title: 'DataBridge 数据服务 API',
-      version: '1.9.4',
-      description: `由 DataBridge 自动生成的接口文档：共 ${apis.length} 个服务（${publishedCount} 个已发布）。运行时地址 /ds/{path}，鉴权走 X-API-Key 头（或 apiKey 查询参数）。tags 为绑定的数据源名，用于按数据源筛选。`,
+      version: '1.9.5',
+      description: `由 DataBridge 自动生成的接口文档：共 ${apis.length} 个数据服务（${publishedCount} 个已发布）。运行时地址 /ds/{path}，鉴权走 X-API-Key 头（或 apiKey 查询参数）。tags 为绑定的数据源名，用于按数据源筛选；「文档中心」分组是自述——如何取本文档/登录/管理 docKey/查访问日志。`,
     },
     servers: [{ url: '/', description: '当前站点（管理端与运行时同源）' }],
     tags: tags.map((name) => ({ name })),
@@ -212,6 +335,18 @@ const buildSpec = async ({ status = 'published', keyword = '' } = {}) => {
           in: 'header',
           name: 'X-API-Key',
           description: '数据服务 API Key（发布时生成，也可用查询参数 apiKey 携带）',
+        },
+        BearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: '管理端登录令牌（POST /api/v1/auth/login），文档中心页面即为登录态',
+        },
+        DocKeyAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'X-DOC-KEY',
+          description: '个人文档 Key（契约 1.9.5，管理员开通后在文档中心页查看/刷新），仅用于取本文档',
         },
       },
     },

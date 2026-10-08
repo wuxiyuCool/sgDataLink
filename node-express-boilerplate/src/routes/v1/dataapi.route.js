@@ -1,6 +1,7 @@
 const express = require('express');
 const validate = require('../../middlewares/validate');
 const auth = require('../../middlewares/auth');
+const { swaggerAuth } = require('../../middlewares/docAuth');
 const dataApiValidation = require('../../validations/dataapi.validation');
 const dataApiController = require('../../controllers/dataapi.controller');
 
@@ -29,10 +30,13 @@ router.get('/meta/columns', validate(dataApiValidation.listMetaColumns), dataApi
 router.get('/calls', validate(dataApiValidation.listDataApiCalls), dataApiController.listDataApiCalls);
 
 /**
- * 1.9.4 Swagger 文档中心：**必须注册在 /:id 之前**（'swagger.json' 会被当成 :id）。
- * 查看需登录（契约：JWT，401 未登录不可见）；status=all 的 admin 判定在控制器。
+ * 1.9.4/1.9.5 Swagger 文档中心：**必须注册在 /:id 之前**（'swagger.json' 会被当成 :id）。
+ * 准入 = JWT 或 docKey（middlewares/docAuth，成败都写访问日志）；status=all 的 admin 判定在控制器。
  */
-router.get('/swagger.json', auth(), validate(dataApiValidation.getSwagger), dataApiController.getSwagger);
+router.get('/swagger.json', swaggerAuth, validate(dataApiValidation.getSwagger), dataApiController.getSwagger);
+
+/** 1.9.5 文档访问日志查询（仅 admin）：同样必须在 /:id 之前 */
+router.get('/swagger-logs', auth('manageUsers'), validate(dataApiValidation.listSwaggerLogs), dataApiController.listSwaggerLogs);
 
 /** 1.9.4 文档配置：读需登录（模板兜底在 service），保存仅 admin */
 router.get('/:id/doc', auth(), validate(dataApiValidation.getDataApiDoc), dataApiController.getDataApiDoc);

@@ -2,7 +2,8 @@ const pick = require('../utils/pick');
 const catchAsync = require('../utils/catchAsync');
 const { ok, pageResult } = require('../utils/apiResponse');
 const { paramInvalid } = require('../utils/bizError');
-const { dataApiService, dataApiRuntimeService, swaggerService } = require('../services');
+const { baseOf } = require('../middlewares/docAuth');
+const { dataApiService, dataApiRuntimeService, swaggerService, accountService } = require('../services');
 
 /**
  * 数据服务（Data API）管理端 HTTP 层（docs/API.md 第 1.9 节 /api/v1/data-apis）。
@@ -109,15 +110,47 @@ const listMetaColumns = catchAsync(async (req, res) => {
 });
 
 /**
- * 1.9.4 GET /data-apis/swagger.json —— OpenAPI 3.0 文档（响应是 spec 本体，不套信封，
- * 便于 swagger 类工具直接消费）。路由层已保证 JWT；status=all 在这里再加一道 admin 闸门。
+ * 1.9.4/1.9.5 GET /data-apis/swagger.json —— OpenAPI 3.0 文档（响应是 spec 本体，不套信封，
+ * 便于 swagger 类工具直接消费）。准入 = JWT（admin()）或 docKey（middlewares/docAuth），
+ * docKey 通道只认 published；每次请求（成败）都写 databridge_doc_access_log。
  */
 const getSwagger = catchAsync(async (req, res) => {
-  const status = req.query.status || 'published';
-  if (status === 'all' && req.user.role !== 'admin') {
-    throw paramInvalid('status=all（含草稿）仅管理员可用');
+  const auth = req.docAuth || {};
+  const logBase = {
+    ...baseOf(req),
+    userId: (auth.user && auth.user.id) || null,
+    username: (auth.user && auth.user.username) || null,
+    authType: auth.type || null,
+    keyMasked: auth.keyMasked || null,
+  };
+  try {
+    const status = req.query.status || 'published';
+    if (status === 'all' && auth.type === 'docKey') {
+      throw paramInvalid('docKey 仅支持 published 文档（status=all 需管理员登录）');
+    }
+    if (status === 'all' && auth.user.role !== 'admin') {
+      throw paramInvalid('status=all（含草稿）仅管理员可用');
+    }
+    const spec = await swaggerService.buildSpec({ status, keyword: req.query.keyword });
+    await accountService.recordDocAccess({ ...logBase, ok: true, httpStatus: 200 });
+    res.json(spec);
+  } catch (err) {
+    await accountService.recordDocAccess({
+      ...logBase,
+      ok: false,
+      httpStatus: err.statusCode || 500,
+      bizCode: err.bizCode || null,
+      errorMsg: err.message,
+    });
+    throw err;
   }
-  res.json(await swaggerService.buildSpec({ status, keyword: req.query.keyword }));
+});
+
+/** 1.9.5 GET /data-apis/swagger-logs —— 文档访问日志（JWT+admin） */
+const listSwaggerLogs = catchAsync(async (req, res) => {
+  const filter = pick(req.query, ['keyword', 'result', 'authType', 'startTime', 'endTime']);
+  const options = pick(req.query, ['page', 'size']);
+  pageResult(res, await accountService.pageDocAccessLogs({ ...filter, ...options }));
 });
 
 /** 1.9.4 GET /data-apis/:id/doc —— 文档配置（没填过返回按定义生成的模板） */
@@ -144,6 +177,7 @@ module.exports = {
   listMetaTables,
   listMetaColumns,
   getSwagger,
+  listSwaggerLogs,
   getDataApiDoc,
   updateDataApiDoc,
 };

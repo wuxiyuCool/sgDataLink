@@ -46,6 +46,35 @@
       </Form>
     </Card>
 
+    <Card :bordered="false" class="mb-3" title="我的文档 Key（免登录获取 swagger.json）">
+      <template #extra>
+        <Tag :color="docKeyInfo?.docAccess ? 'success' : 'default'">
+          {{ docKeyInfo?.docAccess ? '已开通' : '未开通' }}
+        </Tag>
+      </template>
+      <template v-if="docKeyInfo?.docAccess && docKeyInfo?.docKey">
+        <Space :size="8" wrap>
+          <span class="mono doc-key-text">{{ keyVisible ? docKeyInfo.docKey : maskedKey }}</span>
+          <Button size="small" @click="keyVisible = !keyVisible">
+            {{ keyVisible ? '隐藏' : '显示' }}
+          </Button>
+          <Button size="small" @click="handleCopyKey">复制</Button>
+          <Button size="small" danger :loading="keyRefreshing" @click="handleRefreshKey">
+            刷新生成
+          </Button>
+        </Space>
+        <div class="mt-2 text-gray-500">
+          {{ docKeyInfo.updatedAt ? `key 生成时间：${formatTime(docKeyInfo.updatedAt)}；` : '' }}
+          不刷新则长期保留；刷新后旧 key 立即失效；账号禁用或文档权限被回收时 key 同步失效；
+          每次通过 key 取文档都会记入访问日志（管理员可在用户管理页查看）
+        </div>
+        <pre class="json-pre mt-2">{{ docKeyCurlHint }}</pre>
+      </template>
+      <div v-else class="text-gray-500">
+        尚未开通文档权限：请联系管理员在「系统管理 → 用户管理 → 编辑」中开启「文档中心访问」，开通后自动生成个人 key
+      </div>
+    </Card>
+
     <Card :bordered="false">
       <Alert
         v-if="spec"
@@ -146,8 +175,11 @@
   import { useMessage } from '/@/hooks/web/useMessage'
   import { useUserStore } from '/@/store/modules/user'
   import { getSwaggerDocApi } from '/@/api/databridge/dataapi'
+  import { getMyDocKeyApi, refreshMyDocKeyApi } from '/@/api/databridge/user'
+  import type { MyDocKeyInfo } from '/@/api/databridge/user'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import type { SwaggerOperation, SwaggerSpec } from '/@/api/databridge/model/dataapiModel'
+  import { formatTime } from '../data'
 
   const FormItem = Form.Item
   const CollapsePanel = Collapse.Panel
@@ -159,7 +191,7 @@
     op: SwaggerOperation
   }
 
-  const { createMessage } = useMessage()
+  const { createMessage, createConfirm } = useMessage()
   const userStore = useUserStore()
   const isAdmin = computed(() => {
     const roles = (userStore.getUserInfo?.roles || []) as any[]
@@ -297,16 +329,80 @@
   }
 
   function curlOf(item: FlatOperation) {
+    const origin = typeof window === 'undefined' ? 'http://<host>:3001' : window.location.origin
+    // 「文档中心」分组是管理端自述接口（api/v1/... 原样），业务条目才是 /ds/{path}
+    if (item.path.startsWith('api/v1')) {
+      const methodFlag = item.method === 'GET' ? '' : `-X ${item.method} `
+      const auth = item.path.includes('swagger.json')
+        ? ' -H "X-DOC-KEY: <你的文档Key，见上方面板>"'
+        : ' -H "Authorization: Bearer <登录 token>"'
+      return `curl ${methodFlag}"${origin}/${item.path}"${auth}`
+    }
     const params = (item.op.parameters || [])
       .filter((p) => p.in === 'query' && p.name !== 'page' && p.name !== 'size')
       .map((p) => `${p.name}=${p.required ? 'xxx' : ''}`)
       .join('&')
-    const origin = typeof window === 'undefined' ? 'http://<host>:3001' : window.location.origin
     const keyHeader = item.op['x-databridge']?.authEnabled ? ` \\\n  -H "X-API-Key: <发布后生成>"` : ''
     return `curl "${origin}/ds/${item.path}${params ? `?${params}` : ''}"${keyHeader}`
   }
 
-  onMounted(load)
+  /* ---- 1.9.5 我的文档 Key（免登录取 swagger.json） ---- */
+  const docKeyInfo = ref<MyDocKeyInfo | null>(null)
+  const keyVisible = ref(false)
+  const keyRefreshing = ref(false)
+
+  const maskedKey = computed(() => {
+    const k = docKeyInfo.value?.docKey || ''
+    return k ? `${k.slice(0, 8)}••••••${k.slice(-4)}` : ''
+  })
+
+  const docKeyCurlHint = computed(() => {
+    const origin = typeof window === 'undefined' ? 'http://<host>' : window.location.origin
+    const shown = keyVisible.value && docKeyInfo.value?.docKey ? docKeyInfo.value.docKey : '<粘贴你的文档 Key>'
+    return `curl -H "X-DOC-KEY: ${shown}" ${origin}/api/v1/data-apis/swagger.json`
+  })
+
+  async function loadDocKey() {
+    try {
+      docKeyInfo.value = await getMyDocKeyApi()
+    } catch {
+      docKeyInfo.value = null
+    }
+  }
+
+  function handleCopyKey() {
+    const k = docKeyInfo.value?.docKey
+    if (!k) return
+    navigator.clipboard
+      .writeText(k)
+      .then(() => createMessage.success('文档 Key 已复制（请视为密码保管，勿截图/入库）'))
+      .catch(() => createMessage.warning('浏览器拒绝剪贴板访问，请手动选择复制'))
+  }
+
+  function handleRefreshKey() {
+    createConfirm({
+      iconType: 'warning',
+      title: '刷新文档 Key',
+      content: '刷新后旧 key 立即失效，所有使用旧 key 的脚本/工具需要同步更新。确认继续？',
+      onOk: async () => {
+        keyRefreshing.value = true
+        try {
+          docKeyInfo.value = await refreshMyDocKeyApi()
+          keyVisible.value = true
+          createMessage.success('已生成新文档 Key（旧 key 即刻作废）')
+        } catch (error: any) {
+          createMessage.error(getApiErrorMessage(error, '刷新失败'))
+        } finally {
+          keyRefreshing.value = false
+        }
+      },
+    })
+  }
+
+  onMounted(() => {
+    load()
+    loadDocKey()
+  })
 </script>
 
 <style lang="less" scoped>
@@ -352,5 +448,10 @@
     background: rgb(0 0 0 / 3%);
     border-radius: 4px;
     white-space: pre-wrap;
+  }
+
+  .doc-key-text {
+    font-size: 14px;
+    font-weight: 600;
   }
 </style>

@@ -253,6 +253,21 @@ const getDataApiDoc = {
   params: Joi.object().keys({ id }),
 };
 
+/** 1.9.5 GET /data-apis/swagger-logs：文档访问日志（admin），authType=jwt|docKey */
+const listSwaggerLogs = {
+  query: Joi.object()
+    .keys({
+      keyword: Joi.string().trim().max(64).allow(''),
+      result: Joi.string().valid(...CALL_RESULTS),
+      authType: Joi.string().valid('jwt', 'docKey'),
+      startTime: Joi.string().trim().max(64),
+      endTime: Joi.string().trim().max(64),
+      page: Joi.number().integer().min(1),
+      size: Joi.number().integer().min(1).max(500),
+    })
+    .unknown(true),
+};
+
 /** PUT /data-apis/:id/doc（仅 admin）：整体覆盖 apiDoc 四个键 */
 const updateDataApiDoc = {
   params: Joi.object().keys({ id }),
@@ -277,6 +292,7 @@ module.exports = {
   listMetaTables,
   listMetaColumns,
   getSwagger,
+  listSwaggerLogs,
   getDataApiDoc,
   updateDataApiDoc,
 };

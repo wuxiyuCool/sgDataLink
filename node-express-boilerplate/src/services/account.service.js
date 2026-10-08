@@ -17,7 +17,8 @@ const config = require('../config/config');
 const logger = require('../config/logger');
 const userRepository = require('../repositories/user.repository');
 const loginlogRepository = require('../repositories/loginlog.repository');
-const { paramInvalid, notFound, loginFailed, accountDisabled } = require('../utils/bizError');
+const docaccesslogRepository = require('../repositories/docaccesslog.repository');
+const { paramInvalid, notFound, loginFailed, accountDisabled, docKeyInvalid, docKeyStale } = require('../utils/bizError');
 
 const BCRYPT_COST = 10;
 const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
@@ -47,6 +48,8 @@ const toSafeUser = (user) =>
         role: user.role,
         status: user.status,
         mustChangePassword: Boolean(user.mustChangePassword),
+        /** 1.9.5 文档权限位（docKey 明文只在 /auth/doc-key* 回本人） */
+        docAccess: Boolean(user.docAccess),
         lastLoginAt: user.lastLoginAt || null,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
@@ -106,6 +109,62 @@ const login = async ({ username, password, ip }) => {
 /** 登录日志分页查询（仅 admin 路由暴露） */
 const pageLoginLogs = (query = {}) => loginlogRepository.page(query);
 
+/* ------------------------------------------------------------------ */
+/* 1.9.5 docKey：文档中心免登录访问（key 绑定用户，禁用/关闭权限即失效） */
+/* ------------------------------------------------------------------ */
+
+const DOC_KEY_PREFIX = 'dok-';
+
+const generateDocKey = () => `${DOC_KEY_PREFIX}${crypto.randomBytes(16).toString('hex')}`;
+
+/** 日志用掩码：只保留前 6 位（dok- 前缀 + 2 位随机），完整 key 绝不落日志 */
+const maskDocKey = (key) => (key ? `${String(key).slice(0, 6)}***` : null);
+
+/** GET /auth/doc-key：本人查看权限位与 key 明文 */
+const getDocKey = async (operator) => {
+  const user = await userRepository.getById(operator.id);
+  return {
+    docAccess: Boolean(user && user.docAccess),
+    docKey: user && user.docAccess ? user.docKey || null : null,
+    updatedAt: (user && user.docKeyUpdatedAt) || null,
+  };
+};
+
+/** POST /auth/doc-key/refresh：本人刷新 key（旧 key 立即失效；未开通直接拒绝） */
+const refreshDocKey = async (operator) => {
+  const user = await userRepository.getById(operator.id);
+  if (!user || !user.docAccess) throw paramInvalid('尚未开通文档权限，请联系管理员开通');
+  const docKey = generateDocKey();
+  const updatedAt = new Date().toISOString();
+  await userRepository.update(user.id, { docKey, docKeyUpdatedAt: updatedAt });
+  return { docAccess: true, docKey, updatedAt };
+};
+
+/**
+ * docKey 认证入口（swagger.json 免登录分支）。
+ * 缺 key / key 错 / 权限未开通 → 统一 401/40102（不区分，防枚举）；
+ * 账号禁用 → 401/40105（实时查库，key 无法先于账号状态存活）。
+ */
+const resolveDocKey = async (rawKey) => {
+  const key = String(rawKey || '').trim();
+  if (!key) throw docKeyInvalid('未提供文档 Key（用 X-DOC-KEY 头或 docKey 查询参数）');
+  const user = await userRepository.getByDocKey(key);
+  if (!user || !user.docAccess) throw docKeyInvalid('文档 Key 无效');
+  if (user.status === 'disabled') throw docKeyStale('文档 Key 已失效（账号被禁用）');
+  return { user, keyMasked: maskDocKey(key) };
+};
+
+/** 文档访问日志：写侧吞异常（审计是旁路，不能影响文档响应），读侧仅 admin 路由暴露 */
+const recordDocAccess = async (record = {}) => {
+  try {
+    await docaccesslogRepository.add(record);
+  } catch (err) {
+    logger.warn('doc access log write failed (ignored): %s', err.message);
+  }
+};
+
+const pageDocAccessLogs = (query = {}) => docaccesslogRepository.page(query);
+
 /** passport-jwt 回调：token 有效 ≠ 账号有效，实时查库并拒绝 disabled */
 const loadUserForToken = async (id) => {
   const user = await userRepository.getById(id);
@@ -161,6 +220,21 @@ const updateUser = async (id, body, operator) => {
       throw paramInvalid('系统必须保留至少一个可用的 admin');
     }
     patch.status = body.status;
+  }
+  // 1.9.5 文档权限：开通即自动生成 key（已有则保留），关闭立即清空——key 生命周期绑定权限位
+  if (body.docAccess !== undefined) {
+    if (typeof body.docAccess !== 'boolean') throw paramInvalid('docAccess 仅支持 true|false');
+    if (body.docAccess) {
+      patch.docAccess = true;
+      if (!target.docKey) {
+        patch.docKey = generateDocKey();
+        patch.docKeyUpdatedAt = new Date().toISOString();
+      }
+    } else {
+      patch.docAccess = false;
+      patch.docKey = null;
+      patch.docKeyUpdatedAt = null;
+    }
   }
   if (!Object.keys(patch).length) throw paramInvalid('没有需要更新的字段');
   return toSafeUser(await userRepository.update(target.id, patch));
@@ -230,6 +304,13 @@ module.exports = {
   assertPasswordStrength,
   login,
   pageLoginLogs,
+  DOC_KEY_PREFIX,
+  maskDocKey,
+  getDocKey,
+  refreshDocKey,
+  resolveDocKey,
+  recordDocAccess,
+  pageDocAccessLogs,
   loadUserForToken,
   listUsers,
   createUser,

@@ -49,6 +49,7 @@ require('../repositories/mysql/alertrule.store');
 require('../repositories/mysql/alertrecord.store');
 require('../repositories/mysql/user.store');
 require('../repositories/mysql/loginlog.store');
+require('../repositories/mysql/docaccesslog.store');
 
 /**
  * 把 schema.sql 切成逐条 DDL。

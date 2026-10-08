@@ -17,5 +17,8 @@ router.get('/me', auth(), authController.me);
 router.post('/change-password', auth(), validate(authValidation.changePassword), authController.changePassword);
 // 登录日志审计：仅 admin（契约 1.11），身份只从 token 取
 router.get('/login-logs', auth('manageUsers'), authController.loginLogs);
+// 1.9.5 docKey：本人查看/刷新（权限位由 admin 在 /users 开通）
+router.get('/doc-key', auth(), authController.getDocKey);
+router.post('/doc-key/refresh', auth(), authController.refreshDocKey);
 
 module.exports = router;

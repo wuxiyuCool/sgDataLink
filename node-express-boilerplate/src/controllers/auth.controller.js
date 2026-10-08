@@ -34,9 +34,21 @@ const loginLogs = catchAsync(async (req, res) => {
   pageResult(res, await accountService.pageLoginLogs(req.query));
 });
 
+/** 1.9.5 GET /auth/doc-key：本人查看文档权限与 key（明文只回本人） */
+const getDocKey = catchAsync(async (req, res) => {
+  ok(res, await accountService.getDocKey(req.user));
+});
+
+/** 1.9.5 POST /auth/doc-key/refresh：本人刷新 key，旧 key 立即失效 */
+const refreshDocKey = catchAsync(async (req, res) => {
+  ok(res, await accountService.refreshDocKey(req.user), { message: '文档 Key 已重新生成' });
+});
+
 module.exports = {
   login,
   me,
   changePassword,
   loginLogs,
+  getDocKey,
+  refreshDocKey,
 };
