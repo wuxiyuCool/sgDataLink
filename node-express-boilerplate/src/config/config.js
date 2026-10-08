@@ -52,6 +52,10 @@ const envVarsSchema = Joi.object()
       .default('http://127.0.0.1:3001/api/v1/engine')
       .description('url the engine reports progress back to this admin service'),
     ENGINE_TIMEOUT_MS: Joi.number().default(5000).description('timeout of engine http calls'),
+    // 契约 1.12 引擎共享密钥：非空时 Node→engine 全部请求带 X-Engine-Token，
+    // 且 /engine 回报通道强制校验；空 = 无鉴权过渡态（启动 WARN）
+    ENGINE_SHARED_SECRET: Joi.string().default('').allow('').description('shared secret for engine calls and reports'),
+    ENGINE_SQL_TIMEOUT_MS: Joi.number().default(35000).description('timeout of engine generic sql endpoints (query/exec)'),
     SMTP_HOST: Joi.string().description('server that will send the emails'),
     SMTP_PORT: Joi.number().description('port to connect to the email server'),
     SMTP_USERNAME: Joi.string().description('username for email server'),
@@ -111,6 +115,8 @@ module.exports = {
     baseUrl: envVars.ENGINE_BASE_URL,
     reportUrl: envVars.ADMIN_REPORT_URL,
     timeoutMs: envVars.ENGINE_TIMEOUT_MS,
+    sqlTimeoutMs: envVars.ENGINE_SQL_TIMEOUT_MS,
+    sharedSecret: envVars.ENGINE_SHARED_SECRET,
   },
   mongoose: {
     url: envVars.MONGODB_URL + (envVars.NODE_ENV === 'test' ? '-test' : ''),

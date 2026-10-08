@@ -67,6 +67,8 @@ func mapError(err error) (status, code int, message string) {
 		return http.StatusConflict, v1.CodeConflict, trimSentinel(err)
 	case errors.Is(err, service.ErrInternal):
 		return http.StatusInternalServerError, v1.CodeInternal, trimSentinel(err)
+	case errors.Is(err, service.ErrSQLExecFail):
+		return http.StatusBadGateway, v1.CodeSQLExecFail, trimSentinel(err)
 	default:
 		return http.StatusInternalServerError, v1.CodeInternal, "服务异常: " + err.Error()
 	}
@@ -80,6 +82,7 @@ func trimSentinel(err error) string {
 		service.ErrInstanceNotFound.Error(),
 		service.ErrDuplicateInstance.Error(),
 		service.ErrInternal.Error(),
+		service.ErrSQLExecFail.Error(),
 	} {
 		msg = strings.TrimPrefix(msg, sentinel)
 	}

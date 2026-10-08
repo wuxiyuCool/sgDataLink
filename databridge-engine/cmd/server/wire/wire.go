@@ -46,11 +46,13 @@ var serviceSet = wire.NewSet(
 	newTaskServiceOptions,
 	newTaskServiceDeps,
 	service.NewTaskService,
+	newSQLService,
 )
 
 var handlerSet = wire.NewSet(
 	handler.NewHandler,
 	handler.NewEngineHandler,
+	handler.NewSQLHandler,
 	newHealthHandler,
 )
 
@@ -75,7 +77,15 @@ func newDialer() dbio.Dialer {
 }
 
 func newReporterBuilder(conf *viper.Viper, logger *log.Logger) reporter.Builder {
-	return reporter.NewHTTPBuilder(nil, time.Duration(conf.GetInt("engine.report_timeout_ms"))*time.Millisecond, logger)
+	return reporter.NewHTTPBuilder(nil,
+		time.Duration(conf.GetInt("engine.report_timeout_ms"))*time.Millisecond,
+		logger,
+		conf.GetString("engine.shared_secret"))
+}
+
+// newSQLService 通用 SQL 执行接口（契约 v1.12）：复用回报器构建器做异步 exec 回报。
+func newSQLService(reports reporter.Builder, logger *log.Logger) service.SQLService {
+	return service.NewSQLService(service.SQLDeps{Reports: reports, Logger: logger})
 }
 
 // newTaskServiceOptions 运行参数：yml 的 engine: 节 + 环境变量覆盖后的结果。

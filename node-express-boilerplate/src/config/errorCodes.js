@@ -22,10 +22,21 @@ const ERROR_CODES = {
   ACCOUNT_DISABLED: 40104,
   /** 契约 1.9.5：docKey 失效（用户被禁用/删除） */
   DOC_KEY_STALE: 40105,
+  // 指标中心（docs/API.md 1.12）
+  /** 域下有模型/指标资产，禁删 */
+  METRIC_DOMAIN_HAS_ASSETS: 40902,
+  /** 指标被引用（dep 表 child 命中），禁删 */
+  METRIC_REFERENCED: 40903,
+  /** 界面建表物理表名冲突 */
+  METRIC_TABLE_CONFLICT: 40904,
+  /** 公式循环依赖（M2 编译器使用） */
+  METRIC_CYCLE: 40905,
   ENGINE_UNAVAILABLE: 50001,
   ENGINE_REJECTED: 50002,
   /** Data API 真实查询失败（目标库连接/SQL 报错），docs/API.md 1.9 */
   DATA_QUERY_FAILED: 50003,
+  /** 契约 1.12：指标中心经引擎执行数据源 SQL 失败（HTTP 502，透传库错误） */
+  DATASOURCE_EXEC_FAILED: 50201,
   INTERNAL_ERROR: 50000,
 };
 
@@ -44,10 +55,15 @@ const HTTP_STATUS_BY_CODE = {
   40301: 403,
   42901: 429,
   40404: 404,
+  40902: 409,
+  40903: 409,
+  40904: 409,
+  40905: 409,
   50000: 500,
   50001: 502,
   50002: 502,
   50003: 502,
+  50201: 502,
 };
 
 /**

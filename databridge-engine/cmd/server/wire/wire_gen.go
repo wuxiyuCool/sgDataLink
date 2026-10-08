@@ -42,11 +42,14 @@ func NewWire(viperViper *viper.Viper, logger *log.Logger) (*app.App, func(), err
 	}
 	healthHandler := newHealthHandler(handlerHandler, viperViper, taskService)
 	engineHandler := handler.NewEngineHandler(handlerHandler, taskService)
+	sqlService := newSQLService(reporterBuilder, logger)
+	sqlHandler := handler.NewSQLHandler(handlerHandler, sqlService)
 	routerDeps := router.RouterDeps{
 		Logger:        logger,
 		Config:        viperViper,
 		HealthHandler: healthHandler,
 		EngineHandler: engineHandler,
+		SQLHandler:    sqlHandler,
 	}
 	httpServer := server.NewHTTPServer(routerDeps)
 	appApp, cleanup, err := newApp(httpServer, taskService)
@@ -80,9 +83,10 @@ var infraSet = wire.NewSet(
 var serviceSet = wire.NewSet(
 	newTaskServiceOptions,
 	newTaskServiceDeps, service.NewTaskService,
+	newSQLService,
 )
 
-var handlerSet = wire.NewSet(handler.NewHandler, handler.NewEngineHandler, newHealthHandler)
+var handlerSet = wire.NewSet(handler.NewHandler, handler.NewEngineHandler, handler.NewSQLHandler, newHealthHandler)
 
 var serverSet = wire.NewSet(server.NewHTTPServer)
 
@@ -97,7 +101,15 @@ func newWriterBuilder() writer.Builder {
 }
 
 func newReporterBuilder(conf *viper.Viper, logger *log.Logger) reporter.Builder {
-	return reporter.NewHTTPBuilder(nil, time.Duration(conf.GetInt("engine.report_timeout_ms"))*time.Millisecond, logger)
+	return reporter.NewHTTPBuilder(nil,
+		time.Duration(conf.GetInt("engine.report_timeout_ms"))*time.Millisecond,
+		logger,
+		conf.GetString("engine.shared_secret"))
+}
+
+// newSQLService 通用 SQL 执行接口（契约 v1.12）：复用回报器构建器做异步 exec 回报。
+func newSQLService(reports reporter.Builder, logger *log.Logger) service.SQLService {
+	return service.NewSQLService(service.SQLDeps{Reports: reports, Logger: logger})
 }
 
 // newDialer 真实同步模式（契约第 5 节）的连接构造器：mysql / oracle 真驱动，

@@ -26,6 +26,9 @@ const postJson = async (path, payload) => {
   const url = buildUrl(path);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.engine.timeoutMs);
+  const headers = { 'Content-Type': 'application/json' };
+  // 契约 1.12：配置了 ENGINE_SHARED_SECRET 就必带 X-Engine-Token（引擎侧同值校验）
+  if (config.engine.sharedSecret) headers['X-Engine-Token'] = config.engine.sharedSecret;
   let response;
   try {
     if (typeof fetch !== 'function') {
@@ -33,7 +36,7 @@ const postJson = async (path, payload) => {
     }
     response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload || {}),
       signal: controller.signal,
     });
@@ -143,10 +146,108 @@ const health = async () => {
   }
 };
 
+/**
+ * 通用 SQL 查询（契约 2.5）：POST {engine}/api/v1/engine/sql/query。
+ * endpoint 为真实数据源快照（含明文口令，只在进程间传输）；失败统一抛业务错误。
+ * @param {Object} endpoint { id,type,host,port,database,username,password }
+ * @param {string} sql 单条 SELECT
+ * @param {Object} [opts] { limit, timeoutSec, sqlTimeout } —— sqlTimeout 给 unwrap 前
+ *   的 HTTP 层放宽（默认 ENGINE_TIMEOUT_MS 太短，真实查询按 engineSqlTimeoutMs 走）
+ */
+const sqlQuery = async (endpoint, sql, opts = {}) => {
+  const url = buildUrl('/api/v1/engine/sql/query');
+  const timeoutMs = opts.timeoutMs || config.engine.sqlTimeoutMs || 35000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.engine.sharedSecret) headers['X-Engine-Token'] = config.engine.sharedSecret;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        endpoint,
+        sql,
+        limit: opts.limit || 1000,
+        timeoutSec: opts.timeoutSec || 30,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const reason = err && err.name === 'AbortError' ? `请求超时(${timeoutMs}ms)` : err.message;
+    throw engineUnavailable(`调用引擎 SQL 查询失败: ${reason}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await response.text().catch(() => '');
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch (err) {
+    body = {};
+  }
+  if (body.code === 40101)
+    throw engineRejected('引擎拒绝了 SQL 调用: X-Engine-Token 不匹配，请检查双侧 ENGINE_SHARED_SECRET');
+  if (body.code !== undefined && body.code !== 0) {
+    // 目标库执行失败(50002)等业务错误透传库消息，由调用方转 50201
+    throw Object.assign(new Error(body.message || '引擎 SQL 查询失败'), { engineBizCode: body.code, engineBody: body });
+  }
+  return body.data || {};
+};
+
+/**
+ * 通用 SQL 执行（契约 2.5）：POST {engine}/api/v1/engine/sql/exec，同步模式。
+ * @param {Object} endpoint 真实数据源快照
+ * @param {Array<string>} statements 白名单语句（CREATE/TRUNCATE/INSERT/ALTER ADD）
+ */
+const sqlExec = async (endpoint, statements, opts = {}) => {
+  const url = buildUrl('/api/v1/engine/sql/exec');
+  const timeoutMs = opts.timeoutMs || config.engine.sqlTimeoutMs || 35000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.engine.sharedSecret) headers['X-Engine-Token'] = config.engine.sharedSecret;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        instanceId: opts.instanceId || `mtr-${Date.now()}`,
+        endpoint,
+        statements,
+        reportUrl: opts.reportUrl || undefined,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const reason = err && err.name === 'AbortError' ? `请求超时(${timeoutMs}ms)` : err.message;
+    throw engineUnavailable(`调用引擎 SQL 执行失败: ${reason}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await response.text().catch(() => '');
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch (err) {
+    body = {};
+  }
+  if (body.code === 40101)
+    throw engineRejected('引擎拒绝了 SQL 调用: X-Engine-Token 不匹配，请检查双侧 ENGINE_SHARED_SECRET');
+  if (body.code !== undefined && body.code !== 0) {
+    throw Object.assign(new Error(body.message || '引擎 SQL 执行失败'), { engineBizCode: body.code, engineBody: body });
+  }
+  return body.data || {};
+};
+
 module.exports = {
   startTask,
   startPipeline,
   stopTask,
+  sqlQuery,
+  sqlExec,
   health,
   buildUrl,
 };

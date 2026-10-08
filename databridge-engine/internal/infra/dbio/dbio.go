@@ -94,6 +94,29 @@ func (e Endpoint) Validate() error {
 	return nil
 }
 
+// ValidateConnect 通用 SQL 接口的连接最小字段集：与 Validate 相同但不要求 Table
+// （SQL 文本自带表引用，端点只描述连接）。
+func (e Endpoint) ValidateConnect() error {
+	switch e.DBType() {
+	case TypeMySQL, TypeOracle:
+	default:
+		return fmt.Errorf("dbio: 不支持的数据库类型 %q（SQL 接口支持 mysql / oracle）", e.Type)
+	}
+	if strings.TrimSpace(e.Host) == "" {
+		return fmt.Errorf("dbio: %s.host 必填", e.DBType())
+	}
+	if e.Port <= 0 || e.Port > 65535 {
+		return fmt.Errorf("dbio: %s.port 不合法: %d", e.DBType(), e.Port)
+	}
+	if strings.TrimSpace(e.Username) == "" {
+		return fmt.Errorf("dbio: %s.username 必填", e.DBType())
+	}
+	if strings.TrimSpace(e.Database) == "" {
+		return fmt.Errorf("dbio: %s.database 必填", e.DBType())
+	}
+	return nil
+}
+
 // Label 日志用的安全标识：不含密码。
 func (e Endpoint) Label() string {
 	table := strings.TrimSpace(e.Table)

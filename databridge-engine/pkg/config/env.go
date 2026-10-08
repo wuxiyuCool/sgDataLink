@@ -11,9 +11,10 @@ import (
 
 // 环境变量名（docs/API.md 第 4 节：databridge-engine 的关键环境变量）。
 const (
-	EnvServerPort    = "SERVER_PORT"
-	EnvNodeReportURL = "NODE_REPORT_URL"
-	EnvMockTickMS    = "MOCK_TICK_MS"
+	EnvServerPort         = "SERVER_PORT"
+	EnvNodeReportURL      = "NODE_REPORT_URL"
+	EnvMockTickMS         = "MOCK_TICK_MS"
+	EnvEngineSharedSecret = "ENGINE_SHARED_SECRET"
 )
 
 // 配置缺省值：yml 里没写、环境变量也没设时使用（本地联调场景，Node 管理端跑在 3001）。
@@ -72,6 +73,13 @@ func ApplyEnvOverrides(conf *viper.Viper) error {
 		return fmt.Errorf("%s / engine.mock_tick_ms 不能小于 50 毫秒，当前为 %d", EnvMockTickMS, tick)
 	}
 	conf.Set("engine.mock_tick_ms", tick)
+
+	// engine.shared_secret（契约 v1.12）：环境变量优先，空 = 无鉴权过渡态
+	secret := strings.TrimSpace(conf.GetString("engine.shared_secret"))
+	if v := strings.TrimSpace(os.Getenv(EnvEngineSharedSecret)); v != "" {
+		secret = v
+	}
+	conf.Set("engine.shared_secret", secret)
 
 	// 其余可选运行参数（仅 yml 配置，给出默认值）
 	if conf.GetInt("engine.report_timeout_ms") <= 0 {

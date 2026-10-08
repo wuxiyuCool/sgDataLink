@@ -33,6 +33,15 @@ const MYSQL_STORES = {
   user: () => require('./mysql/user.store'),
   loginlog: () => require('./mysql/loginlog.store'),
   docaccesslog: () => require('./mysql/docaccesslog.store'),
+  // 指标中心（契约 1.12）
+  metricdomain: () => require('./mysql/metricdomain.store'),
+  metricmodel: () => require('./mysql/metricmodel.store'),
+  metric: () => require('./mysql/metric.store'),
+  metricsetting: () => require('./mysql/metricsetting.store'),
+  metricdep: () => require('./mysql/metricdep.store'),
+  metricversion: () => require('./mysql/metricversion.store'),
+  metrictask: () => require('./mysql/metrictask.store'),
+  metrictaskrun: () => require('./mysql/metrictaskrun.store'),
 };
 
 /** 把实现对象的函数全部包一层，保证签名统一返回 Promise（非函数属性原样保留） */

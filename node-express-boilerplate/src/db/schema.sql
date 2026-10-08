@@ -405,3 +405,242 @@ CREATE TABLE IF NOT EXISTS `databridge_id_seq` (
   `next_val`  INT        NOT NULL DEFAULT 0 COMMENT '最近一次已分配的序号',
   PRIMARY KEY (`id_prefix`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- 指标中心（契约 1.12；实施规格 docs/METRIC-DEV.md §5）
+-- ID 前缀：dom- mdl- met- mver- mtk- mtr- mterm- mex- mlg-（model_column/metric_dep/
+-- metric_setting 无字符串 id，用自然键）。
+-- 枚举列（layer/type/status 等）不加 DB 约束，由 service 层按契约枚举校验（与既有表一致）。
+-- metric.code 唯一键全库终身制：软删不释放 code，被引用的指标删除由 service 层 40903 拦截。
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_domain` (
+  `seq`          BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`           VARCHAR(64)  NOT NULL COMMENT 'dom- 前缀',
+  `name`         VARCHAR(128) NOT NULL,
+  `code`         VARCHAR(64)  NOT NULL COMMENT '域编码 ^[a-z][a-z0-9_]{1,30}$，界面建表前缀来源',
+  `parent_id`    VARCHAR(64)  NOT NULL DEFAULT '0',
+  `table_prefix` VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '空则取 code',
+  `owner`        VARCHAR(64)  NOT NULL DEFAULT '',
+  `sort`         INT          NOT NULL DEFAULT 0,
+  `del_flag`     TINYINT(1)   NOT NULL DEFAULT 0,
+  `remark`       VARCHAR(512) NOT NULL DEFAULT '',
+  `create_by`    VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`   DATETIME(3)  NULL,
+  `updated_at`   DATETIME(3)  NULL,
+  `extra`        JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricdomain_id` (`id`),
+  UNIQUE KEY `uk_metricdomain_code` (`code`),
+  KEY `idx_metricdomain_parent` (`parent_id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_model` (
+  `seq`           BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`            VARCHAR(64)  NOT NULL COMMENT 'mdl- 前缀',
+  `name`          VARCHAR(128) NOT NULL,
+  `datasource_id` VARCHAR(64)  NOT NULL,
+  `domain_id`     VARCHAR(64)  NOT NULL,
+  `layer`         VARCHAR(8)   NOT NULL COMMENT 'ODS | DIM | DWD | DWS | ADS',
+  `table_name`    VARCHAR(128) NOT NULL,
+  `create_type`   VARCHAR(16)  NOT NULL COMMENT 'reference 引用已有表 | ddl 界面建表',
+  `table_ddl`     TEXT         NULL COMMENT 'create_type=ddl 时的建表语句留档',
+  `time_column`   VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '默认时间维度列',
+  `status`        VARCHAR(8)   NOT NULL DEFAULT 'online' COMMENT 'online | offline',
+  `version`       INT          NOT NULL DEFAULT 1,
+  `del_flag`      TINYINT(1)   NOT NULL DEFAULT 0,
+  `remark`        VARCHAR(512) NOT NULL DEFAULT '',
+  `create_by`     VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`    DATETIME(3)  NULL,
+  `updated_at`    DATETIME(3)  NULL,
+  `extra`         JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricmodel_id` (`id`),
+  KEY `idx_metricmodel_ds_table` (`datasource_id`, `table_name`),
+  KEY `idx_metricmodel_domain` (`domain_id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_model_column` (
+  `seq`         BIGINT       NOT NULL AUTO_INCREMENT,
+  `model_id`    VARCHAR(64)  NOT NULL,
+  `column_name` VARCHAR(64)  NOT NULL,
+  `biz_name`    VARCHAR(128) NOT NULL DEFAULT '' COMMENT '中文业务名，LLM schema/M2SQL 召回用',
+  `data_type`   VARCHAR(32)  NOT NULL,
+  `role`        VARCHAR(16)  NOT NULL COMMENT 'dimension | measure | time',
+  `agg_default` VARCHAR(16)  NOT NULL DEFAULT '' COMMENT 'measure 默认聚合 sum|count|max|min|avg|count_distinct',
+  `is_key`      TINYINT(1)   NOT NULL DEFAULT 0,
+  `unit`        VARCHAR(16)  NOT NULL DEFAULT '',
+  `remark`      VARCHAR(512) NOT NULL DEFAULT '',
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricmodelcol` (`model_id`, `column_name`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_metric` (
+  `seq`           BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`            VARCHAR(64)  NOT NULL COMMENT 'met- 前缀',
+  `code`          VARCHAR(64)  NOT NULL COMMENT '指标编码 ^[a-z][a-z0-9_]{2,63}$，复合公式 ${code} 引用锚点，创建后不可改',
+  `name`          VARCHAR(128) NOT NULL,
+  `alias`         JSON         NULL COMMENT '别名数组',
+  `type`          VARCHAR(16)  NOT NULL COMMENT 'ATOMIC | DERIVED | COMPOSITE（保存时按规则推导，不人工填）',
+  `define_type`   VARCHAR(16)  NOT NULL COMMENT 'MEASURE | FIELD | METRIC',
+  `model_id`      VARCHAR(64)  NOT NULL DEFAULT '' COMMENT 'ATOMIC 必填；DERIVED 空=继承基底',
+  `domain_id`     VARCHAR(64)  NOT NULL DEFAULT '',
+  `expr`          TEXT         NULL COMMENT '聚合 SQL 片段（ATOMIC）/ 标量公式（COMPOSITE），见 METRIC-DEV §6',
+  `define_params` JSON         NULL COMMENT '编译器输入：measureColumn/agg/filterSql/baseMetricId/dimensions/timePreset/refs',
+  `unit`          VARCHAR(32)  NOT NULL DEFAULT '',
+  `data_format`   VARCHAR(16)  NOT NULL DEFAULT 'DECIMAL' COMMENT 'DECIMAL | PERCENT | THOUSANDTH',
+  `caliber`       TEXT         NULL COMMENT '业务口径',
+  `owner`         VARCHAR(64)  NOT NULL DEFAULT '',
+  `status`        VARCHAR(8)   NOT NULL DEFAULT 'draft' COMMENT 'draft | online | offline',
+  `version`       INT          NOT NULL DEFAULT 1,
+  `is_publish`    TINYINT(1)   NOT NULL DEFAULT 0,
+  `del_flag`      TINYINT(1)   NOT NULL DEFAULT 0,
+  `remark`        VARCHAR(512) NOT NULL DEFAULT '',
+  `create_by`     VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`    DATETIME(3)  NULL,
+  `updated_at`    DATETIME(3)  NULL,
+  `extra`         JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricmetric_id` (`id`),
+  UNIQUE KEY `uk_metricmetric_code` (`code`),
+  KEY `idx_metricmetric_model` (`model_id`),
+  KEY `idx_metricmetric_domain` (`domain_id`),
+  KEY `idx_metricmetric_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 指标依赖边：保存时由 expr 解析重建（删旧插新）；lineage/tree/循环检测/影响分析的共同数据源
+CREATE TABLE IF NOT EXISTS `databridge_metric_dep` (
+  `seq`       BIGINT       NOT NULL AUTO_INCREMENT,
+  `parent_id` VARCHAR(64)  NOT NULL COMMENT '引用方（派生/复合指标）',
+  `child_id`  VARCHAR(64)  NOT NULL COMMENT '被引用方（基底/子指标）',
+  `ref_expr`  VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '公式中的引用位置说明',
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricdep` (`parent_id`, `child_id`),
+  KEY `idx_metricdep_child` (`child_id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_version` (
+  `seq`         BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`          VARCHAR(64)  NOT NULL COMMENT 'mver- 前缀',
+  `metric_id`   VARCHAR(64)  NOT NULL,
+  `version`     INT          NOT NULL,
+  `snapshot`    JSON         NOT NULL COMMENT '指标行完整快照',
+  `change_note` VARCHAR(512) NOT NULL DEFAULT '',
+  `create_by`   VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`  DATETIME(3)  NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricversion_id` (`id`),
+  KEY `idx_metricversion_metric` (`metric_id`, `version`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_task` (
+  `seq`                  BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`                   VARCHAR(64)  NOT NULL COMMENT 'mtk- 前缀',
+  `name`                 VARCHAR(128) NOT NULL,
+  `domain_id`            VARCHAR(64)  NOT NULL,
+  `source_model_id`      VARCHAR(64)  NOT NULL,
+  `metric_ids`           JSON         NULL COMMENT '本任务汇总的指标 id 数组',
+  `dimension_column_ids` JSON         NULL COMMENT 'GROUP BY 的模型字段 id 数组',
+  `clean_rules`          JSON         NULL COMMENT '清洗规则数组 filter/dedup/fill/rename（METRIC-DEV §7.2.2）',
+  `time_preset`          JSON         NULL COMMENT '{mode:BETWEEN|RECENT, unit:DAY|WEEK|MONTH, period}',
+  `target_datasource_id` VARCHAR(64)  NOT NULL,
+  `target_model_id`      VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '已存在的 ADS 模型；空=运行时自动建表',
+  `target_table`         VARCHAR(128) NOT NULL DEFAULT '',
+  `write_mode`           VARCHAR(16)  NOT NULL DEFAULT 'overwrite' COMMENT 'overwrite | append | upsert(仅mysql)',
+  `upsert_keys`          JSON         NULL,
+  `schedule_cron`        VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '空=手动；Quartz 6 位，格式同契约 1.2',
+  `status`               VARCHAR(8)   NOT NULL DEFAULT 'online' COMMENT 'online | offline(暂停调度)',
+  `last_run_at`          DATETIME(3)  NULL,
+  `last_status`          VARCHAR(16)  NOT NULL DEFAULT 'idle' COMMENT 'idle | running | success | failed',
+  `del_flag`             TINYINT(1)   NOT NULL DEFAULT 0,
+  `remark`               VARCHAR(512) NOT NULL DEFAULT '',
+  `create_by`            VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`           DATETIME(3)  NULL,
+  `updated_at`           DATETIME(3)  NULL,
+  `extra`                JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricktask_id` (`id`),
+  KEY `idx_metricktask_domain` (`domain_id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_task_run` (
+  `seq`        BIGINT      NOT NULL AUTO_INCREMENT,
+  `id`         VARCHAR(64) NOT NULL COMMENT 'mtr- 前缀',
+  `task_id`    VARCHAR(64) NOT NULL,
+  `trigger`    VARCHAR(8)  NOT NULL COMMENT 'manual | cron',
+  `status`     VARCHAR(8)  NOT NULL COMMENT 'running | success | failed',
+  `sql_text`   TEXT        NULL COMMENT '实际执行的清洗 SQL，多语句以换行分隔',
+  `read_rows`  BIGINT      NOT NULL DEFAULT 0,
+  `write_rows` BIGINT      NOT NULL DEFAULT 0,
+  `elapsed_ms` BIGINT      NOT NULL DEFAULT 0,
+  `message`    TEXT        NULL,
+  `created_at` DATETIME(3) NULL,
+  `extra`      JSON        NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metrickrun_id` (`id`),
+  KEY `idx_metrickrun_task` (`task_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_term` (
+  `seq`                BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`                 VARCHAR(64)  NOT NULL COMMENT 'mterm- 前缀',
+  `name`               VARCHAR(128) NOT NULL,
+  `alias`              JSON         NULL,
+  `description`        TEXT         NULL COMMENT '给 LLM 的术语解释',
+  `related_metric_ids` JSON         NULL,
+  `related_model_ids`  JSON         NULL,
+  `del_flag`           TINYINT(1)   NOT NULL DEFAULT 0,
+  `created_at`         DATETIME(3)  NULL,
+  `updated_at`         DATETIME(3)  NULL,
+  `extra`              JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricterm_id` (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `databridge_metric_example` (
+  `seq`        BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`         VARCHAR(64)  NOT NULL COMMENT 'mex- 前缀',
+  `question`   VARCHAR(512) NOT NULL,
+  `m2sql`      TEXT         NOT NULL COMMENT 'M2SQL 语义 SQL（few-shot 示例答案）',
+  `note`       VARCHAR(512) NOT NULL DEFAULT '',
+  `enabled`    TINYINT(1)   NOT NULL DEFAULT 1,
+  `created_at` DATETIME(3)  NULL,
+  `extra`      JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricexample_id` (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 问数日志：滚动保留最近 5 万条（service 层按 seq 裁剪，仿 databridge_doc_access_log 1 万条做法）
+CREATE TABLE IF NOT EXISTS `databridge_metric_query_log` (
+  `seq`            BIGINT        NOT NULL AUTO_INCREMENT,
+  `id`             VARCHAR(64)   NOT NULL COMMENT 'mlg- 前缀',
+  `user_name`      VARCHAR(64)   NOT NULL DEFAULT '',
+  `question`       VARCHAR(1024) NOT NULL,
+  `matched`        JSON          NULL COMMENT '召回元素明细',
+  `metric_ids`     VARCHAR(1024) NOT NULL DEFAULT '' COMMENT '命中指标 id 逗号分隔冗余列（hotMetrics 计数用，勿解析 matched）',
+  `m2sql`          TEXT          NULL,
+  `physical_sql`   TEXT          NULL,
+  `status`         VARCHAR(8)    NOT NULL COMMENT 'success | corrected | failed | clarify',
+  `error`          TEXT          NULL,
+  `elapsed_ms`     BIGINT        NOT NULL DEFAULT 0,
+  `result_preview` TEXT          NULL,
+  `reviewed`       TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1=人工审核通过，可转 example',
+  `created_at`     DATETIME(3)   NULL,
+  `extra`          JSON          NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricqlog_id` (`id`),
+  KEY `idx_metricqlog_created` (`created_at`),
+  KEY `idx_metricqlog_status` (`status`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 指标中心系统配置：表内值优先于 env（LLM_* 回落，METRIC-DEV §5.12/§10.2）
+CREATE TABLE IF NOT EXISTS `databridge_metric_setting` (
+  `seq`           BIGINT      NOT NULL AUTO_INCREMENT,
+  `setting_key`   VARCHAR(64) NOT NULL COMMENT 'llm.baseUrl | llm.apiKey | llm.model | llm.timeoutMs | llm.embed.enabled | llm.embedModel',
+  `setting_value` TEXT        NOT NULL,
+  `secret`        TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1=API 掩码回显（仿 docKey 做法），明文不出接口',
+  `updated_by`    VARCHAR(64) NOT NULL DEFAULT '',
+  `updated_at`    DATETIME(3) NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metricsetting_key` (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

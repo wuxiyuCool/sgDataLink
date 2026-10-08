@@ -74,6 +74,22 @@ func Dial(ctx context.Context, source, target Endpoint) (*Connector, error) {
 	return c, nil
 }
 
+// OpenSingle 通用 SQL 执行接口（契约 2.5）用的单端连接：
+// 只做连接字段校验（不要求 Table），方言挑选 + 开池 + 握手与 Dial 同一套。
+func OpenSingle(ctx context.Context, ep Endpoint) (*sql.DB, error) {
+	d, err := newDialect(ep)
+	if err != nil {
+		return nil, err
+	}
+	if err := ep.ValidateConnect(); err != nil {
+		return nil, err
+	}
+	return openPooled(ctx, ep, d)
+}
+
+// Redact 导出版口令擦除（错误消息进响应前的最后一道）。
+func Redact(msg, password string) string { return redact(msg, password) }
+
 // Close 关闭两侧连接池（nil 安全）。
 func (c *Connector) Close() error {
 	if c == nil {
