@@ -590,7 +590,7 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 | M6b 前端·扩展 | 指标任务管理、系统配置、独立问数审计页（若 M6a 的 tab 已够用可只做前两项） | 任务/配置/审计操作闭环 |
 | M7 收尾 | RELEASE.md 补发版说明（admin+engine 双重建，`ONLY=admin,engine,web`）、回归全量 | 全绿 |
 
-**实施进度（2026-10-08）**：M0~M6b ✅（`feat/metric-center`；六套件回归 base40/model39/compile44/sql19/task29/chat19 全绿）。问数对外服务 ✅（X-CHAT-KEY 用户绑定 key/文档中心自描述含 curl 模板/审计仅 admin，`test-chat-api.js` 19/19）。剩：浏览器人工验收 + M7 发版。
+**实施进度（2026-10-08）**：M0~M7 ✅ 全量完成（`feat/metric-center`；全 12 套件回归全绿：metric base40/model39/compile51/sql19/task29/chat19 + chat-api19 + users33/dockey31/swagger40/forward19/parse-curl）。问数对外服务 ✅。M7 收尾：RELEASE.md 补 v9 三镜像重建说明、合并 main、打 tag V9。
 
 **前端 UI 精修（2026-10-08）**：指标中心三个原生弹窗改版——域表单（600 宽居中/图标标题/提示条/两列栅格）、数据预览（980 宽/执行 SQL 代码块/行数说明/斑马纹）、运行记录（1000 宽/触发与状态中文 Tag/SQL 明细美化）；统一圆角与斑马纹样式收进 `src/design/index.less`（antd Modal 内容在 scoped 样式外，必须全局选择器）。web dist 已重打包 `deploy/web-dist/web-dist.tar.gz`。
 
