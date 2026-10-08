@@ -63,6 +63,15 @@ const metric: AppRouteModule = {
       },
     },
     {
+      path: 'tasks',
+      name: 'MetricTasks',
+      component: () => import('/@/views/metric/task/index.vue'),
+      meta: {
+        title: '任务管理',
+        icon: 'ion:hammer-outline',
+      },
+    },
+    {
       path: 'setting',
       name: 'MetricSetting',
       component: () => import('/@/views/metric/setting/index.vue'),

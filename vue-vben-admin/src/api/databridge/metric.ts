@@ -368,3 +368,93 @@ export function logToExampleApi(id: string) {
     data: {},
   })
 }
+
+// ==================== 清洗汇总任务 ====================
+
+export interface MetricTaskCleanRule {
+  type: 'filter' | 'fill' | 'rename'
+  sql?: string
+  column?: string
+  value?: string
+  to?: string
+}
+
+export interface MetricTask {
+  id: string
+  name: string
+  domainId?: string
+  sourceModelId: string
+  metricIds: string[]
+  dimensionColumnIds: string[]
+  cleanRules: MetricTaskCleanRule[]
+  timePreset?: { mode: 'BETWEEN' | 'RECENT'; start?: string; end?: string; unit?: string; period?: number } | null
+  targetDatasourceId: string
+  targetModelId?: string
+  targetTable: string
+  writeMode: 'overwrite' | 'append' | 'upsert'
+  upsertKeys?: string[]
+  scheduleCron?: string
+  status: 'online' | 'offline'
+  lastStatus?: 'idle' | 'running' | 'success' | 'failed'
+  lastRunAt?: string
+  lastError?: string
+  remark?: string
+}
+
+export interface MetricTaskRun {
+  id: string
+  taskId: string
+  trigger: string
+  status: string
+  sqlText?: string
+  readRows?: number
+  writeRows?: number
+  elapsedMs?: number
+  message?: string
+  createdAt?: string
+}
+
+export function getMetricTasksApi(params: {
+  domainId?: string
+  status?: string
+  lastStatus?: string
+  keyword?: string
+  page?: number
+  size?: number
+}) {
+  return databridgeHttp.get<{ items: MetricTask[]; total: number; page: number; size: number }>({
+    url: '/metric-tasks',
+    params,
+  })
+}
+
+export function getMetricTaskApi(id: string) {
+  return databridgeHttp.get<MetricTask>({ url: `/metric-tasks/${id}` })
+}
+
+export function createMetricTaskApi(data: Partial<MetricTask>) {
+  return databridgeHttp.post<MetricTask>({ url: '/metric-tasks', data })
+}
+
+export function updateMetricTaskApi(id: string, data: Partial<MetricTask>) {
+  return databridgeHttp.put<MetricTask>({ url: `/metric-tasks/${id}`, data })
+}
+
+export function deleteMetricTaskApi(id: string) {
+  return databridgeHttp.delete<{ deleted: boolean }>({ url: `/metric-tasks/${id}` })
+}
+
+export function runMetricTaskApi(id: string) {
+  return databridgeHttp.post<MetricTaskRun>({ url: `/metric-tasks/${id}/run`, data: {} })
+}
+
+export function getMetricTaskRunsApi(id: string, params?: { page?: number; size?: number }) {
+  return databridgeHttp.get<{ items: MetricTaskRun[]; total: number }>({ url: `/metric-tasks/${id}/runs`, params })
+}
+
+export function previewMetricTaskApi(data: Partial<MetricTask>) {
+  return databridgeHttp.post<{ statements: string[]; dateRange: { start: string; end: string } | null; fromTable: string }>({
+    url: '/metric-tasks/preview',
+    data,
+  })
+}
