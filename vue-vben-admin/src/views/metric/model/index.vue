@@ -3,6 +3,7 @@
     title="指标中心 · 数据建模"
     content="把物理表登记为模型（reference 引用现有表 / ddl 界面建表），维护字段业务名与角色（维度/时间/度量），指标从度量字段定义"
   >
+    <GuideCard :guide="PAGE_GUIDES.model" />
     <Card :bordered="false" class="mb-3">
       <Form layout="inline" @finish="handleSearch">
         <FormItem label="域" name="domainId">
@@ -25,7 +26,12 @@
           />
         </FormItem>
         <FormItem label="关键字" name="keyword">
-          <Input v-model:value="query.keyword" allow-clear placeholder="模型/表名" style="width: 180px" />
+          <Input
+            v-model:value="query.keyword"
+            allow-clear
+            placeholder="模型/表名"
+            style="width: 180px"
+          />
         </FormItem>
         <FormItem>
           <Space>
@@ -78,7 +84,10 @@
                 预览数据
               </Button>
               <Button type="link" size="small" @click="handleEdit(record)">编辑</Button>
-              <Popconfirm title="确认删除该模型？域内被引用时后端会拒绝" @confirm="handleDelete(record)">
+              <Popconfirm
+                title="确认删除该模型？域内被引用时后端会拒绝"
+                @confirm="handleDelete(record)"
+              >
                 <Button type="link" size="small" danger>删除</Button>
               </Popconfirm>
             </Space>
@@ -90,12 +99,13 @@
     <ModelModal @register="registerModelModal" @success="reload" />
     <ColumnsModal @register="registerColumnsModal" @success="reload" />
 
-    <Modal
-      v-model:visible="dataVisible"
-      :width="980"
+    <BasicModal
+      v-bind="$attrs"
+      :width="1040"
       centered
+      canFullscreen
       :footer="null"
-      class="preview-modal"
+      @register="registerPreviewModal"
     >
       <template #title>
         <span class="modal-title">
@@ -103,31 +113,27 @@
           数据预览 · {{ previewModel?.name || '' }}
         </span>
       </template>
-      <Alert
-        v-if="previewError"
-        type="error"
-        show-icon
-        :message="previewError"
-        class="mb-3"
-      />
-      <div v-if="previewResult?.sql" class="sql-block mb-3">
-        <span class="sql-label">执行 SQL</span>
-        <code>{{ previewResult.sql }}</code>
+      <div class="preview-modal-root">
+        <Alert v-if="previewError" type="error" show-icon :message="previewError" class="mb-3" />
+        <div v-if="previewResult?.sql" class="sql-block mb-3">
+          <span class="sql-label">执行 SQL</span>
+          <code>{{ previewResult.sql }}</code>
+        </div>
+        <div v-if="previewResult?.rows" class="preview-meta mb-2">
+          共 <b>{{ previewRows.length }}</b> 行 · 只读预览，最多返回前 100 行
+        </div>
+        <Table
+          v-if="previewResult?.rows"
+          :columns="previewColumns"
+          :data-source="previewRows"
+          :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 行` }"
+          size="small"
+          :scroll="{ x: true }"
+          row-key="__idx"
+          :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
+        />
       </div>
-      <div v-if="previewResult?.rows" class="preview-meta mb-2">
-        共 <b>{{ previewRows.length }}</b> 行 · 只读预览，最多返回前 100 行
-      </div>
-      <Table
-        v-if="previewResult?.rows"
-        :columns="previewColumns"
-        :data-source="previewRows"
-        :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 行` }"
-        size="small"
-        :scroll="{ x: true }"
-        row-key="__idx"
-        :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
-      />
-    </Modal>
+    </BasicModal>
   </PageWrapper>
 </template>
 
@@ -142,7 +148,6 @@
     Card,
     Form,
     Input,
-    Modal,
     Popconfirm,
     Select,
     Space,
@@ -160,8 +165,10 @@
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { Icon } from '/@/components/Icon'
-  import { useModal } from '/@/components/Modal'
+  import { BasicModal, useModal } from '/@/components/Modal'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import { LAYER_OPTIONS, LAYER_TAG_COLORS } from '../data'
@@ -174,6 +181,7 @@
   const { createMessage } = useMessage()
   const [registerModelModal, { openModal: openModelModal }] = useModal()
   const [registerColumnsModal, { openModal: openColumnsModal }] = useModal()
+  const [registerPreviewModal, { openModal: openPreviewModal }] = useModal()
 
   const query = reactive({
     domainId: undefined as string | undefined,
@@ -267,7 +275,6 @@
     }
   }
 
-  const dataVisible = ref(false)
   const previewingId = ref('')
   const previewModel = ref<MetricModel | null>(null)
   const previewResult = ref<Awaited<ReturnType<typeof previewModelDataApi>> | null>(null)
@@ -279,7 +286,7 @@
       dataIndex: c,
       key: c,
       ellipsis: true,
-    }))
+    })),
   )
 
   const previewRows = computed(() =>
@@ -289,7 +296,7 @@
         record[col] = row[i]
       })
       return record
-    })
+    }),
   )
 
   async function handlePreview(record: MetricModel) {
@@ -302,10 +309,13 @@
       if (!previewResult.value.executable) {
         previewError.value = previewResult.value.error || '内存模式不发起真实查询'
       }
-      dataVisible.value = true
+      openPreviewModal(true)
     } catch (error) {
-      previewError.value = getApiErrorMessage(error, '预览失败（数据源 SQL 执行错误将透传真实库信息）')
-      dataVisible.value = true
+      previewError.value = getApiErrorMessage(
+        error,
+        '预览失败（数据源 SQL 执行错误将透传真实库信息）',
+      )
+      openPreviewModal(true)
     } finally {
       previewingId.value = ''
     }

@@ -1,5 +1,6 @@
 <template>
   <PageWrapper title="指标中心 · 首页概览" content="域/模型/指标资产、清洗任务与智能问数的实时统计">
+    <GuideCard :guide="PAGE_GUIDES.home" />
     <Spin :spinning="loading">
       <Row :gutter="16" class="mb-4">
         <Col :span="6">
@@ -67,8 +68,7 @@
                 {{ dash?.tasks.total ?? 0 }}（启用 {{ dash?.tasks.enabled ?? 0 }}）
               </DescriptionsItem>
               <DescriptionsItem label="成功 / 失败 / 运行中">
-                {{ dash?.tasks.last24h.success ?? 0 }} /
-                {{ dash?.tasks.last24h.failed ?? 0 }} /
+                {{ dash?.tasks.last24h.success ?? 0 }} / {{ dash?.tasks.last24h.failed ?? 0 }} /
                 {{ dash?.tasks.last24h.running ?? 0 }}
               </DescriptionsItem>
               <DescriptionsItem label="成功率">
@@ -101,12 +101,25 @@
 
 <script lang="ts" setup>
   import { onMounted, ref } from 'vue'
-  import { Button, Card, Col, Descriptions, Empty, Row, Spin, Statistic, Table, Tag } from 'ant-design-vue'
+  import {
+    Button,
+    Card,
+    Col,
+    Descriptions,
+    Empty,
+    Row,
+    Spin,
+    Statistic,
+    Table,
+    Tag,
+  } from 'ant-design-vue'
   import { useRouter } from 'vue-router'
 
   import { getMetricDashboardApi, type MetricDashboard } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import { LAYER_TAG_COLORS } from '../data'

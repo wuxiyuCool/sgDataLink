@@ -3,6 +3,7 @@
     title="指标中心 · 指标管理"
     content="原子（度量/字段级）、派生（继承基底+限定）、复合（${code} 公式）三类指标；保存即版本，支持公式校验、展开树、血缘、试跑与回滚"
   >
+    <GuideCard :guide="PAGE_GUIDES.metric" />
     <Card :bordered="false" class="mb-3">
       <Form layout="inline" @finish="handleSearch">
         <FormItem label="域" name="domainId">
@@ -16,7 +17,13 @@
           />
         </FormItem>
         <FormItem label="类型" name="type">
-          <Select v-model:value="query.type" :options="METRIC_TYPE_OPTIONS" allow-clear placeholder="全部" style="width: 140px" />
+          <Select
+            v-model:value="query.type"
+            :options="METRIC_TYPE_OPTIONS"
+            allow-clear
+            placeholder="全部"
+            style="width: 140px"
+          />
         </FormItem>
         <FormItem label="状态" name="status">
           <Select
@@ -28,7 +35,12 @@
           />
         </FormItem>
         <FormItem label="关键字" name="keyword">
-          <Input v-model:value="query.keyword" allow-clear placeholder="名称/编码/别名" style="width: 180px" />
+          <Input
+            v-model:value="query.keyword"
+            allow-clear
+            placeholder="名称/编码/别名"
+            style="width: 180px"
+          />
         </FormItem>
         <FormItem>
           <Space>
@@ -71,10 +83,17 @@
           <template v-else-if="column.key === 'action'">
             <Space :size="0">
               <Button type="link" size="small" @click="handleDetail(record, 'tree')">公式树</Button>
-              <Button type="link" size="small" @click="handleDetail(record, 'preview')">试跑</Button>
-              <Button type="link" size="small" @click="handleDetail(record, 'versions')">版本</Button>
+              <Button type="link" size="small" @click="handleDetail(record, 'preview')"
+                >试跑</Button
+              >
+              <Button type="link" size="small" @click="handleDetail(record, 'versions')"
+                >版本</Button
+              >
               <Button type="link" size="small" @click="handleEdit(record)">编辑</Button>
-              <Popconfirm title="确认删除？被其他指标引用时后端会拒绝（40903）" @confirm="handleDelete(record)">
+              <Popconfirm
+                title="确认删除？被其他指标引用时后端会拒绝（40903）"
+                @confirm="handleDelete(record)"
+              >
                 <Button type="link" size="small" danger>删除</Button>
               </Popconfirm>
             </Space>
@@ -91,7 +110,18 @@
 <script lang="ts" setup>
   import { onMounted, reactive, ref } from 'vue'
 
-  import { Button, Card, Form, Input, Popconfirm, Select, Space, Table, Tag, TreeSelect } from 'ant-design-vue'
+  import {
+    Button,
+    Card,
+    Form,
+    Input,
+    Popconfirm,
+    Select,
+    Space,
+    Table,
+    Tag,
+    TreeSelect,
+  } from 'ant-design-vue'
 
   import {
     deleteMetricApi,
@@ -104,6 +134,8 @@
   import { Icon } from '/@/components/Icon'
   import { useModal } from '/@/components/Modal'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import { usePagedFetch } from '../../databridge/hooks/usePagedFetch'
@@ -140,25 +172,38 @@
     { title: '单位', dataIndex: 'unit', key: 'unit', width: 80 },
     { title: '口径', dataIndex: 'caliber', key: 'caliber', width: 200, ellipsis: true },
     { title: '版本', dataIndex: 'version', key: 'version', width: 70 },
-    { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 160, customRender: ({ text }: any) => formatTime(text) },
+    {
+      title: '更新时间',
+      dataIndex: 'updatedAt',
+      key: 'updatedAt',
+      width: 160,
+      customRender: ({ text }: any) => formatTime(text),
+    },
     { title: '操作', key: 'action', width: 250, fixed: 'right' as const },
   ]
 
   const domainOptions = ref<any[]>([])
 
-  const { loading, dataSource, getPagination, search, reload, reset: resetFetch, handleTableChange } =
-    usePagedFetch<MetricItem>(
-      (params) =>
-        getMetricsApi({
-          page: params.page,
-          size: params.size,
-          domainId: query.domainId,
-          type: query.type,
-          status: query.status,
-          keyword: query.keyword,
-        }),
-      query,
-    )
+  const {
+    loading,
+    dataSource,
+    getPagination,
+    search,
+    reload,
+    reset: resetFetch,
+    handleTableChange,
+  } = usePagedFetch<MetricItem>(
+    (params) =>
+      getMetricsApi({
+        page: params.page,
+        size: params.size,
+        domainId: query.domainId,
+        type: query.type,
+        status: query.status,
+        keyword: query.keyword,
+      }),
+    query,
+  )
 
   function toTreeOptions(nodes: MetricDomain[]): any[] {
     return nodes.map((node) => ({

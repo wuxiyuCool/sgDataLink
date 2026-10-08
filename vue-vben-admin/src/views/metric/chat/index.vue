@@ -3,6 +3,7 @@
     title="指标中心 · 智能问数"
     content="自然语言问指标：召回→生成 M2SQL→纠错→编译为物理 SQL 在真实库执行；指标卡展开子指标公式与取值（需已配置 LLM）"
   >
+    <GuideCard :guide="PAGE_GUIDES.chat" />
     <Card :bordered="false">
       <Tabs v-model:activeKey="activeTab">
         <TabPane key="chat" tab="对话">
@@ -23,7 +24,10 @@
                       </span>
                     </Space>
                     <div class="answer-line">
-                      <span v-if="msg.result?.value !== undefined && msg.result?.value !== null" class="big-value">
+                      <span
+                        v-if="msg.result?.value !== undefined && msg.result?.value !== null"
+                        class="big-value"
+                      >
                         {{ msg.result.value }}
                       </span>
                       <span>{{ msg.result?.answer || msg.text }}</span>
@@ -71,19 +75,31 @@
                               {{ METRIC_TYPE_LABELS[node.type] || node.type }}
                             </Tag>
                             <span>{{ node.title }}</span>
-                            <span v-if="node.valueText" class="node-value">{{ node.valueText }}</span>
+                            <span v-if="node.valueText" class="node-value">{{
+                              node.valueText
+                            }}</span>
                             <span v-if="node.exprText" class="expr-text">{{ node.exprText }}</span>
                           </Space>
                         </template>
                       </Tree>
                     </div>
-                    <Collapse v-if="msg.result?.m2sql || msg.result?.physicalSql" ghost class="mt-1">
+                    <Collapse
+                      v-if="msg.result?.m2sql || msg.result?.physicalSql"
+                      ghost
+                      class="mt-1"
+                    >
                       <CollapsePane key="sql" header="查看 M2SQL / 物理 SQL">
                         <div v-if="msg.result.m2sql" class="sql-block">{{ msg.result.m2sql }}</div>
-                        <div v-if="msg.result.physicalSql" class="sql-block mt-1">{{ msg.result.physicalSql }}</div>
+                        <div v-if="msg.result.physicalSql" class="sql-block mt-1">{{
+                          msg.result.physicalSql
+                        }}</div>
                       </CollapsePane>
                     </Collapse>
-                    <div v-if="msg.result?.warnings?.length" class="text-gray mt-1" style="font-size: 12px">
+                    <div
+                      v-if="msg.result?.warnings?.length"
+                      class="text-gray mt-1"
+                      style="font-size: 12px"
+                    >
                       {{ msg.result.warnings.join('；') }}
                     </div>
                   </div>
@@ -112,7 +128,13 @@
 
         <TabPane v-if="isAdmin" key="history" tab="历史（问数审计）">
           <Space class="mb-3" wrap>
-            <Input v-model:value="logQuery.keyword" allow-clear placeholder="问题关键字" style="width: 200px" @press-enter="loadLogs" />
+            <Input
+              v-model:value="logQuery.keyword"
+              allow-clear
+              placeholder="问题关键字"
+              style="width: 200px"
+              @press-enter="loadLogs"
+            />
             <Select
               v-model:value="logQuery.status"
               :options="[
@@ -125,7 +147,12 @@
               placeholder="结果"
               style="width: 140px"
             />
-            <Input v-model:value="logQuery.userName" allow-clear placeholder="提问人" style="width: 140px" />
+            <Input
+              v-model:value="logQuery.userName"
+              allow-clear
+              placeholder="提问人"
+              style="width: 140px"
+            />
             <Button type="primary" @click="loadLogs">查询</Button>
           </Space>
           <Table
@@ -140,9 +167,13 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'status'">
-                <Tag :color="CHAT_STATUS_TAG_COLORS[record.status]">{{ CHAT_STATUS_LABELS[record.status] || record.status }}</Tag>
+                <Tag :color="CHAT_STATUS_TAG_COLORS[record.status]">{{
+                  CHAT_STATUS_LABELS[record.status] || record.status
+                }}</Tag>
               </template>
-              <template v-else-if="column.key === 'createdAt'">{{ formatTime(record.createdAt) }}</template>
+              <template v-else-if="column.key === 'createdAt'">{{
+                formatTime(record.createdAt)
+              }}</template>
               <template v-else-if="column.key === 'action'">
                 <Space :size="0">
                   <Button type="link" size="small" @click="reAsk(record)">再问一次</Button>
@@ -151,7 +182,11 @@
                     title="把这条问答转为 few-shot 示例？"
                     @confirm="handleToExample(record)"
                   >
-                    <Button type="link" size="small" :disabled="!record.m2sql || record.status === 'failed'">
+                    <Button
+                      type="link"
+                      size="small"
+                      :disabled="!record.m2sql || record.status === 'failed'"
+                    >
                       转示例
                     </Button>
                   </Popconfirm>
@@ -194,6 +229,8 @@
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
   import { useUserStore } from '/@/store/modules/user'
 
@@ -251,7 +288,11 @@
     } catch (error) {
       messages.value.push({
         role: 'assistant',
-        result: { status: 'failed', answer: '问数请求失败', error: getApiErrorMessage(error, '请求失败') } as ChatAskResult,
+        result: {
+          status: 'failed',
+          answer: '问数请求失败',
+          error: getApiErrorMessage(error, '请求失败'),
+        } as ChatAskResult,
       })
     } finally {
       asking.value = false

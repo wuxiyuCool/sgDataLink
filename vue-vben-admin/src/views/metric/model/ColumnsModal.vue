@@ -29,7 +29,12 @@
             <Input v-model:value="record.bizName" size="small" placeholder="业务名" />
           </template>
           <template v-else-if="column.key === 'role'">
-            <Select v-model:value="record.role" :options="COLUMN_ROLE_OPTIONS" size="small" style="width: 110px" />
+            <Select
+              v-model:value="record.role"
+              :options="COLUMN_ROLE_OPTIONS"
+              size="small"
+              style="width: 110px"
+            />
           </template>
           <template v-else-if="column.key === 'aggDefault'">
             <Select
@@ -105,7 +110,10 @@
     }
     submitting.value = true
     try {
-      await replaceMetricModelColumnsApi(modelId.value, physicalColumns.value.map(({ ...rest }) => rest))
+      await replaceMetricModelColumnsApi(
+        modelId.value,
+        physicalColumns.value.map(({ ...rest }) => rest),
+      )
       createMessage.success('字段已保存')
       closeModal()
       emit('success')

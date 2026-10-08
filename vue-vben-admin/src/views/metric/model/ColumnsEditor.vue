@@ -60,7 +60,13 @@
           />
         </template>
         <template v-else-if="column.key === 'action'">
-          <Button type="link" size="small" danger :disabled="!allowStruct" @click="removeRow(index)">
+          <Button
+            type="link"
+            size="small"
+            danger
+            :disabled="!allowStruct"
+            @click="removeRow(index)"
+          >
             删除
           </Button>
         </template>

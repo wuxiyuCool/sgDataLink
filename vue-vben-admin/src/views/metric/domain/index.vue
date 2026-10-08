@@ -1,5 +1,9 @@
 <template>
-  <PageWrapper title="指标中心 · 指标域" content="按业务主题组织指标资产的树；域编码是界面建表前缀，删除时域下有模型/指标将被拒绝（40902）。右键节点弹出新建子域/编辑/删除菜单">
+  <PageWrapper
+    title="指标中心 · 指标域"
+    content="按业务主题组织指标资产的树；域编码是界面建表前缀，删除时域下有模型/指标将被拒绝（40902）。右键节点弹出新建子域/编辑/删除菜单"
+  >
+    <GuideCard :guide="PAGE_GUIDES.domain" />
     <Row :gutter="16">
       <Col :span="9">
         <Card :bordered="false" :loading="loading">
@@ -21,7 +25,9 @@
                 <span class="domain-node">
                   <span>{{ node.name }}</span>
                   <span class="domain-code">{{ node.code }}</span>
-                  <span class="domain-counts">模型 {{ node.modelCount ?? 0 }} · 指标 {{ node.metricCount ?? 0 }}</span>
+                  <span class="domain-counts"
+                    >模型 {{ node.modelCount ?? 0 }} · 指标 {{ node.metricCount ?? 0 }}</span
+                  >
                 </span>
                 <template #overlay>
                   <Menu @click="handleContextMenu($event, node)">
@@ -86,15 +92,15 @@
       </Col>
     </Row>
 
-    <Modal
-      v-model:visible="formVisible"
-      :width="600"
+    <BasicModal
+      v-bind="$attrs"
+      :width="640"
       centered
-      :confirm-loading="submitting"
+      canFullscreen
       :mask-closable="false"
       ok-text="保存"
       cancel-text="取消"
-      class="domain-modal"
+      @register="registerDomainModal"
       @ok="handleSubmit"
     >
       <template #title>
@@ -103,57 +109,64 @@
           {{ formTitle }}
         </span>
       </template>
-      <Alert
-        class="mb-4"
-        type="info"
-        show-icon
-        :bordered="false"
-        message="域编码创建后不可修改，并作为该域界面建表的物理表前缀；删除时若域下已有模型/指标将被拒绝"
-      />
-      <Form ref="formRef" :model="formState" :rules="formRules" layout="vertical">
-        <Row :gutter="16">
-          <Col :span="12">
-            <FormItem label="域名称" name="name">
-              <Input v-model:value="formState.name" placeholder="如 交易域" />
-            </FormItem>
-          </Col>
-          <Col :span="12">
-            <FormItem label="编码（建表前缀）" name="code">
-              <Input
-                v-model:value="formState.code"
-                :disabled="!!formState.id"
-                placeholder="^[a-z][a-z0-9_]{1,30}$，如 trade"
-              />
-            </FormItem>
-          </Col>
-          <Col :span="12">
-            <FormItem label="父域" name="parentId">
-              <TreeSelect
-                v-model:value="formState.parentId"
-                :tree-data="parentOptions"
-                tree-default-expand-all
-                allow-clear
-                placeholder="留空 = 根域"
-                style="width: 100%"
-              />
-            </FormItem>
-          </Col>
-          <Col :span="6">
-            <FormItem label="排序" name="sort" extra="小的排前">
-              <InputNumber v-model:value="formState.sort" :min="0" :max="9999" style="width: 100%" />
-            </FormItem>
-          </Col>
-          <Col :span="6">
-            <FormItem label="负责人" name="owner">
-              <Input v-model:value="formState.owner" placeholder="如 data-team" />
-            </FormItem>
-          </Col>
-        </Row>
-        <FormItem label="备注" name="remark">
-          <Textarea v-model:value="formState.remark" :rows="2" placeholder="业务口径说明" />
-        </FormItem>
-      </Form>
-    </Modal>
+      <div class="domain-modal-root">
+        <Alert
+          class="mb-4"
+          type="info"
+          show-icon
+          :bordered="false"
+          message="域编码创建后不可修改，并作为该域界面建表的物理表前缀；删除时若域下已有模型/指标将被拒绝"
+        />
+        <Form ref="formRef" :model="formState" :rules="formRules" layout="vertical">
+          <Row :gutter="16">
+            <Col :span="12">
+              <FormItem label="域名称" name="name">
+                <Input v-model:value="formState.name" placeholder="如 交易域" />
+              </FormItem>
+            </Col>
+            <Col :span="12">
+              <FormItem label="编码（建表前缀）" name="code">
+                <Input
+                  v-model:value="formState.code"
+                  :disabled="!!formState.id"
+                  placeholder="^[a-z][a-z0-9_]{1,30}$，如 trade"
+                />
+              </FormItem>
+            </Col>
+            <Col :span="12">
+              <FormItem label="父域" name="parentId">
+                <TreeSelect
+                  v-model:value="formState.parentId"
+                  :tree-data="parentOptions"
+                  tree-default-expand-all
+                  allow-clear
+                  placeholder="留空 = 根域"
+                  style="width: 100%"
+                />
+              </FormItem>
+            </Col>
+            <Col :span="6">
+              <FormItem label="排序" name="sort" extra="小的排前">
+                <InputNumber
+                  v-model:value="formState.sort"
+                  :min="0"
+                  :max="9999"
+                  style="width: 100%"
+                />
+              </FormItem>
+            </Col>
+            <Col :span="6">
+              <FormItem label="负责人" name="owner">
+                <Input v-model:value="formState.owner" placeholder="如 data-team" />
+              </FormItem>
+            </Col>
+          </Row>
+          <FormItem label="备注" name="remark">
+            <Textarea v-model:value="formState.remark" :rows="2" placeholder="业务口径说明" />
+          </FormItem>
+        </Form>
+      </div>
+    </BasicModal>
   </PageWrapper>
 </template>
 
@@ -172,7 +185,6 @@
     Input,
     InputNumber,
     Menu,
-    Modal,
     Row,
     Space,
     Table,
@@ -194,7 +206,10 @@
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { Icon } from '/@/components/Icon'
+  import { BasicModal, useModal } from '/@/components/Modal'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import { LAYER_TAG_COLORS } from '../data'
@@ -225,8 +240,15 @@
     { title: '操作', key: 'action', width: 120 },
   ]
 
-  const formVisible = ref(false)
-  const submitting = ref(false)
+  const [
+    registerDomainModal,
+    {
+      openModal: openDomainModal,
+      closeModal: closeDomainModal,
+      setModalProps: setDomainModalProps,
+    },
+  ] = useModal()
+
   const formTitle = computed(() => (formState.id ? '编辑指标域' : '新增指标域'))
 
   const formState = reactive({
@@ -321,7 +343,7 @@
     formState.remark = ''
     formState.owner = ''
     formState.sort = 0
-    formVisible.value = true
+    openDomainModal(true)
   }
 
   function openEdit(node: MetricDomain) {
@@ -332,11 +354,11 @@
     formState.remark = node.remark || ''
     formState.owner = node.owner || ''
     formState.sort = node.sort ?? 0
-    formVisible.value = true
+    openDomainModal(true)
   }
 
   async function handleSubmit() {
-    submitting.value = true
+    setDomainModalProps({ confirmLoading: true })
     try {
       const payload = {
         name: formState.name.trim(),
@@ -360,13 +382,13 @@
         await createMetricDomainApi(payload)
         createMessage.success('域已创建')
       }
-      formVisible.value = false
+      closeDomainModal()
       await loadTree()
       await loadModels()
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '保存失败'))
     } finally {
-      submitting.value = false
+      setDomainModalProps({ confirmLoading: false })
     }
   }
 

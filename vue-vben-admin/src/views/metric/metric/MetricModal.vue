@@ -19,7 +19,11 @@
         </Col>
         <Col :span="12">
           <FormItem label="编码（复合公式 ${code} 的引用锚点，创建后不可改）" name="code">
-            <Input v-model:value="form.code" :disabled="isUpdate" placeholder="^[a-z][a-z0-9_]{2,63}$" />
+            <Input
+              v-model:value="form.code"
+              :disabled="isUpdate"
+              placeholder="^[a-z][a-z0-9_]{2,63}$"
+            />
           </FormItem>
         </Col>
         <Col :span="12">
@@ -29,7 +33,13 @@
         </Col>
         <Col :span="12">
           <FormItem label="指标域" name="domainId">
-            <TreeSelect v-model:value="form.domainId" :tree-data="domainOptions" tree-default-expand-all placeholder="选择域" style="width: 100%" />
+            <TreeSelect
+              v-model:value="form.domainId"
+              :tree-data="domainOptions"
+              tree-default-expand-all
+              placeholder="选择域"
+              style="width: 100%"
+            />
           </FormItem>
         </Col>
       </Row>
@@ -58,7 +68,11 @@
         </Col>
         <Col :span="12">
           <FormItem label="度量列" required>
-            <Select v-model:value="form.defineParams.measureColumn" :options="measureColumnOptions" placeholder="role=measure 的列" />
+            <Select
+              v-model:value="form.defineParams.measureColumn"
+              :options="measureColumnOptions"
+              placeholder="role=measure 的列"
+            />
           </FormItem>
         </Col>
         <Col :span="8">
@@ -68,7 +82,12 @@
         </Col>
         <Col :span="8">
           <FormItem label="时间列">
-            <Select v-model:value="form.defineParams.timeColumn" :options="allColumnOptions" allow-clear placeholder="默认取模型时间列" />
+            <Select
+              v-model:value="form.defineParams.timeColumn"
+              :options="allColumnOptions"
+              allow-clear
+              placeholder="默认取模型时间列"
+            />
           </FormItem>
         </Col>
         <Col :span="8">
@@ -98,7 +117,11 @@
         </Col>
         <Col :span="12">
           <FormItem label="时间列">
-            <Select v-model:value="form.defineParams.timeColumn" :options="allColumnOptions" allow-clear />
+            <Select
+              v-model:value="form.defineParams.timeColumn"
+              :options="allColumnOptions"
+              allow-clear
+            />
           </FormItem>
         </Col>
         <Col :span="24">
@@ -133,14 +156,24 @@
         </Col>
         <Col :span="12">
           <FormItem label="维度限定（可多选，问数分组白名单）">
-            <Select v-model:value="form.defineParams.dimensions" :options="baseDimensionOptions" mode="multiple" allow-clear />
+            <Select
+              v-model:value="form.defineParams.dimensions"
+              :options="baseDimensionOptions"
+              mode="multiple"
+              allow-clear
+            />
           </FormItem>
         </Col>
         <Col :span="12">
           <FormItem label="时间预设">
             <Space>
               <span>近</span>
-              <InputNumber v-model:value="form.timePresetDays" :min="1" :max="3650" style="width: 100px" />
+              <InputNumber
+                v-model:value="form.timePresetDays"
+                :min="1"
+                :max="3650"
+                style="width: 100px"
+              />
               <span>天</span>
               <Checkbox v-model:checked="form.timePresetOff">不预设</Checkbox>
             </Space>
@@ -157,30 +190,60 @@
       <template v-if="kind === 'COMPOSITE'">
         <Row :gutter="16">
           <Col :span="14">
-            <FormItem label="公式（${指标编码} + 数字 + + - * / ( ) + CASE WHEN + 白名单函数）" required>
-              <Textarea v-model:value="form.expr" :rows="3" placeholder="如 ${order_amt} / ${order_cnt}" />
+            <FormItem
+              label="公式（${指标编码} + 数字 + + - * / ( ) + CASE WHEN + 白名单函数）"
+              required
+            >
+              <Textarea
+                v-model:value="form.expr"
+                :rows="3"
+                placeholder="如 ${order_amt} / ${order_cnt}"
+              />
             </FormItem>
           </Col>
           <Col :span="10">
             <div class="picker-box">
               <Input.Search placeholder="搜索可引用指标" enter-button @search="searchRefMetrics" />
               <div class="picker-list">
-                <div v-for="m in refMetrics" :key="m.id" class="picker-item" @click="insertRef(m.code)">
+                <div
+                  v-for="m in refMetrics"
+                  :key="m.id"
+                  class="picker-item"
+                  @click="insertRef(m.code)"
+                >
                   {{ m.name }} <span class="picker-code" v-text="`\${${m.code}}`"></span>
                 </div>
-                <Empty v-if="!refMetrics.length" :image="Empty.PRESENTED_IMAGE_SIMPLE" description="点搜索加载" />
+                <Empty
+                  v-if="!refMetrics.length"
+                  :image="Empty.PRESENTED_IMAGE_SIMPLE"
+                  description="点搜索加载"
+                />
               </div>
             </div>
           </Col>
         </Row>
         <div class="mb-2">
           <Button size="small" :loading="validating" @click="handleValidate">公式校验</Button>
-          <span v-if="validateResult" :class="validateResult.valid ? 'text-green' : 'text-red'" style="margin-left: 8px">
+          <span
+            v-if="validateResult"
+            :class="validateResult.valid ? 'text-green' : 'text-red'"
+            style="margin-left: 8px"
+          >
             {{ validateResult.valid ? '校验通过' : `错误 ${validateResult.errors.length} 项` }}
           </span>
         </div>
-        <Alert v-if="validateResult && !validateResult.valid" type="error" :message="validateResult.errors.join('；')" class="mb-2" />
-        <Alert v-if="validateResult?.warnings?.length" type="warning" :message="validateResult.warnings.join('；')" class="mb-2" />
+        <Alert
+          v-if="validateResult && !validateResult.valid"
+          type="error"
+          :message="validateResult.errors.join('；')"
+          class="mb-2"
+        />
+        <Alert
+          v-if="validateResult?.warnings?.length"
+          type="warning"
+          :message="validateResult.warnings.join('；')"
+          class="mb-2"
+        />
       </template>
 
       <Divider orientation="left">治理信息</Divider>
@@ -211,7 +274,11 @@
         </Col>
         <Col :span="24">
           <FormItem label="业务口径">
-            <Textarea v-model:value="form.caliber" :rows="2" placeholder="如：成交后实收金额，不含取消" />
+            <Textarea
+              v-model:value="form.caliber"
+              :rows="2"
+              placeholder="如：成交后实收金额，不含取消"
+            />
           </FormItem>
         </Col>
       </Row>
@@ -315,22 +382,33 @@
   const measureColumnOptions = computed(() =>
     modelColumns.value
       .filter((c) => c.role === 'measure')
-      .map((c) => ({ label: `${c.bizName || c.columnName}（${c.columnName}）`, value: c.columnName }))
+      .map((c) => ({
+        label: `${c.bizName || c.columnName}（${c.columnName}）`,
+        value: c.columnName,
+      })),
   )
 
   const allColumnOptions = computed(() =>
-    modelColumns.value.map((c) => ({ label: `${c.bizName || c.columnName}（${c.columnName}）`, value: c.columnName }))
+    modelColumns.value.map((c) => ({
+      label: `${c.bizName || c.columnName}（${c.columnName}）`,
+      value: c.columnName,
+    })),
   )
 
   function filterOption(input: string, option: any) {
-    return String(option?.label || '').toLowerCase().includes(input.toLowerCase())
+    return String(option?.label || '')
+      .toLowerCase()
+      .includes(input.toLowerCase())
   }
 
   async function ensureModels() {
     if (modelOptions.value.length) return
     try {
       const page = await getMetricModelsApi({ page: 1, size: 200 })
-      modelOptions.value = (page?.items || []).map((m) => ({ label: `${m.name}（${m.tableName}）`, value: m.id }))
+      modelOptions.value = (page?.items || []).map((m) => ({
+        label: `${m.name}（${m.tableName}）`,
+        value: m.id,
+      }))
     } catch {
       modelOptions.value = []
     }
@@ -352,8 +430,17 @@
 
   async function searchBaseMetrics(keyword: string) {
     try {
-      const page = await getMetricsApi({ keyword: keyword || undefined, type: 'ATOMIC', status: 'online', page: 1, size: 50 })
-      baseMetricOptions.value = (page?.items || []).map((m) => ({ label: `${m.name}（${m.code}）`, value: m.id }))
+      const page = await getMetricsApi({
+        keyword: keyword || undefined,
+        type: 'ATOMIC',
+        status: 'online',
+        page: 1,
+        size: 50,
+      })
+      baseMetricOptions.value = (page?.items || []).map((m) => ({
+        label: `${m.name}（${m.code}）`,
+        value: m.id,
+      }))
     } catch {
       baseMetricOptions.value = []
     }
@@ -369,7 +456,10 @@
       const detail = await getMetricModelApi(modelId)
       baseDimensionOptions.value = (detail?.columns || [])
         .filter((c) => c.role === 'dimension')
-        .map((c) => ({ label: `${c.bizName || c.columnName}（${c.columnName}）`, value: c.columnName }))
+        .map((c) => ({
+          label: `${c.bizName || c.columnName}（${c.columnName}）`,
+          value: c.columnName,
+        }))
     } catch {
       baseDimensionOptions.value = []
     }
@@ -482,16 +572,19 @@
     if (record.defineType === 'METRIC') {
       kind.value = dp.baseMetricId ? 'DERIVED' : 'COMPOSITE'
       if (dp.baseMetricId) {
-        baseMetricOptions.value = [{ label: `${record.name} 基底（${dp.baseMetricId}）`, value: dp.baseMetricId }]
+        baseMetricOptions.value = [
+          { label: `${record.name} 基底（${dp.baseMetricId}）`, value: dp.baseMetricId },
+        ]
         handleBaseChange(dp.baseMetricId)
       }
     } else {
       kind.value = record.defineType
-      if (dp.modelId) handleModelChange(dp.modelId).then(() => {
-        form.defineParams.modelId = dp.modelId
-        form.defineParams.measureColumn = dp.measureColumn
-        form.defineParams.timeColumn = dp.timeColumn
-      })
+      if (dp.modelId)
+        handleModelChange(dp.modelId).then(() => {
+          form.defineParams.modelId = dp.modelId
+          form.defineParams.measureColumn = dp.measureColumn
+          form.defineParams.timeColumn = dp.timeColumn
+        })
     }
   }
 

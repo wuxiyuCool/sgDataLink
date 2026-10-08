@@ -54,14 +54,21 @@
           </FormItem>
         </Col>
         <Col :span="12">
-          <FormItem :label="formState.createType === 'ddl' ? '新表名（可留空自动命名）' : '物理表'" name="tableName">
+          <FormItem
+            :label="formState.createType === 'ddl' ? '新表名（可留空自动命名）' : '物理表'"
+            name="tableName"
+          >
             <TableSelect
               v-if="formState.createType === 'reference'"
               v-model:value="formState.tableName"
               :datasource-id="formState.datasourceId"
               placeholder="先选数据源，再选表"
             />
-            <Input v-else v-model:value="formState.tableName" placeholder="留空 = 域编码+分层+模型名自动生成" />
+            <Input
+              v-else
+              v-model:value="formState.tableName"
+              placeholder="留空 = 域编码+分层+模型名自动生成"
+            />
           </FormItem>
         </Col>
         <Col :span="12">
@@ -94,10 +101,14 @@
       </Row>
 
       <template v-if="formState.createType === 'ddl'">
-        <Divider orientation="left">字段定义（保存即生成建表 DDL，物理表由清洗汇总任务首次执行时创建）</Divider>
+        <Divider orientation="left"
+          >字段定义（保存即生成建表 DDL，物理表由清洗汇总任务首次执行时创建）</Divider
+        >
         <ColumnsEditor v-model="columnsState" allow-struct />
         <div class="mt-2">
-          <Button size="small" :loading="ddlLoading" @click="handlePreviewDdl">生成 DDL 预览</Button>
+          <Button size="small" :loading="ddlLoading" @click="handlePreviewDdl"
+            >生成 DDL 预览</Button
+          >
         </div>
         <pre v-if="ddlText" class="ddl-block">{{ ddlText }}</pre>
       </template>
@@ -172,21 +183,30 @@
     name: [{ required: true, message: '请输入模型名称' }],
     domainId: [{ required: true, message: '请选择指标域' }],
     datasourceId: [{ required: true, message: '请选择数据源' }],
-    tableName: formState.createType === 'reference' ? [{ required: true, message: '请选择物理表' }] : [],
+    tableName:
+      formState.createType === 'reference' ? [{ required: true, message: '请选择物理表' }] : [],
   }))
 
   const timeColumnOptions = computed(() => {
     if (formState.createType === 'ddl') {
-      return columnsState.value.map((c) => ({ label: `${c.columnName}${c.bizName ? `（${c.bizName}）` : ''}`, value: c.columnName }))
+      return columnsState.value.map((c) => ({
+        label: `${c.columnName}${c.bizName ? `（${c.bizName}）` : ''}`,
+        value: c.columnName,
+      }))
     }
     // reference：编辑时给出详情列可选（新建时由后端自动识别）
-    return detailColumns.value.map((c) => ({ label: `${c.columnName}${c.bizName ? `（${c.bizName}）` : ''}`, value: c.columnName }))
+    return detailColumns.value.map((c) => ({
+      label: `${c.columnName}${c.bizName ? `（${c.bizName}）` : ''}`,
+      value: c.columnName,
+    }))
   })
 
   const detailColumns = ref<MetricModelColumn[]>([])
 
   function filterOption(input: string, option: any) {
-    return String(option?.label || '').toLowerCase().includes(input.toLowerCase())
+    return String(option?.label || '')
+      .toLowerCase()
+      .includes(input.toLowerCase())
   }
 
   function toTreeOptions(nodes: MetricDomain[]): any[] {
@@ -245,7 +265,11 @@
       } catch {
         detailColumns.value = record.columns ? [...record.columns] : []
       }
-      columnsState.value = detailColumns.value.length ? [...detailColumns.value] : record.columns ? [...record.columns] : []
+      columnsState.value = detailColumns.value.length
+        ? [...detailColumns.value]
+        : record.columns
+        ? [...record.columns]
+        : []
       if (record.createType === 'ddl' && record.tableDdl) ddlText.value = record.tableDdl
     } else {
       formState.id = ''
@@ -273,7 +297,8 @@
         columns: columnsState.value,
       })
       ddlText.value = result?.ddl || '(无内容)'
-      if (result?.conflict) createMessage.warning(`表名 ${result.tableName} 与其他模型冲突，保存会被拒绝（40904）`)
+      if (result?.conflict)
+        createMessage.warning(`表名 ${result.tableName} 与其他模型冲突，保存会被拒绝（40904）`)
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, 'DDL 预览失败（表名冲突 40904 会在此提示）'))
     } finally {

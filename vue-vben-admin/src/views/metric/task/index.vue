@@ -3,10 +3,16 @@
     title="指标中心 · 任务管理"
     content="把指标物化到 ADS 汇总表：保存即组计划（配置错误挡在保存期），支持 preview 语句、手动执行、cron 调度与运行记录"
   >
+    <GuideCard :guide="PAGE_GUIDES.task" />
     <Card :bordered="false" class="mb-3">
       <Form layout="inline" @finish="handleSearch">
         <FormItem label="关键字" name="keyword">
-          <Input v-model:value="query.keyword" allow-clear placeholder="任务名称" style="width: 200px" />
+          <Input
+            v-model:value="query.keyword"
+            allow-clear
+            placeholder="任务名称"
+            style="width: 200px"
+          />
         </FormItem>
         <FormItem label="状态" name="status">
           <Select
@@ -72,10 +78,17 @@
               {{ LAST_STATUS_LABELS[record.lastStatus || 'idle'] }}
             </Tag>
           </template>
-          <template v-else-if="column.key === 'lastRunAt'">{{ formatTime(record.lastRunAt) }}</template>
+          <template v-else-if="column.key === 'lastRunAt'">{{
+            formatTime(record.lastRunAt)
+          }}</template>
           <template v-else-if="column.key === 'action'">
             <Space :size="0">
-              <Button type="link" size="small" :loading="runningId === record.id" @click="handleRun(record)">
+              <Button
+                type="link"
+                size="small"
+                :loading="runningId === record.id"
+                @click="handleRun(record)"
+              >
                 执行
               </Button>
               <Button type="link" size="small" @click="handleRuns(record)">记录</Button>
@@ -91,12 +104,13 @@
 
     <TaskModal @register="registerTaskModal" @success="reload" />
 
-    <Modal
-      v-model:visible="runsVisible"
-      :width="1000"
+    <BasicModal
+      v-bind="$attrs"
+      :width="1040"
       centered
+      canFullscreen
       :footer="null"
-      class="runs-modal"
+      @register="registerRunsModal"
     >
       <template #title>
         <span class="modal-title">
@@ -104,45 +118,69 @@
           运行记录 · {{ runsTaskName }}
         </span>
       </template>
-      <Table
-        :columns="runColumns"
-        :data-source="runs"
-        :loading="runsLoading"
-        :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 条` }"
-        row-key="id"
-        size="small"
-        :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'trigger'">
-            <Tag :color="record.trigger === 'cron' ? 'purple' : 'blue'" :bordered="false">
-              {{ record.trigger === 'cron' ? '定时' : '手动' }}
-            </Tag>
+      <div class="runs-modal-root">
+        <Table
+          :columns="runColumns"
+          :data-source="runs"
+          :loading="runsLoading"
+          :pagination="{ pageSize: 10, showTotal: (t: number) => `共 ${t} 条` }"
+          row-key="id"
+          size="small"
+          :row-class-name="(_: any, index: number) => (index % 2 === 1 ? 'striped-row' : '')"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'trigger'">
+              <Tag :color="record.trigger === 'cron' ? 'purple' : 'blue'" :bordered="false">
+                {{ record.trigger === 'cron' ? '定时' : '手动' }}
+              </Tag>
+            </template>
+            <template v-else-if="column.key === 'status'">
+              <Tag
+                :color="
+                  record.status === 'success'
+                    ? 'success'
+                    : record.status === 'failed'
+                    ? 'error'
+                    : 'processing'
+                "
+                :bordered="false"
+              >
+                {{ LAST_STATUS_LABELS[record.status] || record.status }}
+              </Tag>
+            </template>
+            <template v-else-if="column.key === 'createdAt'">{{
+              formatTime(record.createdAt)
+            }}</template>
+            <template v-else-if="column.key === 'sql'">
+              <Button type="link" size="small" @click="showSql(record)">查看 SQL</Button>
+            </template>
           </template>
-          <template v-else-if="column.key === 'status'">
-            <Tag :color="record.status === 'success' ? 'success' : record.status === 'failed' ? 'error' : 'processing'" :bordered="false">
-              {{ LAST_STATUS_LABELS[record.status] || record.status }}
-            </Tag>
-          </template>
-          <template v-else-if="column.key === 'createdAt'">{{ formatTime(record.createdAt) }}</template>
-          <template v-else-if="column.key === 'sql'">
-            <Button type="link" size="small" @click="showSql(record)">查看 SQL</Button>
-          </template>
-        </template>
-      </Table>
-      <Collapse v-if="currentSql" ghost class="mt-2 sql-collapse">
-        <CollapsePanel key="sql" header="SQL 明细">
-          <pre class="sql-block">{{ currentSql }}</pre>
-        </CollapsePanel>
-      </Collapse>
-    </Modal>
+        </Table>
+        <Collapse v-if="currentSql" ghost default-active-key="sql" class="mt-2 sql-collapse">
+          <CollapsePanel key="sql" header="SQL 明细">
+            <pre class="sql-block">{{ currentSql }}</pre>
+          </CollapsePanel>
+        </Collapse>
+      </div>
+    </BasicModal>
   </PageWrapper>
 </template>
 
 <script lang="ts" setup>
   import { onMounted, reactive, ref } from 'vue'
 
-  import { Button, Card, Collapse, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag } from 'ant-design-vue'
+  import {
+    Button,
+    Card,
+    Collapse,
+    Form,
+    Input,
+    Popconfirm,
+    Select,
+    Space,
+    Table,
+    Tag,
+  } from 'ant-design-vue'
 
   import {
     deleteMetricTaskApi,
@@ -154,8 +192,10 @@
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { Icon } from '/@/components/Icon'
-  import { useModal } from '/@/components/Modal'
+  import { BasicModal, useModal } from '/@/components/Modal'
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import { usePagedFetch } from '../../databridge/hooks/usePagedFetch'
@@ -168,8 +208,18 @@
   const { createMessage } = useMessage()
   const [registerTaskModal, { openModal: openTaskModal }] = useModal()
 
-  const LAST_STATUS_LABELS: Record<string, string> = { idle: '空闲', running: '运行中', success: '成功', failed: '失败' }
-  const LAST_STATUS_COLORS: Record<string, string> = { idle: 'default', running: 'processing', success: 'success', failed: 'error' }
+  const LAST_STATUS_LABELS: Record<string, string> = {
+    idle: '空闲',
+    running: '运行中',
+    success: '成功',
+    failed: '失败',
+  }
+  const LAST_STATUS_COLORS: Record<string, string> = {
+    idle: 'default',
+    running: 'processing',
+    success: 'success',
+    failed: 'error',
+  }
 
   const query = reactive({
     keyword: undefined as string | undefined,
@@ -188,18 +238,25 @@
     { title: '操作', key: 'action', width: 220, fixed: 'right' as const },
   ]
 
-  const { loading, dataSource, getPagination, search, reload, reset: resetFetch, handleTableChange } =
-    usePagedFetch<MetricTask>(
-      (params) =>
-        getMetricTasksApi({
-          page: params.page,
-          size: params.size,
-          keyword: query.keyword,
-          status: query.status,
-          lastStatus: query.lastStatus,
-        }),
-      query,
-    )
+  const {
+    loading,
+    dataSource,
+    getPagination,
+    search,
+    reload,
+    reset: resetFetch,
+    handleTableChange,
+  } = usePagedFetch<MetricTask>(
+    (params) =>
+      getMetricTasksApi({
+        page: params.page,
+        size: params.size,
+        keyword: query.keyword,
+        status: query.status,
+        lastStatus: query.lastStatus,
+      }),
+    query,
+  )
 
   function handleSearch() {
     search()
@@ -227,9 +284,13 @@
     try {
       const result = await runMetricTaskApi(record.id)
       if (result.status === 'success') {
-        createMessage.success(`执行成功，写入 ${result.writeRows ?? 0} 行（${result.statements ?? '-'} 段语句）`)
+        createMessage.success(
+          `执行成功，写入 ${result.writeRows ?? 0} 行（${result.statements ?? '-'} 段语句）`,
+        )
       } else {
-        createMessage.error(`执行${result.status === 'failed' ? '失败' : result.status}，查看运行记录`)
+        createMessage.error(
+          `执行${result.status === 'failed' ? '失败' : result.status}，查看运行记录`,
+        )
       }
       reload()
     } catch (error) {
@@ -249,11 +310,12 @@
     }
   }
 
-  const runsVisible = ref(false)
   const runsLoading = ref(false)
   const runs = ref<MetricTaskRun[]>([])
   const runsTaskName = ref('')
   const currentSql = ref('')
+
+  const [registerRunsModal, { openModal: openRunsModal }] = useModal()
 
   const runColumns = [
     { title: '触发', dataIndex: 'trigger', key: 'trigger', width: 80 },
@@ -268,7 +330,7 @@
   async function handleRuns(record: MetricTask) {
     runsTaskName.value = record.name
     currentSql.value = ''
-    runsVisible.value = true
+    openRunsModal(true)
     runsLoading.value = true
     try {
       const result = await getMetricTaskRunsApi(record.id, { page: 1, size: 50 })

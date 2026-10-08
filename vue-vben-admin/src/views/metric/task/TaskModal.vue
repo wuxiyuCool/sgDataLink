@@ -43,7 +43,12 @@
         </Col>
         <Col :span="12">
           <FormItem label="分组维度（源模型维度列）">
-            <Select v-model:value="form.dimensionColumnIds" :options="dimensionOptions" mode="multiple" allow-clear />
+            <Select
+              v-model:value="form.dimensionColumnIds"
+              :options="dimensionOptions"
+              mode="multiple"
+              allow-clear
+            />
           </FormItem>
         </Col>
         <Col :span="12">
@@ -59,7 +64,12 @@
                 style="width: 130px"
               />
               <template v-if="timeMode === 'RECENT'">
-                <InputNumber v-model:value="recentPeriod" :min="1" :max="3650" style="width: 90px" />
+                <InputNumber
+                  v-model:value="recentPeriod"
+                  :min="1"
+                  :max="3650"
+                  style="width: 90px"
+                />
                 <Select
                   v-model:value="recentUnit"
                   :options="[
@@ -70,13 +80,19 @@
                   style="width: 80px"
                 />
               </template>
-              <RangePicker v-if="timeMode === 'BETWEEN'" v-model:value="betweenRange" value-format="YYYY-MM-DD" />
+              <RangePicker
+                v-if="timeMode === 'BETWEEN'"
+                v-model:value="betweenRange"
+                value-format="YYYY-MM-DD"
+              />
             </Space>
           </FormItem>
         </Col>
       </Row>
 
-      <Divider orientation="left" style="margin-top: 4px">清洗规则（filter/fill/rename；去重请放上游同步任务）</Divider>
+      <Divider orientation="left" style="margin-top: 4px"
+        >清洗规则（filter/fill/rename；去重请放上游同步任务）</Divider
+      >
       <div v-for="(rule, index) in form.cleanRules" :key="index" class="rule-row">
         <Select
           v-model:value="rule.type"
@@ -92,11 +108,21 @@
           <Input v-model:value="rule.sql" placeholder="t.status='PAID'" style="flex: 1" />
         </template>
         <template v-else-if="rule.type === 'fill'">
-          <Select v-model:value="rule.column" :options="dimensionOptions" placeholder="列" style="width: 160px" />
+          <Select
+            v-model:value="rule.column"
+            :options="dimensionOptions"
+            placeholder="列"
+            style="width: 160px"
+          />
           <Input v-model:value="rule.value" placeholder="填充值" style="width: 160px" />
         </template>
         <template v-else>
-          <Select v-model:value="rule.column" :options="dimensionOptions" placeholder="列" style="width: 160px" />
+          <Select
+            v-model:value="rule.column"
+            :options="dimensionOptions"
+            placeholder="列"
+            style="width: 160px"
+          />
           <Input v-model:value="rule.to" placeholder="新列名（标识符）" style="width: 160px" />
         </template>
         <Button type="link" danger @click="form.cleanRules.splice(index, 1)">删除</Button>
@@ -112,7 +138,10 @@
         </Col>
         <Col :span="12">
           <FormItem label="目标表" required>
-            <Input v-model:value="form.targetTable" placeholder="新表名（不存在时任务执行自动 CREATE）" />
+            <Input
+              v-model:value="form.targetTable"
+              placeholder="新表名（不存在时任务执行自动 CREATE）"
+            />
           </FormItem>
         </Col>
         <Col :span="8">
@@ -157,9 +186,13 @@
 
       <div class="mt-2">
         <Button :loading="previewLoading" @click="handlePreview">保存前 Preview 语句</Button>
-        <span v-if="!isUpdate" style="margin-left: 8px; color: #999; font-size: 12px">（preview 不落库，仅查看将要执行的 SQL）</span>
+        <span v-if="!isUpdate" style="margin-left: 8px; color: #999; font-size: 12px"
+          >（preview 不落库，仅查看将要执行的 SQL）</span
+        >
       </div>
-      <pre v-if="previewStatements.length" class="sql-block mt-2">{{ previewStatements.join('\n\n') }}</pre>
+      <pre v-if="previewStatements.length" class="sql-block mt-2">{{
+        previewStatements.join('\n\n')
+      }}</pre>
     </Form>
   </BasicModal>
 </template>
@@ -167,7 +200,18 @@
 <script lang="ts" setup>
   import { computed, reactive, ref } from 'vue'
 
-  import { Button, Col, DatePicker, Divider, Form, Input, InputNumber, Row, Select, Space } from 'ant-design-vue'
+  import {
+    Button,
+    Col,
+    DatePicker,
+    Divider,
+    Form,
+    Input,
+    InputNumber,
+    Row,
+    Select,
+    Space,
+  } from 'ant-design-vue'
 
   import {
     createMetricTaskApi,
@@ -222,17 +266,24 @@
     remark: '',
   })
 
-  const targetDsLabel = computed(() => (sourceDs.value ? `${sourceDs.value.name}（同源锁定）` : '选择源模型后自动带出'))
+  const targetDsLabel = computed(() =>
+    sourceDs.value ? `${sourceDs.value.name}（同源锁定）` : '选择源模型后自动带出',
+  )
 
   function filterOption(input: string, option: any) {
-    return String(option?.label || '').toLowerCase().includes(input.toLowerCase())
+    return String(option?.label || '')
+      .toLowerCase()
+      .includes(input.toLowerCase())
   }
 
   async function loadModels() {
     if (modelOptions.value.length) return
     try {
       const page = await getMetricModelsApi({ page: 1, size: 200 })
-      modelOptions.value = (page?.items || []).map((m) => ({ label: `${m.name}（${m.tableName}）`, value: m.id }))
+      modelOptions.value = (page?.items || []).map((m) => ({
+        label: `${m.name}（${m.tableName}）`,
+        value: m.id,
+      }))
     } catch {
       modelOptions.value = []
     }
@@ -241,7 +292,10 @@
   async function loadMetrics() {
     try {
       const page = await getMetricsApi({ page: 1, size: 300, status: 'online' })
-      metricOptions.value = (page?.items || []).map((m) => ({ label: `${m.name}（${m.code}｜${m.type}）`, value: m.id }))
+      metricOptions.value = (page?.items || []).map((m) => ({
+        label: `${m.name}（${m.code}｜${m.type}）`,
+        value: m.id,
+      }))
     } catch {
       metricOptions.value = []
     }
@@ -256,8 +310,14 @@
       const detail = await getMetricModelApi(modelId)
       dimensionOptions.value = (detail?.columns || [])
         .filter((c) => ['dimension', 'time'].includes(c.role))
-        .map((c) => ({ label: `${c.bizName || c.columnName}（${c.columnName}）`, value: c.columnName }))
-      sourceDs.value = { id: detail?.datasourceId || '', name: (detail as any).datasourceName || detail?.datasourceId || '' }
+        .map((c) => ({
+          label: `${c.bizName || c.columnName}（${c.columnName}）`,
+          value: c.columnName,
+        }))
+      sourceDs.value = {
+        id: detail?.datasourceId || '',
+        name: (detail as any).datasourceName || detail?.datasourceId || '',
+      }
       form.targetDatasourceId = detail?.datasourceId
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '源模型详情加载失败'))
@@ -277,7 +337,8 @@
 
   function buildTimePreset() {
     if (timeMode.value === 'none') return null
-    if (timeMode.value === 'RECENT') return { mode: 'RECENT', unit: recentUnit.value, period: recentPeriod.value }
+    if (timeMode.value === 'RECENT')
+      return { mode: 'RECENT', unit: recentUnit.value, period: recentPeriod.value }
     if (!betweenRange.value || betweenRange.value.length !== 2) return null
     return { mode: 'BETWEEN', start: betweenRange.value[0], end: betweenRange.value[1] }
   }
@@ -374,7 +435,12 @@
   })
 
   async function handleSubmit() {
-    if (!form.name.trim() || !form.sourceModelId || !form.metricIds.length || !form.targetTable.trim()) {
+    if (
+      !form.name.trim() ||
+      !form.sourceModelId ||
+      !form.metricIds.length ||
+      !form.targetTable.trim()
+    ) {
       createMessage.warning('名称/源模型/指标/目标表必填')
       return
     }

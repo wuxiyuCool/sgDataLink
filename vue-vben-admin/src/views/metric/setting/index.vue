@@ -3,19 +3,33 @@
     title="指标中心 · 系统配置"
     content="LLM 连接参数（OpenAI 兼容协议，DeepSeek/通义/GLM/硅基流动任选，本地可指 Ollama）。保存后进 metric_setting 表，优先级高于服务端环境变量；API Key 只存服务端、界面仅回显掩码。仅管理员可操作。"
   >
+    <GuideCard :guide="PAGE_GUIDES.setting" />
     <Card :bordered="false" :loading="loading">
       <Form :model="form" layout="vertical" class="max-w-2xl" @finish="handleSave">
         <FormItem name="baseUrl">
           <template #label>
-            <LabelWithSource label="Base URL" item-key="llm.baseUrl" :items="items" placeholder="如 https://api.deepseek.com/v1" />
+            <LabelWithSource
+              label="Base URL"
+              item-key="llm.baseUrl"
+              :items="items"
+              placeholder="如 https://api.deepseek.com/v1"
+            />
           </template>
-          <Input v-model:value="form.baseUrl" placeholder="https://api.deepseek.com/v1" allow-clear />
+          <Input
+            v-model:value="form.baseUrl"
+            placeholder="https://api.deepseek.com/v1"
+            allow-clear
+          />
         </FormItem>
         <FormItem name="model">
           <template #label>
             <LabelWithSource label="模型" item-key="llm.model" :items="items" />
           </template>
-          <Input v-model:value="form.model" placeholder="deepseek-chat / qwen-plus / glm-4-flash ..." allow-clear />
+          <Input
+            v-model:value="form.model"
+            placeholder="deepseek-chat / qwen-plus / glm-4-flash ..."
+            allow-clear
+          />
         </FormItem>
         <FormItem name="apiKey">
           <template #label>
@@ -38,19 +52,36 @@
           <Input v-model:value="form.timeoutMs" placeholder="30000" allow-clear />
         </FormItem>
         <FormItem label="向量召回（embedding 增强，默认关闭）" name="embedEnabled">
-          <Switch v-model:checked="form.embedEnabled" checked-children="开" un-checked-children="关" />
+          <Switch
+            v-model:checked="form.embedEnabled"
+            checked-children="开"
+            un-checked-children="关"
+          />
         </FormItem>
         <FormItem v-if="form.embedEnabled" name="embedModel">
           <template #label>
             <LabelWithSource label="Embedding 模型" item-key="llm.embedModel" :items="items" />
           </template>
-          <Input v-model:value="form.embedModel" placeholder="如 BAAI/bge-m3（硅基流动）/ text-embedding-3-small" allow-clear />
+          <Input
+            v-model:value="form.embedModel"
+            placeholder="如 BAAI/bge-m3（硅基流动）/ text-embedding-3-small"
+            allow-clear
+          />
         </FormItem>
         <FormItem v-if="form.embedEnabled" name="embedBaseUrl">
           <template #label>
-            <LabelWithSource label="Embedding Base URL" item-key="llm.embed.baseUrl" :items="items" placeholder="留空 = 复用上方对话模型 Base URL" />
+            <LabelWithSource
+              label="Embedding Base URL"
+              item-key="llm.embed.baseUrl"
+              :items="items"
+              placeholder="留空 = 复用上方对话模型 Base URL"
+            />
           </template>
-          <Input v-model:value="form.embedBaseUrl" placeholder="如 https://api.siliconflow.cn/v1（与对话模型不同供应商时填写）" allow-clear />
+          <Input
+            v-model:value="form.embedBaseUrl"
+            placeholder="如 https://api.siliconflow.cn/v1（与对话模型不同供应商时填写）"
+            allow-clear
+          />
         </FormItem>
         <FormItem v-if="form.embedEnabled" name="embedApiKey">
           <template #label>
@@ -88,6 +119,8 @@
   import { Alert, Button, Card, Form, Input, Space, Switch } from 'ant-design-vue'
 
   import { PageWrapper } from '/@/components/Page'
+  import { PAGE_GUIDES } from '../guides'
+  import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import {
@@ -99,9 +132,14 @@
   const FormItem = Form.Item
 
   /** 带来源徽标的 label（table=已保存 / env=服务端环境变量 / default=默认值） */
-  const LabelWithSource = (props: { label: string; itemKey: string; items: MetricSettingItem[] }) => {
+  const LabelWithSource = (props: {
+    label: string
+    itemKey: string
+    items: MetricSettingItem[]
+  }) => {
     const item = props.items.find((i) => i.settingKey === props.itemKey)
-    const sourceText = item?.source === 'table' ? '已保存' : item?.source === 'env' ? '环境变量' : '默认'
+    const sourceText =
+      item?.source === 'table' ? '已保存' : item?.source === 'env' ? '环境变量' : '默认'
     const color = item?.source === 'table' ? 'green' : item?.source === 'env' ? 'blue' : 'default'
     return h('span', [
       props.label,
@@ -114,7 +152,7 @@
             color: item?.source === 'default' ? '#999' : color === 'green' ? '#52c41a' : '#1677ff',
           },
         },
-        sourceText
+        sourceText,
       ),
     ])
   }
@@ -161,7 +199,8 @@
       form.timeoutMs = itemValue('llm.timeoutMs') || ''
       form.embedModel = itemValue('llm.embedModel') || ''
       form.embedBaseUrl = itemValue('llm.embed.baseUrl') || ''
-      form.embedEnabled = itemValue('llm.embed.enabled') === '1' || itemValue('llm.embed.enabled') === 'true'
+      form.embedEnabled =
+        itemValue('llm.embed.enabled') === '1' || itemValue('llm.embed.enabled') === 'true'
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '读取配置失败'))
     } finally {

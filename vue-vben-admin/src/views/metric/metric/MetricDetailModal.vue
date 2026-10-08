@@ -40,7 +40,9 @@
                   <template #renderItem="{ item }">
                     <List.Item>
                       <Space>
-                        <Tag :color="METRIC_TYPE_TAG_COLORS[item.type]">{{ METRIC_TYPE_LABELS[item.type] || item.type }}</Tag>
+                        <Tag :color="METRIC_TYPE_TAG_COLORS[item.type]">{{
+                          METRIC_TYPE_LABELS[item.type] || item.type
+                        }}</Tag>
                         {{ item.name }}（{{ item.code }}）
                       </Space>
                     </List.Item>
@@ -54,7 +56,9 @@
                   <template #renderItem="{ item }">
                     <List.Item>
                       <Space>
-                        <Tag :color="METRIC_TYPE_TAG_COLORS[item.type]">{{ METRIC_TYPE_LABELS[item.type] || item.type }}</Tag>
+                        <Tag :color="METRIC_TYPE_TAG_COLORS[item.type]">{{
+                          METRIC_TYPE_LABELS[item.type] || item.type
+                        }}</Tag>
                         {{ item.name }}（{{ item.code }}）
                       </Space>
                     </List.Item>
@@ -107,7 +111,9 @@
           row-key="id"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'createdAt'">{{ formatTime(record.createdAt) }}</template>
+            <template v-if="column.key === 'createdAt'">{{
+              formatTime(record.createdAt)
+            }}</template>
             <template v-else-if="column.key === 'action'">
               <Popconfirm
                 title="回滚会把该版本内容覆盖为当前指标并生成新版本，确认？"
@@ -229,20 +235,29 @@
 
   async function loadDimensions(item: MetricItem) {
     dimensionOptions.value = []
-    const modelId = item.modelId || item.defineParams?.modelId || item.defineParams?.baseMetricModelId
+    const modelId =
+      item.modelId || item.defineParams?.modelId || item.defineParams?.baseMetricModelId
     if (!modelId) return
     try {
       const detail = await getMetricModelApi(modelId)
       dimensionOptions.value = (detail?.columns || [])
         .filter((c) => c.role === 'dimension')
-        .map((c) => ({ label: `${c.bizName || c.columnName}（${c.columnName}）`, value: c.columnName }))
+        .map((c) => ({
+          label: `${c.bizName || c.columnName}（${c.columnName}）`,
+          value: c.columnName,
+        }))
     } catch {
       dimensionOptions.value = []
     }
   }
 
   const previewColumns = computed(() =>
-    (previewResult.value?.columns || []).map((c) => ({ title: c, dataIndex: c, key: c, ellipsis: true }))
+    (previewResult.value?.columns || []).map((c) => ({
+      title: c,
+      dataIndex: c,
+      key: c,
+      ellipsis: true,
+    })),
   )
 
   const previewRows = computed(() =>
@@ -252,7 +267,7 @@
         record[col] = row[i]
       })
       return record
-    })
+    }),
   )
 
   async function handlePreview() {
@@ -262,7 +277,9 @@
     previewResult.value = null
     try {
       previewResult.value = await previewMetricApi(metric.value.id, {
-        dateRange: previewRange.value ? { start: previewRange.value[0], end: previewRange.value[1] } : null,
+        dateRange: previewRange.value
+          ? { start: previewRange.value[0], end: previewRange.value[1] }
+          : null,
         dimensions: previewDims.value,
         limit: 100,
       })
