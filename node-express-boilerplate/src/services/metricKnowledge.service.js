@@ -13,6 +13,8 @@ const TTL_MS = 30000;
 const MIN_MATCH_LEN = 2;
 
 let cache = { builtAt: 0, entries: [] };
+/** 并发重建 single-flight：TTL 过期时同进程只放一次全表扫描 */
+let building = null;
 
 const active = (items) => items.filter((item) => !item.delFlag);
 
@@ -28,8 +30,7 @@ const pushEntry = (entries, entry) => {
   });
 };
 
-const buildIndex = async ({ force = false } = {}) => {
-  if (!force && Date.now() - cache.builtAt < TTL_MS) return cache.entries;
+const buildIndexInner = async () => {
   const [domains, models, metrics, terms] = await Promise.all([
     metricDomainRepository.list(),
     metricModelRepository.list(),
@@ -100,6 +101,16 @@ const buildIndex = async ({ force = false } = {}) => {
   entries.sort((a, b) => b.labelLen - a.labelLen);
   cache = { builtAt: Date.now(), entries };
   return entries;
+};
+
+const buildIndex = async ({ force = false } = {}) => {
+  if (!force && Date.now() - cache.builtAt < TTL_MS) return cache.entries;
+  if (!building) {
+    building = buildIndexInner().finally(() => {
+      building = null;
+    });
+  }
+  return building;
 };
 
 /** 召回：问题文本对全部词条做最长优先包含匹配；命中越多分越高 */

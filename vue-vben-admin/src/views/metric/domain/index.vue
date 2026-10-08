@@ -46,7 +46,9 @@
             <DescriptionsItem label="名称">{{ selectedNode.name }}</DescriptionsItem>
             <DescriptionsItem label="编码（建表前缀）">{{ selectedNode.code }}</DescriptionsItem>
             <DescriptionsItem label="父域">{{ parentName(selectedNode.parentId) }}</DescriptionsItem>
-            <DescriptionsItem label="描述">{{ selectedNode.description || '-' }}</DescriptionsItem>
+            <DescriptionsItem label="备注">{{ selectedNode.remark || '-' }}</DescriptionsItem>
+            <DescriptionsItem label="负责人">{{ selectedNode.owner || '-' }}</DescriptionsItem>
+            <DescriptionsItem label="建表前缀">{{ selectedNode.tablePrefix || '（默认取域编码）' }}</DescriptionsItem>
             <DescriptionsItem label="排序">{{ selectedNode.sort ?? 0 }}</DescriptionsItem>
             <DescriptionsItem label="模型数">{{ selectedNode.modelCount ?? 0 }}</DescriptionsItem>
             <DescriptionsItem label="指标数">{{ selectedNode.metricCount ?? 0 }}</DescriptionsItem>
@@ -84,8 +86,11 @@
             style="width: 100%"
           />
         </FormItem>
-        <FormItem label="描述" name="description">
-          <Textarea v-model:value="formState.description" :rows="2" placeholder="业务口径说明" />
+        <FormItem label="负责人" name="owner">
+          <Input v-model:value="formState.owner" placeholder="如 data-team" />
+        </FormItem>
+        <FormItem label="备注" name="remark">
+          <Textarea v-model:value="formState.remark" :rows="2" placeholder="业务口径说明" />
         </FormItem>
         <FormItem label="排序（小的在前）" name="sort">
           <InputNumber v-model:value="formState.sort" :min="0" :max="9999" style="width: 100%" />
@@ -147,7 +152,8 @@
     name: '',
     code: '',
     parentId: undefined as string | undefined,
-    description: '',
+    remark: '',
+    owner: '',
     sort: 0,
   })
 
@@ -210,7 +216,8 @@
     formState.name = ''
     formState.code = ''
     formState.parentId = parent?.id
-    formState.description = ''
+    formState.remark = ''
+    formState.owner = ''
     formState.sort = 0
     formVisible.value = true
   }
@@ -220,7 +227,8 @@
     formState.name = node.name
     formState.code = node.code
     formState.parentId = node.parentId && node.parentId !== '0' ? node.parentId : undefined
-    formState.description = node.description || ''
+    formState.remark = node.remark || ''
+    formState.owner = node.owner || ''
     formState.sort = node.sort ?? 0
     formVisible.value = true
   }
@@ -232,14 +240,16 @@
         name: formState.name.trim(),
         code: formState.code.trim(),
         parentId: formState.parentId || '0',
-        description: formState.description,
+        remark: formState.remark,
+        owner: formState.owner,
         sort: formState.sort,
       }
       if (formState.id) {
         // 编辑不改 code（后端也会拒绝变更）
         await updateMetricDomainApi(formState.id, {
           name: payload.name,
-          description: payload.description,
+          remark: payload.remark,
+          owner: payload.owner,
           parentId: payload.parentId,
           sort: payload.sort,
         })

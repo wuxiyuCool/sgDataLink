@@ -65,7 +65,9 @@ export interface MetricDomain {
   code: string
   name: string
   parentId?: string
-  description?: string
+  tablePrefix?: string
+  owner?: string
+  remark?: string
   sort?: number
   status?: string
   modelCount?: number
