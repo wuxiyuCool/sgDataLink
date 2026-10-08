@@ -44,6 +44,16 @@ const refreshDocKey = catchAsync(async (req, res) => {
   ok(res, await accountService.refreshDocKey(req.user), { message: '文档 Key 已重新生成' });
 });
 
+/** 契约 1.12 问数对外：本人查看问数权限与 chatKey（明文只回本人） */
+const getChatKey = catchAsync(async (req, res) => {
+  ok(res, await accountService.getChatKey(req.user));
+});
+
+/** 契约 1.12 问数对外：本人刷新 chatKey，旧 key 立即失效 */
+const refreshChatKey = catchAsync(async (req, res) => {
+  ok(res, await accountService.refreshChatKey(req.user), { message: '问数 Key 已重新生成' });
+});
+
 module.exports = {
   login,
   me,
@@ -51,4 +61,6 @@ module.exports = {
   loginLogs,
   getDocKey,
   refreshDocKey,
+  getChatKey,
+  refreshChatKey,
 };

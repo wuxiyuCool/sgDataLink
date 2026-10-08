@@ -265,6 +265,13 @@
             swagger.json）；关闭权限或禁用账号，key 立即作废
           </div>
         </FormItem>
+        <FormItem v-if="editRow" label="问数权限" name="chatAccess">
+          <Switch v-model:checked="formState.chatAccess" />
+          <div class="mt-1 text-gray-500" style="font-size: 12px">
+            开通即自动为该用户生成问数 Key（X-CHAT-KEY 调用 /api/v1/chat/ask），本人到文档中心页查看/刷新；
+            关闭权限 Key 立即失效。问数调用日志仅管理员可见。
+          </div>
+        </FormItem>
       </Form>
     </Modal>
 
@@ -349,6 +356,7 @@
     { title: '角色', key: 'role', dataIndex: 'role', width: 110 },
     { title: '状态', key: 'status', dataIndex: 'status', width: 140 },
     { title: '文档权限', key: 'docAccess', dataIndex: 'docAccess', width: 90 },
+    { title: '问数权限', key: 'chatAccess', dataIndex: 'chatAccess', width: 90 },
     { title: '最近登录', key: 'lastLoginAt', dataIndex: 'lastLoginAt', width: 170 },
     { title: '创建时间', dataIndex: 'createdAt', width: 170, customRender: ({ text }) => formatTime(text) },
     { title: '操作', key: 'action', width: 260, fixed: 'right' },
@@ -482,7 +490,7 @@
   const formSubmitting = ref(false)
   const formRef = ref()
   const editRow = ref<PlatformUser | null>(null)
-  const formState = reactive({ username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false })
+  const formState = reactive({ username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false, chatAccess: false })
 
   const PASSWORD_PATTERN = /^(?=.*[a-zA-Z])(?=.*\d).{8,64}$/
   const formRules = computed(() => ({
@@ -503,7 +511,7 @@
 
   function openCreate() {
     editRow.value = null
-    Object.assign(formState, { username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false })
+    Object.assign(formState, { username: '', nickname: '', password: '', role: 'user', status: 'active', docAccess: false, chatAccess: false })
     formVisible.value = true
   }
 
@@ -516,6 +524,7 @@
       role: record.role,
       status: record.status,
       docAccess: !!record.docAccess,
+      chatAccess: !!record.chatAccess,
     })
     formVisible.value = true
   }
@@ -534,6 +543,7 @@
           role: formState.role,
           status: formState.status,
           docAccess: formState.docAccess,
+          chatAccess: formState.chatAccess,
         })
         createMessage.success('用户已更新')
       } else {

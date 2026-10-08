@@ -4,6 +4,7 @@
  * 30s TTL 重建，数据量（千级条目）下全量重扫可接受。
  * 向量召回（LLM_EMBED）一期不做开关内实现，接口留 findSimilar 占位扩展。
  */
+const { fixMojibake } = require('../utils/mojibake');
 const metricDomainRepository = require('../repositories/metricdomain.repository');
 const metricModelRepository = require('../repositories/metricmodel.repository');
 const metricRepository = require('../repositories/metric.repository');
@@ -113,10 +114,9 @@ const buildIndex = async ({ force = false } = {}) => {
   return building;
 };
 
-/** 召回：问题文本对全部词条做最长优先包含匹配；命中越多分越高 */
-const recall = async (question) => {
-  const entries = await buildIndex();
-  const text = norm(question);
+/** 召回：问题文本对全部词条做包含匹配（词条最长优先） */
+const recallWith = (entries, question) => {
+  const text = norm(fixMojibake(question));
   const hits = [];
   const taken = new Set();
   entries.forEach((entry) => {
@@ -162,4 +162,6 @@ const buildSchemaSection = (recallResult) => {
   };
 };
 
-module.exports = { buildIndex, recall, buildSchemaSection, norm, TTL_MS };
+const recall = async (question) => recallWith(await buildIndex(), question);
+
+module.exports = { buildIndex, recall, recallWith, buildSchemaSection, norm, TTL_MS };

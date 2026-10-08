@@ -65,6 +65,10 @@ const cleanup = async () => {
     ['DELETE FROM databridge_metric_model WHERE name LIKE ?', ['M5联调问数模型%']],
     ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
     ['DELETE FROM databridge_datasource WHERE name LIKE ?', [`M5数据源-${RUN}%`]],
+    // 问数对外服务套件（test-chat-api.js）残留的测试用户：一并清，防唯一性冲突
+    ["DELETE FROM databridge_metric_query_log WHERE user_name LIKE 'chat_cta%'", []],
+    ["DELETE FROM databridge_user WHERE username LIKE 'chat_cta%'", []],
+    ["DELETE FROM databridge_login_log WHERE username LIKE 'chat_cta%'", []],
     ['DELETE FROM databridge_metric_term WHERE name LIKE ?', ['联调术语%']],
     ['DELETE FROM databridge_metric_example WHERE question LIKE ?', ['联调示例%']],
     ['DELETE FROM databridge_metric_query_log WHERE question LIKE ?', ['%订单额%'] ],
@@ -131,10 +135,10 @@ const main = async () => {
     check(name, r.status === 200, r.text.slice(0, 200));
     return r.json && r.json.result;
   };
-  const orderAmt = await mkMetric({ code: `${RUN}_amt`, name: '订单额', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', timeColumn: 'pay_date' } }, 'ATOMIC 订单额');
-  const orderCnt = await mkMetric({ code: `${RUN}_cnt`, name: '订单数', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'id', agg: 'count', timeColumn: 'pay_date' } }, 'ATOMIC 订单数');
-  const paidAmt = await mkMetric({ code: `${RUN}_paid`, name: '实收额', defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', filterSql: "t.status='PAID'", timeColumn: 'pay_date' } }, 'ATOMIC 实收额');
-  const unitPrice = await mkMetric({ code: `${RUN}_unit`, name: '件单价', defineType: 'METRIC', expr: `\${${RUN}_amt} / \${${RUN}_cnt}` }, 'COMPOSITE 件单价');
+  const orderAmt = await mkMetric({ code: `${RUN}_amt`, name: `订单额${RUN}`, defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', timeColumn: 'pay_date' } }, 'ATOMIC 订单额');
+  const orderCnt = await mkMetric({ code: `${RUN}_cnt`, name: `订单数${RUN}`, defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'id', agg: 'count', timeColumn: 'pay_date' } }, 'ATOMIC 订单数');
+  const paidAmt = await mkMetric({ code: `${RUN}_paid`, name: `实收额${RUN}`, defineType: 'MEASURE', defineParams: { modelId, measureColumn: 'amt', agg: 'sum', filterSql: "t.status='PAID'", timeColumn: 'pay_date' } }, 'ATOMIC 实收额');
+  const unitPrice = await mkMetric({ code: `${RUN}_unit`, name: `件单价${RUN}`, defineType: 'METRIC', expr: `\${${RUN}_amt} / \${${RUN}_cnt}` }, 'COMPOSITE 件单价');
 
   const term = await req('/metric-terms', { method: 'POST', token, body: { name: '联调术语GMV', alias: ['GMV'], description: 'GMV 即订单额' } });
   check('术语创建', term.status === 200 && term.json.result.id, term.text.slice(0, 160));
@@ -152,42 +156,42 @@ const main = async () => {
   const near = (v, t) => v !== undefined && v !== null && Math.abs(num(v) - t) < 0.01;
   const cases = [
     {
-      q: '昨天的订单额是多少',
+      q: `昨天的订单额${RUN}是多少`,
       name: 'Q1 单指标+相对时间(昨天)',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 150.5),
     },
     {
-      q: '昨天实收额是多少',
+      q: `昨天实收额${RUN}是多少`,
       name: 'Q2 带过滤口径指标(PAID)',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 100.5),
     },
     {
-      q: '昨天的订单数',
+      q: `昨天的订单数${RUN}`,
       name: 'Q3 count 指标',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 2),
     },
     {
-      q: '按地区看昨天的订单额',
+      q: `按地区看昨天的订单额${RUN}`,
       name: 'Q4 维度分组',
       ok: (a) => ['success', 'corrected'].includes(a.status) && a.rows && a.rows.length >= 1 && a.rows.some((r) => r.includes('华东')),
     },
     {
-      q: '华东昨天的订单额',
+      q: `华东昨天的订单额${RUN}`,
       name: 'Q5 维度过滤',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 150.5),
     },
     {
-      q: '昨天的件单价',
+      q: `昨天的件单价${RUN}`,
       name: 'Q6 复合指标(公式展开)',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 75.25),
     },
     {
-      q: '昨天的订单额和订单数分别是多少',
+      q: `昨天的订单额${RUN}和订单数${RUN}分别是多少`,
       name: 'Q7 多指标同查',
       ok: (a) => ['success', 'corrected'].includes(a.status) && a.rows && a.rows.length === 1 && a.rows[0].length >= 2,
     },
     {
-      q: '最近30天的订单额',
+      q: `最近30天的订单额${RUN}`,
       name: 'Q8 时间窗(30天，剔除60天前)',
       ok: (a) => ['success', 'corrected'].includes(a.status) && near(a.value, 230.5),
     },
@@ -197,7 +201,7 @@ const main = async () => {
       ok: (a) => ['clarify', 'failed'].includes(a.status),
     },
     {
-      q: '昨天华东的实收额按地区',
+      q: `昨天华东的实收额${RUN}按地区`,
       name: 'Q10 过滤+分组组合',
       ok: (a) => ['success', 'corrected'].includes(a.status) && a.rows && a.rows.length >= 1,
     },
@@ -215,7 +219,7 @@ const main = async () => {
   check(`10 问命中 ≥7（实际 ${hits}）`, hits >= 7, details.join('\n      '));
 
   console.log('== 需求5：metricTree 子指标回填 ==');
-  const treeAns = await askQ('昨天的件单价');
+  const treeAns = await askQ(`昨天的件单价${RUN}`);
   const walkHasValue = (node) => Boolean(node && (node.value !== undefined && node.value !== null)) || (node && (node.children || []).some(walkHasValue));
   check(
     '件单价树含订单额/订单数子指标且回填 value',

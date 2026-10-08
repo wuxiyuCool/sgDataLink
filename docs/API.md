@@ -732,6 +732,18 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 - **对外服务边界**：指标结果对外交付复用 1.9 `/data-apis`（ADS 表/SQL 发布为 API）与 `/ds` runtime（apiKey/白名单/限流/调用日志/swagger/docKey 全套）；本节不提供独立对外查询端点。
 - **落库**：`databridge_metric_*` 共 12 张（domain/model/model_column/metric/metric_dep/metric_version/task/task_run/term/example/query_log/setting），mysql 模式启动自动建表（DDL 见 METRIC-DEV §5，utf8mb4 显式）；memory 模式走内存实现。
 - **engine 交互**：所有 SQL 执行经第 2 节「通用 SQL 执行接口」，携带 `X-Engine-Token`（见引擎共享密钥）。
+
+**问数对外服务（v1.12 增补，仿 1.9.5 docKey 模式）**：把智能问数发布为外部可调用 API，权限位绑定用户、密钥走 API 头、审计仅 admin。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|------|------|------|------|
+| POST | `/chat/ask` | **X-Chat-Key 头**（或 `chatKey` 查询参数，二选一；不要求 JWT） | 请求体同 `/metric-chat/ask`（`{question, sessionId?, dateRange?}`），响应 result 同构（status/answer/value/columns/rows/m2sql/physicalSql/metricTree/candidates/warnings）。错误：key 缺失/无效/权限未开通统一 `401/40102`（防枚举，复用 docKey 语义；`chatKey` 查询参数仅当未带 X-CHAT-KEY 头时生效）；账号被禁用 `401/40105`。每次调用（成败）落 `metric_query_log`，`userName` 为绑定用户并带 `(apikey)` 后缀，`matched.source='chatKey'` |
+| GET | `/auth/chat-key` | JWT（本人） | 返回 `{chatAccess, chatKey, updatedAt}`：开通时 chatKey 明文**只回本人**，未开通 chatKey=null |
+| POST | `/auth/chat-key/refresh` | JWT（本人） | 本人刷新 key（旧 key 立即失效；未开通 40001） |
+
+- **权限模型**：用户新增 `chatAccess`（布尔，**仅 admin 在用户管理中开通**）+ `chatKey`（`chk-`+32hex，绑定用户）。开通即自动生成（已有则保留），**关闭权限立即清空**——key 生命周期绑定权限位；账号禁用实时失效。`GET/PUT /metric-settings` 之外，`GET /metric-logs`（问数审计）由「登录即可」收紧为**仅 admin（manageMetrics）**，前端问数页「历史」tab 按 admin 显隐。
+- **文档中心集成**：swagger.json 固定含「智能问数」分组（`POST /api/v1/chat/ask` 自描述：请求/响应 schema、`ChatKeyAuth` securityScheme、**curl 调用模板**）；文档中心页对已开通用户在 docKey 区下方展示 chatKey（掩码/明文切换/复制/刷新）与问数 curl 模板。
+- **用户对象增字段**：`chatAccess: boolean`（列表可见）；`chatKey` 明文不出 `/users*` 接口（toSafeUser 剔除，仅 `/auth/chat-key*` 回本人）。落库列 `databridge_user.chat_access/chat_key/chat_key_updated_at`（启动自动 ALTER 补列）。
 - **实施状态（2026-10-08）**：M0~M5 后端全部落地（含 `/metric-chat/ask` 主链路、术语/示例/日志/会话、`/metric-settings` 配置页）。真实联调验收：`deploy/tests/test-metric-chat.js` 真库+真 DeepSeek 全绿（10 问命中 ≥7 为通过线，metricTree 子指标随主指标并入同一次查询后整树回填 value）。
 
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）

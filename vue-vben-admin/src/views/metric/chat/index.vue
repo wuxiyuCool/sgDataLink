@@ -110,7 +110,7 @@
           </div>
         </TabPane>
 
-        <TabPane key="history" tab="历史（问数审计）">
+        <TabPane v-if="isAdmin" key="history" tab="历史（问数审计）">
           <Space class="mb-3" wrap>
             <Input v-model:value="logQuery.keyword" allow-clear placeholder="问题关键字" style="width: 200px" @press-enter="loadLogs" />
             <Select

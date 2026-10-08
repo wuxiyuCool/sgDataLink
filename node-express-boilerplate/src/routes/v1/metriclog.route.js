@@ -6,11 +6,11 @@ const metricChatController = require('../../controllers/metricchat.controller');
 
 /**
  * 问数审计日志路由（docs/API.md 1.12 §7.4）：/metric-logs。
- * 列表 JWT；转示例仅 admin（manageMetrics）——错误示例污染 few-shot 的防线。
+ * 列表与转示例均仅 admin（manageMetrics）——外部 apikey 调用审计不对普通登录用户可见——错误示例污染 few-shot 的防线。
  */
 const router = express.Router();
 
-router.get('/', auth(), validate(metricChatValidation.listLogs), metricChatController.getLogs);
+router.get('/', auth('manageMetrics'), validate(metricChatValidation.listLogs), metricChatController.getLogs);
 
 router.post(
   '/:id/to-example',

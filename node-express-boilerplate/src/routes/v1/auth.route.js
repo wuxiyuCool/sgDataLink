@@ -21,4 +21,8 @@ router.get('/login-logs', auth('manageUsers'), authController.loginLogs);
 router.get('/doc-key', auth(), authController.getDocKey);
 router.post('/doc-key/refresh', auth(), authController.refreshDocKey);
 
+// 问数对外服务（契约 1.12 增补）：本人查看/刷新 chatKey
+router.get('/chat-key', auth(), authController.getChatKey);
+router.post('/chat-key/refresh', auth(), authController.refreshChatKey);
+
 module.exports = router;

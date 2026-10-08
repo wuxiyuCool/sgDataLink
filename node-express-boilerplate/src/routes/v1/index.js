@@ -25,6 +25,7 @@ const metricChatRoute = require('./metricchat.route');
 const metricTermRoute = require('./metricterm.route');
 const metricExampleRoute = require('./metricexample.route');
 const metricLogRoute = require('./metriclog.route');
+const chatRuntimeRoute = require('./chat.route');
 const config = require('../../config/config');
 
 const router = express.Router();
@@ -128,6 +129,11 @@ const defaultRoutes = [
   {
     path: '/metric-logs',
     route: metricLogRoute,
+  },
+  {
+    // 问数对外服务（契约 1.12 增补）：X-CHAT-KEY 免 JWT
+    path: '/chat',
+    route: chatRuntimeRoute,
   },
 ];
 

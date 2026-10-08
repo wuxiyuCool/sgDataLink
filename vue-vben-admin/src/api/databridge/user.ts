@@ -12,6 +12,8 @@ export interface PlatformUser {
   mustChangePassword?: boolean
   /** 1.9.5 文档中心免登录访问权限（key 明文走 /auth/doc-key，不在这里） */
   docAccess?: boolean
+  /** 契约 1.12 问数对外服务权限位 */
+  chatAccess?: boolean
   lastLoginAt?: string | null
   createdAt?: string | null
   updatedAt?: string | null
@@ -45,7 +47,7 @@ export function createPlatformUserApi(data: {
 
 export function updatePlatformUserApi(
   id: string,
-  data: { nickname?: string; role?: string; status?: string; docAccess?: boolean },
+  data: { nickname?: string; role?: string; status?: string; docAccess?: boolean; chatAccess?: boolean },
 ) {
   return databridgeHttp.put<PlatformUser>({ url: `${Api.Users}/${id}`, data })
 }
@@ -122,6 +124,10 @@ enum DocApi {
   SwaggerLogs = '/data-apis/swagger-logs',
 }
 
+enum ChatKeyApi {
+  ChatKey = '/auth/chat-key',
+}
+
 /** GET /auth/doc-key：本人查看文档权限与 key */
 export function getMyDocKeyApi() {
   return databridgeHttp.get<MyDocKeyInfo>({ url: DocApi.DocKey })
@@ -130,6 +136,23 @@ export function getMyDocKeyApi() {
 /** POST /auth/doc-key/refresh：本人刷新 key（旧 key 立即失效） */
 export function refreshMyDocKeyApi() {
   return databridgeHttp.post<MyDocKeyInfo>({ url: `${DocApi.DocKey}/refresh` })
+}
+
+/** 契约 1.12 问数对外：本人查看问数权限与 chatKey（明文只回本人） */
+export interface MyChatKeyInfo {
+  chatAccess: boolean
+  chatKey?: string | null
+  updatedAt?: string | null
+}
+
+/** GET /auth/chat-key */
+export function getMyChatKeyApi() {
+  return databridgeHttp.get<MyChatKeyInfo>({ url: ChatKeyApi.ChatKey })
+}
+
+/** POST /auth/chat-key/refresh：本人刷新问数 Key（旧 key 立即失效） */
+export function refreshMyChatKeyApi() {
+  return databridgeHttp.post<MyChatKeyInfo>({ url: `${ChatKeyApi.ChatKey}/refresh` })
 }
 
 /** GET /data-apis/swagger-logs：文档访问日志（JWT+admin） */

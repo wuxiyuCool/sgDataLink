@@ -5,6 +5,7 @@
  * 一期边界：单模型问题；跨模型指标组合返回 clarify 提示拆分；LIKE/指标值过滤不承接。
  */
 const { Parser } = require('node-sql-parser');
+const { fixMojibake } = require('../utils/mojibake');
 const config = require('../config/config');
 const logger = require('../config/logger');
 const { paramInvalid } = require('../utils/bizError');
@@ -255,14 +256,15 @@ const clearSession = async (sessionId) => sessions.delete(String(sessionId)) || 
  * 问数入口。
  * @returns {status, answer, value?|columns/rows, m2sql, physicalSql, metricTree, candidates?, warnings}
  */
-const ask = async ({ question, sessionId, dateRange: forcedRange }, user = {}) => {
+const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user = {}) => {
   const startedAt = Date.now();
-  const q = String(question || '').trim();
+  const q = fixMojibake(question).trim();
   if (!q) throw paramInvalid('question 必填');
   if (config.db.driver !== 'mysql') throw paramInvalid('智能问数需要 DB_DRIVER=mysql 真实执行');
   const today = new Date().toISOString().slice(0, 10);
-  const index = await metricKnowledge.buildIndex();
-  const recallResult = await metricKnowledge.recall(q);
+  // 问数以当前元数据为准：库小重建成本低（且曾有多轮问答被 30s 旧索引误导的联调现场）
+  const freshIndex = await metricKnowledge.buildIndex({ force: true });
+  const recallResult = await metricKnowledge.recallWith(freshIndex, q);
   const schema = metricKnowledge.buildSchemaSection(recallResult);
   const examples = (await metricExampleRepository.find({ filters: { enabled: true } })).slice(0, 5);
 
@@ -283,7 +285,11 @@ const ask = async ({ question, sessionId, dateRange: forcedRange }, user = {}) =
     await writeLog({
       userName: user.userName || user.username || '',
       question: q.slice(0, 1000),
-      matched: { metrics: recallResult.metrics.map((m) => m.name), columns: recallResult.columns.map((c) => c.name) },
+      matched: {
+        metrics: recallResult.metrics.map((m) => m.name),
+        columns: recallResult.columns.map((c) => c.name),
+        source: source || 'jwt',
+      },
       metricIds: (payload.metricIds || []).join(','),
       m2sql: payload.m2sql || null,
       physicalSql: payload.physicalSql || null,
@@ -314,7 +320,7 @@ const ask = async ({ question, sessionId, dateRange: forcedRange }, user = {}) =
     }
     if (extracted.error) throw new Error(extracted.error);
     try {
-      const tokenized = toTokens(extracted.sql, index);
+      const tokenized = toTokens(extracted.sql, freshIndex);
       parsed = parseM2Sql(tokenized.text, tokenized.refs);
     } catch (err) {
       // 纠错重试一次：带上失败原因让 LLM 修正
@@ -336,7 +342,7 @@ const ask = async ({ question, sessionId, dateRange: forcedRange }, user = {}) =
           metricIds: [],
         });
       }
-      const tokenized = toTokens(extracted.sql, index);
+      const tokenized = toTokens(extracted.sql, freshIndex);
       parsed = parseM2Sql(tokenized.text, tokenized.refs);
     }
   } catch (err) {
