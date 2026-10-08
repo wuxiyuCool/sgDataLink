@@ -25,7 +25,7 @@ export interface MetricSettingsPayload {
       apiKey?: string
       timeoutMs?: string
       embedModel?: string
-      embed?: { enabled?: string }
+      embed?: { enabled?: string; baseUrl?: string; apiKey?: string }
     }
   }
 }

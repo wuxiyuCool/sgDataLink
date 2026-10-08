@@ -556,6 +556,8 @@ LLM_MODEL=deepseek-chat                          # 通义: qwen-plus / GLM: glm-
 LLM_TIMEOUT_MS=30000
 HTTPS_PROXY=http://weknora:weknora@10.45.34.223:3128   # 仅内网机器需要；本地开发有直连外网则留空
 LLM_EMBED_ENABLED=0                              # 向量召回开关（模型名 LLM_EMBED_MODEL）
+LLM_EMBED_BASE_URL=                              # embedding 独立端点（如硅基流动 https://api.siliconflow.cn/v1），留空回落 LLM_BASE_URL
+LLM_EMBED_API_KEY=                               # embedding 独立密钥，留空回落 LLM_API_KEY（系统配置页同名字段 llm.embed.baseUrl/apiKey）
 ```
 无外网 key 时可指向本地 Ollama（`http://127.0.0.1:11434/v1`，任意 key）。**运行时优先级：`databridge_metric_setting` 表（系统配置页可改，§5.12）> env**；`llm.apiKey` 只在表内做掩码回显、更新走 PUT。**LLM 不可达时问数路由返回 500xx 明确提示，指标 CRUD/编译/任务不受影响**（LLM 只在 §7.4 步骤 2/3 出现，编译链路纯规则可独立跑）。
 
@@ -583,10 +585,12 @@ LLM_EMBED_ENABLED=0                              # 向量召回开关（模型�
 | M2 指标与公式 | 三类指标、校验器、依赖表、tree/lineage/versions | `test-metric-compile.js` 黄金用例：同表合并/跨表子查询/循环拒绝/派生继承（memory+mysql 双跑） |
 | M3 engine SQL 接口 | **前置：共享密钥中间件双侧落地（§8.2 鉴权，顺带关闭 v9 回报鉴权 TODO）**；/sql/query、/sql/exec、白名单、同步+回报 | Go 单测 + 222/90 真库冒烟；`test-metric-sql.js`（拒绝 DROP/多语句/错 token 40101） |
 | M4 清洗任务 | task/run、编译器→物化 SQL、cron 接入、告警接入 | 建 ADS 表→跑任务→查行数幂等 |
-| M5 ChatBI | 词库召回、Prompt、M2SQL 解析/纠错、ask 链路、日志/审核/示例 | 内置 10 问测评集（`deploy/tests/metric-eval.json`）≥7 题正确 |
+| M5 ChatBI | 词库召回、Prompt、M2SQL 解析/纠错、ask 链路、日志/审核/示例 | `deploy/tests/test-metric-chat.js`：内置 10 问（相对时间/口径过滤/分组/复合公式/多指标/友好 clarify）≥7 题正确 + metricTree 子指标回填 + 会话/日志/转示例用例 |
 | M6a 前端·核心 | 首页概览、指标域、数据建模、指标管理、智能问数（**问数审计以对话页「历史」tab 呈现，不做独立页**） | 浏览器实操走通 6 大需求主路径（本条由人工验证，不可用单测代替声明） |
 | M6b 前端·扩展 | 指标任务管理、系统配置、独立问数审计页（若 M6a 的 tab 已够用可只做前两项） | 任务/配置/审计操作闭环 |
 | M7 收尾 | RELEASE.md 补发版说明（admin+engine 双重建，`ONLY=admin,engine,web`）、回归全量 | 全绿 |
+
+**实施进度（2026-10-08）**：M0~M5 ✅（`feat/metric-center` 分支；M5 真库+真 DeepSeek 测评 19/19 通过、10 问命中 8；回归：base 40、model 37、compile 44、sql 19、task 29、chat 19）。M6a/M6b 前端待做，M7 收尾待发版。
 
 ## 12. 红线汇总（AI 实施时必须遵守）
 

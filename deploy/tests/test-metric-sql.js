@@ -108,7 +108,8 @@ const main = async () => {
   if (SECRET) {
     check('回报无 token → 401/40101', reportNoToken.status === 401 && reportNoToken.json.code === 40101, reportNoToken.text.slice(0, 120))
   } else {
-    check('回报空 secret 过渡态放行', reportNoToken.status === 200)
+    // 空 secret 过渡态：不被 401 挡下，直达业务层（未知实例按既有语义 40401）
+    check('回报空 secret 过渡态放行（直达业务层）', reportNoToken.status === 404 && reportNoToken.json.code === 40401, reportNoToken.text.slice(0, 120))
   }
   const reportOk = await call(`${BASE}/engine/report`, { engineToken: SECRET, body: { instanceId: 'inst-x', status: 'running' } })
   // 过了 token 校验进入业务层：未知实例按既有语义 404/40401（401 才是被密钥挡下）

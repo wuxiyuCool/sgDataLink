@@ -727,11 +727,12 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 | POST | `/metric-chat/ask` | `{question, sessionId?, dateRange?}` → `{status: success\|corrected\|clarify\|failed, answer, value?\|columns?/rows?, m2sql, physicalSql, metricTree（子指标逐层展开并回填 value）, candidates?（clarify 时的候选指标）}`；每次问答落 `mlg-` 日志 |
 | GET/POST | `/metric-chat/sessions/:id/history` | 多轮上下文查询/清空（内存态，重启即失） |
 | GET | `/metric-logs`（筛选 keyword/result/user/时间段）；POST `/metric-logs/:id/to-example` | 问数审计（滚动 5 万条）；审核转示例（admin） |
-| GET/PUT | `/metric-settings` | 系统配置（metric_setting 表，优先于 env）：`llm.baseUrl/llm.model/llm.apiKey/llm.timeoutMs/llm.embed.enabled`；**apiKey 掩码回显**（`sk-xx***`，仿 docKey 做法），PUT 传空串=保持不变。PUT 请求体为**嵌套形态** `{settings:{llm:{baseUrl:"",model:"",apiKey:"",timeoutMs:"",embedModel:"",embed:{enabled:""}}}}`（全局 mongo-sanitize 会把点分键拆嵌套，契约顺势定义嵌套；服务端扁平化为点分 key 后按白名单校验） |
+| GET/PUT | `/metric-settings` | 系统配置（metric_setting 表，优先于 env）：`llm.baseUrl/llm.model/llm.apiKey/llm.timeoutMs/llm.embed.enabled/llm.embedModel/llm.embed.baseUrl/llm.embed.apiKey`——embedding 可与对话模型不同供应商，`llm.embed.baseUrl/apiKey` 未配置时回落主 `llm.baseUrl/apiKey`（env：LLM_EMBED_BASE_URL/LLM_EMBED_API_KEY）；**apiKey 掩码回显**（`sk-xx***`，仿 docKey 做法），PUT 传空串=保持不变。PUT 请求体为**嵌套形态** `{settings:{llm:{baseUrl:"",model:"",apiKey:"",timeoutMs:"",embedModel:"",embed:{enabled:"",baseUrl:"",apiKey:""}}}}`（全局 mongo-sanitize 会把点分键拆嵌套，契约顺势定义嵌套；服务端扁平化为点分 key 后按白名单校验） |
 
 - **对外服务边界**：指标结果对外交付复用 1.9 `/data-apis`（ADS 表/SQL 发布为 API）与 `/ds` runtime（apiKey/白名单/限流/调用日志/swagger/docKey 全套）；本节不提供独立对外查询端点。
 - **落库**：`databridge_metric_*` 共 12 张（domain/model/model_column/metric/metric_dep/metric_version/task/task_run/term/example/query_log/setting），mysql 模式启动自动建表（DDL 见 METRIC-DEV §5，utf8mb4 显式）；memory 模式走内存实现。
 - **engine 交互**：所有 SQL 执行经第 2 节「通用 SQL 执行接口」，携带 `X-Engine-Token`（见引擎共享密钥）。
+- **实施状态（2026-10-08）**：M0~M5 后端全部落地（含 `/metric-chat/ask` 主链路、术语/示例/日志/会话、`/metric-settings` 配置页）。真实联调验收：`deploy/tests/test-metric-chat.js` 真库+真 DeepSeek 全绿（10 问命中 ≥7 为通过线，metricTree 子指标随主指标并入同一次查询后整树回填 value）。
 
 ## 2. Go 同步引擎（默认端口 8080，前缀 `/api/v1/engine`）
 
@@ -854,7 +855,7 @@ Mock 实现：`memRepo`（map+RWMutex）、`mockReader`/`mockWriter`（假数据
 
 | 服务 | 端口 | 关键环境变量 |
 |------|------|------|
-| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时）、`ADMIN_INIT_PASSWORD`（契约 1.11 首次播种 admin 的初始密码，留空随机生成并打日志）、`JWT_SECRET`/`JWT_ACCESS_EXPIRATION_MINUTES`（登录令牌签名与有效期）、`ENGINE_SHARED_SECRET`（v1.12 可选；配置后所有引擎调用带 X-Engine-Token）、`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_TIMEOUT_MS`/`LLM_EMBED_ENABLED`/`LLM_EMBED_MODEL`（v1.12 指标问数，OpenAI 兼容协议；可被 metric_setting 表覆盖） |
+| databridge-admin (Node) | 3001 | `NODE_ENV`、`PORT`、`ENGINE_BASE_URL`（引擎地址）、`MOCK=true`（跳过 MongoDB 连接）、**`DB_DRIVER`**（`memory` \| `mysql`，默认 `memory`）、`SEED_DEMO`（`true`\|`false`，演示种子开关，缺省 memory=true / mysql=false）、`MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE`/`MYSQL_CONNECTION_LIMIT`（`DB_DRIVER=mysql` 时生效）、`ORACLE_POOL_MIN`/`ORACLE_POOL_MAX`（Data API/元数据真实查询的 oracle 连接池，按数据源一份，默认 2/10；吞吐≈池上限÷单查询耗时）、`ADMIN_INIT_PASSWORD`（契约 1.11 首次播种 admin 的初始密码，留空随机生成并打日志）、`JWT_SECRET`/`JWT_ACCESS_EXPIRATION_MINUTES`（登录令牌签名与有效期）、`ENGINE_SHARED_SECRET`（v1.12 可选；配置后所有引擎调用带 X-Engine-Token）、`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`/`LLM_TIMEOUT_MS`/`LLM_EMBED_ENABLED`/`LLM_EMBED_MODEL`/`LLM_EMBED_BASE_URL`/`LLM_EMBED_API_KEY`（v1.12 指标问数，OpenAI 兼容协议；embedding 端点/密钥未配置时回落主 LLM 值；可被 metric_setting 表覆盖） |
 | databridge-engine (Go) | 8080 | `SERVER_PORT`、`NODE_REPORT_URL`、`MOCK_TICK_MS`、`ENGINE_SHARED_SECRET`（v1.12 可选，需与 admin 同值） |
 | databridge-web (Vue) | 80(容器)/5173(dev) | `VITE_GLOB_API_URL` |
 

@@ -46,6 +46,26 @@
           </template>
           <Input v-model:value="form.embedModel" placeholder="如 BAAI/bge-m3（硅基流动）/ text-embedding-3-small" allow-clear />
         </FormItem>
+        <FormItem v-if="form.embedEnabled" name="embedBaseUrl">
+          <template #label>
+            <LabelWithSource label="Embedding Base URL" item-key="llm.embed.baseUrl" :items="items" placeholder="留空 = 复用上方对话模型 Base URL" />
+          </template>
+          <Input v-model:value="form.embedBaseUrl" placeholder="如 https://api.siliconflow.cn/v1（与对话模型不同供应商时填写）" allow-clear />
+        </FormItem>
+        <FormItem v-if="form.embedEnabled" name="embedApiKey">
+          <template #label>
+            <LabelWithSource label="Embedding API Key" item-key="llm.embed.apiKey" :items="items" />
+          </template>
+          <Input.Password
+            v-model:value="form.embedApiKey"
+            :placeholder="embedApiKeyPlaceholder"
+            autocomplete="new-password"
+            allow-clear
+          />
+          <div class="mt-1 text-gray-400" style="font-size: 12px">
+            留空 = 保持不变；不单独配置时复用上方对话模型的 API Key。
+          </div>
+        </FormItem>
         <FormItem>
           <Space>
             <Button type="primary" html-type="submit" :loading="saving">保存</Button>
@@ -111,11 +131,19 @@
     timeoutMs: '',
     embedEnabled: false,
     embedModel: '',
+    embedBaseUrl: '',
+    embedApiKey: '',
   })
 
   const apiKeyPlaceholder = computed(() => {
     const key = items.value.find((i) => i.settingKey === 'llm.apiKey')
     return key?.hasValue && key.value ? `已配置（${key.value}），留空保持不变` : 'sk-...'
+  })
+
+  const embedApiKeyPlaceholder = computed(() => {
+    const key = items.value.find((i) => i.settingKey === 'llm.embed.apiKey')
+    if (key?.hasValue && key.value) return `已单独配置（${key.value}），留空保持不变`
+    return '留空 = 复用上方对话模型 API Key'
   })
 
   function itemValue(key: string): string | null {
@@ -132,6 +160,7 @@
       form.model = itemValue('llm.model') || ''
       form.timeoutMs = itemValue('llm.timeoutMs') || ''
       form.embedModel = itemValue('llm.embedModel') || ''
+      form.embedBaseUrl = itemValue('llm.embed.baseUrl') || ''
       form.embedEnabled = itemValue('llm.embed.enabled') === '1' || itemValue('llm.embed.enabled') === 'true'
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '读取配置失败'))
@@ -147,12 +176,15 @@
     if (form.apiKey.trim()) llm.apiKey = form.apiKey.trim()
     if (form.timeoutMs.trim()) llm.timeoutMs = form.timeoutMs.trim()
     llm.embed = { enabled: form.embedEnabled ? '1' : '0' }
+    if (form.embedBaseUrl.trim()) llm.embed.baseUrl = form.embedBaseUrl.trim()
+    if (form.embedApiKey.trim()) llm.embed.apiKey = form.embedApiKey.trim()
     if (form.embedModel.trim()) llm.embedModel = form.embedModel.trim()
     saving.value = true
     try {
       const result = await updateMetricSettingsApi({ settings: { llm } })
       createMessage.success(`已保存 ${result.updated.length} 项配置`)
       form.apiKey = ''
+      form.embedApiKey = ''
       await fetchSettings()
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '保存配置失败'))

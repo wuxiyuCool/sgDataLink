@@ -2,7 +2,16 @@ const Joi = require('joi');
 
 /** 系统配置（契约 1.12）：key 白名单，值空串=保持不变 */
 
-const SETTING_KEYS = ['llm.baseUrl', 'llm.apiKey', 'llm.model', 'llm.timeoutMs', 'llm.embed.enabled', 'llm.embedModel'];
+const SETTING_KEYS = [
+  'llm.baseUrl',
+  'llm.apiKey',
+  'llm.model',
+  'llm.timeoutMs',
+  'llm.embed.enabled',
+  'llm.embedModel',
+  'llm.embed.baseUrl',
+  'llm.embed.apiKey',
+];
 
 const updateSettings = {
   body: Joi.object()

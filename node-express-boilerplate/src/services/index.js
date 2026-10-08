@@ -25,3 +25,4 @@ module.exports.metricService = require('./metric.service');
 module.exports.metricCompilerService = require('./metricCompiler.service');
 module.exports.metricExecService = require('./metricExec.service');
 module.exports.metricTaskService = require('./metrictask.service');
+module.exports.metricChatService = require('./metricChat.service');

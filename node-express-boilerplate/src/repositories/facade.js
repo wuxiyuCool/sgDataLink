@@ -42,6 +42,9 @@ const MYSQL_STORES = {
   metricversion: () => require('./mysql/metricversion.store'),
   metrictask: () => require('./mysql/metrictask.store'),
   metrictaskrun: () => require('./mysql/metrictaskrun.store'),
+  metricterm: () => require('./mysql/metricterm.store'),
+  metricexample: () => require('./mysql/metricexample.store'),
+  metricquerylog: () => require('./mysql/metricquerylog.store'),
 };
 
 /** 把实现对象的函数全部包一层，保证签名统一返回 Promise（非函数属性原样保留） */

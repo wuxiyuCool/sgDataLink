@@ -67,6 +67,9 @@ require('../repositories/mysql/metric.store');
 require('../repositories/mysql/metricversion.store'); // metricdep 为自然键 bespoke 仓储，不经 defineStore
 require('../repositories/mysql/metrictask.store');
 require('../repositories/mysql/metrictaskrun.store');
+require('../repositories/mysql/metricterm.store');
+require('../repositories/mysql/metricexample.store');
+require('../repositories/mysql/metricquerylog.store');
 
 /**
  * 把 schema.sql 切成逐条 DDL。

@@ -21,6 +21,10 @@ const metricModelRoute = require('./metricmodel.route');
 const metricSettingRoute = require('./metricsetting.route');
 const metricDashboardRoute = require('./metricdashboard.route');
 const metricTaskRoute = require('./metrictask.route');
+const metricChatRoute = require('./metricchat.route');
+const metricTermRoute = require('./metricterm.route');
+const metricExampleRoute = require('./metricexample.route');
+const metricLogRoute = require('./metriclog.route');
 const config = require('../../config/config');
 
 const router = express.Router();
@@ -108,6 +112,22 @@ const defaultRoutes = [
   {
     path: '/metric-tasks',
     route: metricTaskRoute,
+  },
+  {
+    path: '/metric-chat',
+    route: metricChatRoute,
+  },
+  {
+    path: '/metric-terms',
+    route: metricTermRoute,
+  },
+  {
+    path: '/metric-examples',
+    route: metricExampleRoute,
+  },
+  {
+    path: '/metric-logs',
+    route: metricLogRoute,
   },
 ];
 

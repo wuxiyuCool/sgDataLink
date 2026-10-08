@@ -44,6 +44,8 @@ const cleanup = async () => {
     ['DELETE FROM databridge_metric_model WHERE id IN (SELECT id FROM (SELECT id FROM databridge_metric_model m WHERE m.domain_id IN (SELECT id FROM databridge_metric_domain WHERE code LIKE ?)) x)', [`${RUN}_%`]],
     ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}_%`]],
     ['DELETE FROM databridge_metric_setting WHERE setting_key = ?', ['llm.model']],
+    // 注意：若真库已配真实 embed 独立端点/密钥，跑本测试会清掉（与 llm.model 同风险，重配即可）
+    ["DELETE FROM databridge_metric_setting WHERE setting_key IN ('llm.embed.baseUrl','llm.embed.apiKey')", []],
     ["DELETE FROM databridge_datasource WHERE name LIKE '联调数据源-%'", []],
     ["DELETE FROM databridge_user WHERE username LIKE 'mtuser_%'", []],
     ["DELETE FROM databridge_login_log WHERE username LIKE 'mtuser_%' OR username = 'mtlint01'", []],
@@ -162,7 +164,9 @@ const main = async () => {
 
   console.log('== 系统配置（admin 专属）==')
   const settingsGet = await req('/metric-settings', { token })
-  check('GET 6 个配置项', settingsGet.status === 200 && settingsGet.json.result.items.length === 6)
+  check('GET 8 个配置项（含 embed baseUrl/apiKey）', settingsGet.status === 200 && settingsGet.json.result.items.length === 8
+    && settingsGet.json.result.items.some((i) => i.settingKey === 'llm.embed.baseUrl')
+    && settingsGet.json.result.items.some((i) => i.settingKey === 'llm.embed.apiKey'))
   const apiKeyItem = settingsGet.json.result.items.find((i) => i.settingKey === 'llm.apiKey')
   check('llm.apiKey 掩码或空（无明文）', !apiKeyItem.value || /\*\*\*$/.test(apiKeyItem.value))
   const settingsPut = await req('/metric-settings', { method: 'PUT', token, body: { settings: { llm: { model: `${RUN}-model` } } } })
@@ -174,6 +178,13 @@ const main = async () => {
   check('空串=保持不变', keepPut.status === 200 && keepPut.json.result.updated.length === 0, keepPut.text.slice(0, 160))
   const badKey = await req('/metric-settings', { method: 'PUT', token, body: { settings: { llm: { sneaky: 'x' } } } })
   check('未识别 key → 400', badKey.status === 400)
+  const embedPut = await req('/metric-settings', { method: 'PUT', token, body: { settings: { llm: { embed: { baseUrl: 'https://embed.example.test/v1', apiKey: 'sk-embed-test-123456' } } } } })
+  check('PUT embed 独立端点/密钥（嵌套 llm.embed.*）', embedPut.status === 200
+    && embedPut.json.result.updated.includes('llm.embed.baseUrl') && embedPut.json.result.updated.includes('llm.embed.apiKey'), embedPut.text.slice(0, 200))
+  const embedGet = await req('/metric-settings', { token })
+  const embedUrlItem = embedGet.json.result.items.find((i) => i.settingKey === 'llm.embed.baseUrl')
+  const embedKeyItem = embedGet.json.result.items.find((i) => i.settingKey === 'llm.embed.apiKey')
+  check('embed baseUrl 明文读回、apiKey 仅掩码', embedUrlItem.value === 'https://embed.example.test/v1' && embedKeyItem.value === 'sk-emb***', `${embedUrlItem.value}|${embedKeyItem.value}`)
 
   const userCreate = await req('/users', { method: 'POST', token, body: { username: `mtuser_${RUN}`, password: 'MtUser_2026', role: 'user' } })
   check('建普通用户', userCreate.status === 200)

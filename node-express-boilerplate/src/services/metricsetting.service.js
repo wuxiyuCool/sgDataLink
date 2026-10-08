@@ -15,6 +15,9 @@ const SETTING_DEFS = [
   { key: 'llm.timeoutMs', env: 'LLM_TIMEOUT_MS', secret: false, default: '30000' },
   { key: 'llm.embed.enabled', env: 'LLM_EMBED_ENABLED', secret: false, default: '0' },
   { key: 'llm.embedModel', env: 'LLM_EMBED_MODEL', secret: false, default: '' },
+  // embedding 可与对话模型不同供应商；留空回落主 llm.baseUrl/apiKey
+  { key: 'llm.embed.baseUrl', env: 'LLM_EMBED_BASE_URL', secret: false, default: '' },
+  { key: 'llm.embed.apiKey', env: 'LLM_EMBED_API_KEY', secret: true, default: '' },
 ];
 
 const KNOWN_KEYS = new Set(SETTING_DEFS.map((def) => def.key));
@@ -103,13 +106,21 @@ const getLlmConfig = async () => {
     return process.env[def.env] || def.default;
   };
   const reduceOf = (key) => Number(valueOf(SETTING_DEFS.find((def) => def.key === key))) || 30000;
+  const defOf = (key) => SETTING_DEFS.find((def) => def.key === key);
+  const embedBaseUrl = valueOf(defOf('llm.embed.baseUrl')).replace(/\/+$/, '');
+  const embedApiKey = valueOf(defOf('llm.embed.apiKey'));
+  const baseUrl = valueOf(defOf('llm.baseUrl')).replace(/\/+$/, '');
+  const apiKey = valueOf(defOf('llm.apiKey'));
   const result = {
-    baseUrl: valueOf(SETTING_DEFS[0]).replace(/\/+$/, ''),
-    apiKey: valueOf(SETTING_DEFS[1]),
-    model: valueOf(SETTING_DEFS[2]),
+    baseUrl,
+    apiKey,
+    model: valueOf(defOf('llm.model')),
     timeoutMs: reduceOf('llm.timeoutMs'),
-    embedEnabled: valueOf(SETTING_DEFS[4]) === '1' || valueOf(SETTING_DEFS[4]) === 'true',
-    embedModel: valueOf(SETTING_DEFS[5]),
+    embedEnabled: valueOf(defOf('llm.embed.enabled')) === '1' || valueOf(defOf('llm.embed.enabled')) === 'true',
+    embedModel: valueOf(defOf('llm.embedModel')),
+    // embedding 独立端点/密钥（契约 1.12）：未配置回落主 llm 值
+    embedBaseUrl: embedBaseUrl || baseUrl,
+    embedApiKey: embedApiKey || apiKey,
   };
   return result;
 };
