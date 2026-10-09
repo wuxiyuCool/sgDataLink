@@ -11,3 +11,6 @@ data:
   MYSQL_USER: "root"
   MYSQL_DATABASE: "dataLink"
   MYSQL_CONNECTION_LIMIT: "10"
+  # 登录 token 寿命（分钟）。没有 /auth/refresh 接口，exp 在登录瞬间钉死、不随操作滑动，
+  # 默认 30 分钟表现为「用着用着突然退回登录页」，故按一个工作日放宽到 8 小时。
+  JWT_ACCESS_EXPIRATION_MINUTES: "480"

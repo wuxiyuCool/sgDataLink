@@ -152,3 +152,37 @@ kubectl -n databridge logs deploy/databridge-engine | grep -i "ENGINE_SHARED_SEC
 
 漏配的后果：engine 空密钥=放行（功能可用但接口无鉴权）；两侧值不一致=admin 调
 engine 全部 401/code 40101，指标试跑/物化任务/问数都会失败。
+
+### 登录态：token 有效期 8 小时 + JWT 签名密钥（纯配置，不用重新构建镜像）
+
+现象「用着用着突然退回登录页」的根因：`/auth` 只有 login、**没有 refresh 接口**，
+token 的 `exp` 在登录瞬间按 `JWT_ACCESS_EXPIRATION_MINUTES` 钉死（不随操作滑动），
+而该变量本地 `.env` 与清单/ConfigMap 都没配 → 走 `config.js` 默认 30 分钟，到点第一个
+请求 401，前端 `checkStatus.ts` 直接清 token 跳登录页。前端 localStorage 缓存是 7 天
+（`encryptionSetting.ts` 的 `DEFAULT_CACHE_TIME`），不是它限制的。
+
+```bash
+# 1) 放宽有效期到 8 小时（只做这一步即可解决「突然退出」）
+kubectl -n databridge patch configmap databridge-config --type merge \
+  -p '{"data":{"JWT_ACCESS_EXPIRATION_MINUTES":"480"}}'
+
+# 2) 补 JWT 签名密钥 —— 必须先于第 3 步：secretKeyRef 指向的 key 不存在会让 Pod 卡在
+#    CreateContainerConfigError（不配则一直用脚手架公开默认值 databridge-mock-secret，可伪造 admin token）
+kubectl -n databridge patch secret databridge-db-secret --type merge \
+  -p "{\"stringData\":{\"JWT_SECRET\":\"$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 24)\"}}"
+
+# 3) 给 admin 追加 env（只追加、不碰 image；master-01 的 kubectl 不支持 -k，禁止 apply -f）
+kubectl -n databridge patch deploy databridge-admin --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"JWT_SECRET","valueFrom":{"secretKeyRef":{"name":"databridge-db-secret","key":"JWT_SECRET"}}}}]'
+
+# 4) 验证：expiresInSec 约 28800（换密钥会让全部旧 token 立刻失效，本来也要重登）
+curl -s -X POST http://10.45.34.165:32614/api/v1/auth/login \
+  -H 'content-type: application/json' -d '{"username":"<账号>","password":"<口令>"}' | head -c 240
+
+# 回滚：把 ConfigMap 的值改回 "30" 再 rollout restart deploy/databridge-admin
+```
+
+已同步到清单：`configmap.yaml`（有效期 480）、`admin.yaml`（`JWT_SECRET` 走 secretKeyRef）、
+`secret.example.yaml`（生成命令与说明）。存量环境仍按上面 patch 走，不要 apply 整份清单。
+**注意：配置生效前登录的浏览器会话，其旧 token 的 exp 仍是旧值，到点照样掉，需重新登录一次。**
+

@@ -49,6 +49,12 @@ spec:
                 secretKeyRef:
                   name: databridge-db-secret
                   key: ENGINE_SHARED_SECRET
+            # JWT 签名密钥：不配则回落 config.js 的脚手架默认值，等于任何人可伪造 admin token
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: databridge-db-secret
+                  key: JWT_SECRET
           envFrom:
             - configMapRef:
                 name: databridge-config
