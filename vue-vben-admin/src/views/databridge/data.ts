@@ -555,6 +555,27 @@ export const DATAFLOW_NODE_TYPES: DataflowNodeMeta[] = [
     color: '#f5222d',
     icon: 'ant-design:afety-certificate-outlined',
   },
+  {
+    type: 'pivot',
+    label: '行列转换',
+    desc: '行转列/列转行（真实执行）',
+    color: '#1d39c4',
+    icon: 'ant-design:retweet-outlined',
+  },
+  {
+    type: 'script',
+    label: '脚本加工',
+    desc: 'JS 脚本/爬虫（真实执行）',
+    color: '#08979c',
+    icon: 'ant-design:console-sql-outlined',
+  },
+  {
+    type: 'json',
+    label: 'JSON 转换',
+    desc: '解析/序列化/格式化（真实执行）',
+    color: '#d4b106',
+    icon: 'ant-design:profile-outlined',
+  },
 ]
 
 export const DATAFLOW_NODE_TYPE_MAP = DATAFLOW_NODE_TYPES.reduce((map, item) => {

@@ -57,6 +57,11 @@ const getDataflowProgress = catchAsync(async (req, res) => {
   ok(res, { ...result, dataflowId: result.taskId });
 });
 
+/** 1.8.1 POST /dataflows/preview —— 画布预览：真实加工到 output 前截断，不写表 */
+const previewDataflow = catchAsync(async (req, res) => {
+  ok(res, await dataflowService.previewCanvas(req.body));
+});
+
 module.exports = {
   getDataflows,
   getDataflow,
@@ -66,4 +71,5 @@ module.exports = {
   runDataflow,
   stopDataflow,
   getDataflowProgress,
+  previewDataflow,
 };

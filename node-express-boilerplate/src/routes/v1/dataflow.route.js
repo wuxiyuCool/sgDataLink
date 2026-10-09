@@ -16,6 +16,9 @@ router
   .get(validate(dataflowValidation.listDataflows), dataflowController.getDataflows)
   .post(validate(dataflowValidation.createDataflow), dataflowController.createDataflow);
 
+/** 1.8.1 画布预览：必须注册在 /:id 之前 */
+router.post('/preview', validate(dataflowValidation.previewDataflow), dataflowController.previewDataflow);
+
 router.post('/:id/run', validate(dataflowValidation.runDataflow), dataflowController.runDataflow);
 router.post('/:id/stop', validate(dataflowValidation.stopDataflow), dataflowController.stopDataflow);
 router.get('/:id/progress', validate(dataflowValidation.getDataflowProgress), dataflowController.getDataflowProgress);

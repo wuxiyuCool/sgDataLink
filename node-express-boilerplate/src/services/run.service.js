@@ -255,6 +255,37 @@ const registerRunner = (descriptor) => {
       throw duplicateStart(`${label}已在运行中，请勿重复启动: ${record.id}`);
     }
 
+    /**
+     * 本地执行钩子（契约 1.8.1，dataflow 流水线用）：descriptor.runLocalIf 命中时不下发引擎快照，
+     * 预写 running 实例后交给 descriptor.runLocal（fire-and-forget，start 仍即时返回）。
+     * 实例终态 / 失败重试由 runLocal 自己负责（内部可回调 scheduleRetry）；task 等未声明钩子的 kind 不受影响。
+     */
+    if (descriptor.runLocalIf && (await descriptor.runLocalIf(record))) {
+      const localInstance = await instanceRepository.create({
+        taskId: record.id,
+        taskName: record.name,
+        syncMode: resolveSyncMode ? resolveSyncMode(record) : record.syncMode,
+        status: 'running',
+        progress: 0,
+        totalRows: 0,
+        readRows: 0,
+        writeRows: 0,
+        rateRowsPerSec: 0,
+        trigger,
+        retryAttempt,
+        execMode: 'real',
+        startedAt: nowIso(),
+        finishedAt: null,
+        message: null,
+        ...(instanceExtra ? instanceExtra(record, options) : {}),
+      });
+      await repository.update(record.id, { lastStatus: 'running', lastRunAt: localInstance.startedAt });
+      Promise.resolve()
+        .then(() => descriptor.runLocal(record, localInstance))
+        .catch((err) => logger.error('runLocal crashed (%s %s): %s', kind, record.id, err.message));
+      return { [resultIdKey]: record.id, instanceId: localInstance.id, status: 'running' };
+    }
+
     const totalRows = resolveTotalRows(record);
     const execMode = await modeOfRecord(record);
     const instance = await instanceRepository.create({

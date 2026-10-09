@@ -77,6 +77,87 @@
         </FormItem>
       </template>
 
+      <!-- 1.8.1 真实执行节点：input 读取上限 -->
+      <FormItem v-if="node?.type === 'input'" label="读取上限(行)" extra="流水线内存加工的行数护栏，默认 5 万">
+        <InputNumber v-model:value="form.limitRows" :min="1" :max="100000" :step="10000" style="width: 160px" />
+      </FormItem>
+
+      <!-- 1.8.1 pivot：行列转换 -->
+      <template v-if="node?.type === 'pivot'">
+        <FormItem label="转换方向">
+          <Select v-model:value="form.pivotMode" :options="PIVOT_MODE_OPTIONS" />
+        </FormItem>
+        <template v-if="form.pivotMode === 'to_columns'">
+          <FormItem label="保留列" extra="GROUP BY 维度列，可手输">
+            <Select v-model:value="form.groupBy" mode="tags" placeholder="如 ORG_ID,PRODUCE_DT" />
+          </FormItem>
+          <FormItem label="转列依据列" required>
+            <Input v-model:value="form.pivotColumn" placeholder="该列的值会变成列名，如 METRIC_NAME" />
+          </FormItem>
+          <FormItem label="取值列" required>
+            <Input v-model:value="form.valueColumn" placeholder="被聚合的列，如 METRIC_VALUE" />
+          </FormItem>
+          <FormItem label="聚合方式">
+            <Select v-model:value="form.agg" :options="PIVOT_AGG_OPTIONS" />
+          </FormItem>
+          <FormItem label="固定列清单" extra="留空自动收集值域；值域大时建议显式给出以稳定输出结构">
+            <Select v-model:value="form.pivotColumns" mode="tags" placeholder="如 A_NUM,B_NUM" />
+          </FormItem>
+        </template>
+        <template v-else>
+          <FormItem label="拆成行的列" required>
+            <Select v-model:value="form.unpivotColumns" mode="tags" placeholder="选择要纵向展开的多个列" />
+          </FormItem>
+          <FormItem label="名称列" extra="记录来源列名的新列">
+            <Input v-model:value="form.nameColumn" placeholder="默认 NAME" />
+          </FormItem>
+          <FormItem label="值列" extra="承载来源列值的新列">
+            <Input v-model:value="form.valueColumn" placeholder="默认 VALUE" />
+          </FormItem>
+        </template>
+      </template>
+
+      <!-- 1.8.1 script：JS 脚本加工/爬虫 -->
+      <template v-if="node?.type === 'script'">
+        <FormItem label="JS 脚本" required :wrapper-col="{ span: 24 }">
+          <TextArea
+            v-model:value="form.code"
+            :rows="10"
+            class="sql-text"
+            placeholder="const out = []&#10;for (const row of $input) {&#10;  const res = await fetch(row.url)&#10;  out.push({ ID: row.id, BODY: res.text })&#10}&#10;return out"
+          />
+          <div class="text-gray-500">
+            沙箱可用：$input（上游行数组）、$env（下方环境变量）、fetch（仅 http/https、响应 2MB、禁云元址、不跟随重定向）、console（进运行日志）；
+            return 数组即下游数据。无 require/process/fs；超时线程强杀，上限 120s。
+          </div>
+        </FormItem>
+        <FormItem label="超时(ms)">
+          <InputNumber v-model:value="form.timeoutMs" :min="1000" :max="120000" :step="5000" style="width: 160px" />
+        </FormItem>
+        <FormItem label="环境变量" extra="JSON 对象注入为 $env，如 {&quot;TOKEN&quot;:&quot;abc&quot;}">
+          <TextArea v-model:value="form.envText" :rows="2" placeholder='{"TOKEN":"abc"}' />
+        </FormItem>
+      </template>
+
+      <!-- 1.8.1 json：JSON 格式化转换 -->
+      <template v-if="node?.type === 'json'">
+        <FormItem label="转换模式">
+          <Select v-model:value="form.jsonMode" :options="JSON_MODE_OPTIONS" />
+        </FormItem>
+        <FormItem label="目标列" required>
+          <Input v-model:value="form.jsonColumn" placeholder="如 PAYLOAD" />
+        </FormItem>
+        <FormItem v-if="form.jsonMode === 'parse'" label="抽取字段" extra="点路径（a、b.c）可多个；留空则整列转对象">
+          <Select v-model:value="form.jsonKeys" mode="tags" placeholder="如 amount,meta.bizNo" />
+        </FormItem>
+        <FormItem v-if="form.jsonMode !== 'parse'" label="美化缩进">
+          <Switch v-model:checked="form.pretty" />
+        </FormItem>
+        <FormItem label="坏数据策略" extra="null=置空继续 / skip=丢行 / fail=中断报错">
+          <Select v-model:value="form.onError" :options="ON_ERROR_OPTIONS" />
+        </FormItem>
+      </template>
+
       <FormItem
         v-if="node?.type === 'validate'"
         label="校验规则"
@@ -103,7 +184,7 @@
         class="mb-3"
         type="info"
         show-icon
-        message="Mock 阶段节点配置仅保存与回显，run 时引擎按首尾 input/output 节点模拟执行"
+        message="pivot/script/json 三类节点在 mysql 模式下真实执行（契约 1.8.1 流水线，可用「预览加工结果」验证）；其余旧节点仍按引擎快照模拟，流水线中透传不处理"
       />
     </Form>
 
@@ -124,8 +205,10 @@
     Drawer,
     Form,
     Input,
+    InputNumber,
     Select,
     Space,
+    Switch,
     Tag,
   } from 'ant-design-vue'
   import { useMessage } from '/@/hooks/web/useMessage'
@@ -179,7 +262,41 @@
     path: '',
     rulesText: '',
     mappings: [] as FieldMapping[],
+    /** 1.8.1 真实执行节点 */
+    limitRows: 50000,
+    pivotMode: 'to_columns',
+    groupBy: [] as string[],
+    pivotColumn: '',
+    valueColumn: '',
+    agg: 'sum',
+    pivotColumns: [] as string[],
+    unpivotColumns: [] as string[],
+    nameColumn: '',
+    code: '',
+    timeoutMs: 30000,
+    envText: '',
+    jsonMode: 'parse',
+    jsonColumn: '',
+    jsonKeys: [] as string[],
+    pretty: true,
+    onError: 'null',
   })
+
+  const PIVOT_MODE_OPTIONS = [
+    { label: '行转列（值变列名 + 聚合）', value: 'to_columns' },
+    { label: '列转行（多列拆成 名称/值 两列）', value: 'to_rows' },
+  ]
+  const PIVOT_AGG_OPTIONS = ['sum', 'count', 'avg', 'min', 'max', 'first'].map((v) => ({ label: v, value: v }))
+  const JSON_MODE_OPTIONS = [
+    { label: 'parse：JSON 字符串 → 抽字段/对象', value: 'parse' },
+    { label: 'stringify：对象 → JSON 字符串', value: 'stringify' },
+    { label: 'format：校验并重排格式', value: 'format' },
+  ]
+  const ON_ERROR_OPTIONS = [
+    { label: '置空继续（null）', value: 'null' },
+    { label: '丢弃该行（skip）', value: 'skip' },
+    { label: '中断报错（fail）', value: 'fail' },
+  ]
 
   const drawerTitle = computed(() => {
     const type = props.node?.type
@@ -216,6 +333,23 @@
         path: config.path ?? '',
         rulesText: (config.rules ?? []).join('\n'),
         mappings: (config.mappings ?? []).map((item) => ({ ...item })),
+        limitRows: config.limitRows ?? 50000,
+        pivotMode: config.mode === 'to_rows' ? 'to_rows' : 'to_columns',
+        groupBy: [...(config.groupBy ?? [])],
+        pivotColumn: config.pivotColumn ?? '',
+        valueColumn: config.valueColumn ?? '',
+        agg: config.agg ?? 'sum',
+        pivotColumns: [...(config.columns ?? [])],
+        unpivotColumns: [...(config.unpivotColumns ?? [])],
+        nameColumn: config.nameColumn ?? '',
+        code: config.code ?? '',
+        timeoutMs: config.timeoutMs ?? 30000,
+        envText: config.env && Object.keys(config.env).length ? JSON.stringify(config.env) : '',
+        jsonMode: ['parse', 'stringify', 'format'].includes(String(config.mode)) ? String(config.mode) : 'parse',
+        jsonColumn: config.column ?? '',
+        jsonKeys: [...(config.keys ?? [])],
+        pretty: config.pretty !== false,
+        onError: config.onError ?? 'null',
       })
       editorKey.value += 1
     },
@@ -269,6 +403,37 @@
       case 'transform':
         config.mappings = form.mappings ?? []
         break
+      case 'input':
+        config.limitRows = Number(form.limitRows) || 50000
+        break
+      case 'pivot':
+        config.mode = form.pivotMode as DataflowNodeConfig['mode']
+        if (form.pivotMode === 'to_columns') {
+          config.groupBy = form.groupBy
+          config.pivotColumn = form.pivotColumn
+          config.valueColumn = form.valueColumn
+          config.agg = form.agg as DataflowNodeConfig['agg']
+          config.columns = form.pivotColumns
+        } else {
+          config.unpivotColumns = form.unpivotColumns
+          config.nameColumn = form.nameColumn || 'NAME'
+          config.valueColumn = form.valueColumn || 'VALUE'
+        }
+        break
+      case 'script': {
+        config.code = form.code
+        config.timeoutMs = Number(form.timeoutMs) || 30000
+        const text = String(form.envText || '').trim()
+        if (text) config.env = JSON.parse(text)
+        break
+      }
+      case 'json':
+        config.mode = form.jsonMode as DataflowNodeConfig['mode']
+        config.column = form.jsonColumn
+        config.onError = form.onError as DataflowNodeConfig['onError']
+        if (form.jsonMode === 'parse') config.keys = form.jsonKeys
+        else config.pretty = form.pretty
+        break
       default:
         break
     }
@@ -317,6 +482,36 @@
         createMessage.warning(transformError)
         return false
       }
+    }
+    if (type === 'pivot') {
+      if (form.pivotMode === 'to_columns' && (!form.pivotColumn.trim() || !form.valueColumn.trim())) {
+        createMessage.warning('行转列需要「转列依据列」与「取值列」')
+        return false
+      }
+      if (form.pivotMode === 'to_rows' && !form.unpivotColumns.length) {
+        createMessage.warning('列转行需要至少选择一个「拆成行的列」')
+        return false
+      }
+    }
+    if (type === 'script') {
+      if (!form.code.trim()) {
+        createMessage.warning('请填写 JS 脚本')
+        return false
+      }
+      const envText = String(form.envText || '').trim()
+      if (envText) {
+        try {
+          const parsed = JSON.parse(envText)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('')
+        } catch {
+          createMessage.warning('环境变量需为合法 JSON 对象，如 {"TOKEN":"abc"}')
+          return false
+        }
+      }
+    }
+    if (type === 'json' && !form.jsonColumn.trim()) {
+      createMessage.warning('请填写 JSON 转换的目标列')
+      return false
     }
     return true
   }

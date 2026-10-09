@@ -35,6 +35,7 @@
             </Button>
           </Popconfirm>
           <Button :disabled="isNew" @click="openProgress">进度</Button>
+          <Button :loading="previewing" @click="handlePreview">预览加工结果</Button>
         </Space>
       </div>
       <div class="header-hint">
@@ -186,6 +187,36 @@
       :dataflow-name="form.name"
       :tick="progressTick"
     />
+
+    <!-- 1.8.1 流水线预览：真实读 input 逐节点加工，到 output 前截断（不写表） -->
+    <Modal v-model:visible="previewVisible" title="加工预览（不写表）" width="860px" :footer="null">
+      <Table
+        class="mb-3"
+        :columns="PREVIEW_STAGE_COLUMNS"
+        :data-source="previewResult?.stages || []"
+        :pagination="false"
+        size="small"
+        row-key="nodeId"
+        bordered
+      />
+      <Alert
+        v-for="(warn, index) in previewResult?.warnings || []"
+        :key="`pw-${index}`"
+        class="mb-2"
+        type="warning"
+        show-icon
+        :message="warn"
+      />
+      <div class="mb-1 font-semibold">结果样例（前 {{ (previewResult?.sample || []).length }} 行）</div>
+      <Table
+        :columns="previewSampleColumns"
+        :data-source="previewResult?.sample || []"
+        :pagination="false"
+        size="small"
+        bordered
+        :scroll="{ x: true, y: 300 }"
+      />
+    </Modal>
   </PageWrapper>
 </template>
 <script lang="ts" setup>
@@ -198,11 +229,13 @@
     Form,
     Input,
     InputNumber,
+    Modal,
     Popconfirm,
     Radio,
     Space,
     Spin,
     Switch,
+    Table,
     Tag,
   } from 'ant-design-vue'
   import { Icon } from '/@/components/Icon'
@@ -212,10 +245,12 @@
   import {
     createDataflowApi,
     getDataflowApi,
+    previewDataflowApi,
     runDataflowApi,
     stopDataflowApi,
     updateDataflowApi,
   } from '/@/api/databridge/dataflow'
+  import type { DataflowPreviewResult } from '/@/api/databridge/dataflow'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import type { TaskLastStatus } from '/@/api/databridge/model/commonModel'
   import type {
@@ -334,6 +369,40 @@
   function readGraph(): { nodes: DataflowNode[]; edges: DataflowEdge[] } {
     if (canvasActive()) return serializeGraph(getGraphData())
     return { nodes: unref(nodes), edges: unref(edges) }
+  }
+
+  /** ---- 1.8.1 流水线预览（pivot/script/json 真实加工，不写表） ---- */
+  const previewing = ref(false)
+  const previewVisible = ref(false)
+  const previewResult = ref<DataflowPreviewResult | null>(null)
+  const PREVIEW_STAGE_COLUMNS = [
+    { title: '节点', dataIndex: 'name', customRender: ({ text, record }) => text || record.nodeId },
+    { title: '类型', dataIndex: 'type', width: 110 },
+    { title: '输出行数', dataIndex: 'rows', width: 110 },
+    {
+      title: '说明',
+      key: 'note',
+      width: 160,
+      customRender: ({ record }) => (record.skippedWrite ? '预览不写表' : ''),
+    },
+  ]
+  const previewSampleColumns = computed(() => {
+    const sample = previewResult.value?.sample || []
+    const keys = sample.length ? Object.keys(sample[0]) : []
+    return keys.map((key) => ({ title: key, dataIndex: key, ellipsis: true }))
+  })
+
+  async function handlePreview() {
+    const graph = readGraph()
+    previewing.value = true
+    try {
+      previewResult.value = await previewDataflowApi(graph)
+      previewVisible.value = true
+    } catch (error: any) {
+      createMessage.error(getApiErrorMessage(error, '预览失败：请检查画布连线与节点配置'))
+    } finally {
+      previewing.value = false
+    }
   }
 
   /** 图数据 → 本地数组（JSON 文本与统计展示都依赖它） */

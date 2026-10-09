@@ -10,13 +10,18 @@
  * scheduleCron 定时触发与失败自动重试的行为与任务完全一致。
  */
 const pick = require('../utils/pick');
+const config = require('../config/config');
+const logger = require('../config/logger');
 const dataflowRepository = require('../repositories/dataflow.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
+const instanceRepository = require('../repositories/instance.repository');
+const logRepository = require('../repositories/log.repository');
 const { paramInvalid, notFound, runningForbidden } = require('../utils/bizError');
 const runService = require('./run.service');
+const dataflowEngine = require('./dataflowEngine.service');
 
-/** 画布组件清单（契约 1.8 节点 type 枚举） */
-const NODE_TYPES = ['input', 'output', 'filter', 'transform', 'join', 'union', 'sql', 'json_parse', 'validate'];
+/** 画布组件清单（契约 1.8 节点 type 枚举；1.8.1 新增 pivot/script/json 三类真实执行节点） */
+const NODE_TYPES = ['input', 'output', 'filter', 'transform', 'join', 'union', 'sql', 'json_parse', 'validate', 'pivot', 'script', 'json'];
 
 const { DEFAULT_SCHEDULE } = runService;
 
@@ -41,6 +46,26 @@ const assertDataSourceExists = async (id, label) => {
   }
 };
 
+/** 1.8.1 新节点的 config 深校验（保存期拦截，避免 run 才报配置错） */
+const assertNodeConfig = (node, index) => {
+  const config = node.config || {};
+  const label = `nodes[${index}](${node.type})`;
+  if (node.type === 'script') {
+    if (!String(config.code || '').trim()) throw paramInvalid(`${label} 需要 config.code（JS 脚本）`);
+    if (String(config.code).length > 20000) throw paramInvalid(`${label} config.code 超长（上限 2 万字符）`);
+    if (config.timeoutMs !== undefined && (Number(config.timeoutMs) < 1000 || Number(config.timeoutMs) > 120000)) {
+      throw paramInvalid(`${label} timeoutMs 取值 1000~120000`);
+    }
+  }
+  if (node.type === 'pivot' && !['to_columns', 'to_rows'].includes(config.mode)) {
+    throw paramInvalid(`${label} mode 仅支持 to_columns|to_rows`);
+  }
+  if (node.type === 'json') {
+    if (!['parse', 'stringify', 'format'].includes(config.mode)) throw paramInvalid(`${label} mode 仅支持 parse|stringify|format`);
+    if (!config.column) throw paramInvalid(`${label} 需要 config.column`);
+  }
+};
+
 /**
  * 画布深校验（service 层兜底，Joi 层在 validations/dataflow.validation.js 先拦一轮）：
  * 1) 节点 id 唯一、type 在枚举内、config 是对象；
@@ -60,6 +85,7 @@ const assertCanvas = (nodes = [], edges = []) => {
     }
     if (ids.has(node.id)) throw paramInvalid(`nodes 存在重复 id: ${node.id}`);
     ids.add(node.id);
+    assertNodeConfig(node, index);
   });
 
   (edges || []).forEach((edge, index) => {
@@ -214,6 +240,46 @@ const resolveDataflowExecMode = async (dataflow) => {
   return runService.resolveExecMode((input.config || {}).datasourceId, (output.config || {}).datasourceId);
 };
 
+/**
+ * 流水线本地执行（契约 1.8.1）：run.service 的 runLocal 钩子实现。
+ * 成功/失败都刷实例与 lastStatus；script console 输出与告警逐条进运行日志；
+ * 失败走与引擎回报同一套 scheduleRetry 语义。
+ */
+const runLocalPipeline = async (record, instance) => {
+  try {
+    const result = await dataflowEngine.executePipeline(record, { write: true });
+    const inputStage = result.stages.find((stage) => stage.type === 'input') || { rows: 0 };
+    const outputStage = result.stages.find((stage) => stage.type === 'output') || { rows: 0 };
+    await instanceRepository.update(instance.id, {
+      status: 'success',
+      progress: 100,
+      totalRows: inputStage.rows,
+      readRows: inputStage.rows,
+      writeRows: outputStage.rows,
+      finishedAt: new Date().toISOString(),
+      message: dataflowEngine.summarize(result).slice(0, 500),
+    });
+    await dataflowRepository.update(record.id, { lastStatus: 'success', lastRunAt: instance.startedAt });
+    const notes = [...result.logs.map((line) => ({ level: 'INFO', message: line })), ...result.warnings.map((line) => ({ level: 'WARN', message: line }))];
+    // eslint-disable-next-line no-restricted-syntax
+    for (const note of notes.slice(0, 100)) {
+      // eslint-disable-next-line no-await-in-loop
+      await logRepository.create({ instanceId: instance.id, taskId: record.id, level: note.level, message: String(note.message).slice(0, 500) });
+    }
+  } catch (err) {
+    logger.warn('dataflow pipeline failed (%s %s): %s', record.id, instance.id, err.message);
+    await instanceRepository.update(instance.id, {
+      status: 'failed',
+      finishedAt: new Date().toISOString(),
+      message: String(err.message || err).slice(0, 500),
+    });
+    await dataflowRepository.update(record.id, { lastStatus: 'failed' });
+    await logRepository.create({ instanceId: instance.id, taskId: record.id, level: 'ERROR', message: String(err.message || err).slice(0, 500) });
+    const fresh = await instanceRepository.getById(instance.id);
+    await runService.scheduleRetry(fresh || instance).catch?.(() => {});
+  }
+};
+
 /** dataflow 这一种「可运行体」的注册（定时调度 / 失败重试与任务共用同一套实现） */
 const runApi = runService.registerRunner({
   kind: 'dataflow',
@@ -223,6 +289,9 @@ const runApi = runService.registerRunner({
   resolveSyncMode: () => 'full',
   resolveExecMode: resolveDataflowExecMode,
   buildSnapshot: buildEngineSnapshot,
+  // 契约 1.8.1：画布含 pivot/script/json 时改走 Node 内存流水线（mysql 驱动前提），旧画布不受影响
+  runLocalIf: (record) => config.db.isMysql() && dataflowEngine.hasPipelineNodes(record.nodes || []),
+  runLocal: runLocalPipeline,
 });
 
 /**
@@ -237,6 +306,21 @@ const stopDataflow = (id) => runApi.stop(id);
 /** GET /dataflows/:id/progress —— 结构与 /tasks/:id/progress 一致（键名仍 taskId，值为 dataflowId） */
 const getProgress = (id) => runApi.getProgress(id);
 
+/**
+ * POST /dataflows/preview（契约 1.8.1）—— 画布预览：真实读 input、逐节点加工，
+ * 到 output 前截断（不写表、不落库），返回各节点行数 + 前 50 行样例 + 告警。
+ */
+const previewCanvas = async (body = {}) => {
+  const nodes = body.nodes || [];
+  const edges = body.edges || [];
+  assertCanvas(nodes, edges);
+  await assertEndpointConfig(nodes);
+  if (!dataflowEngine.hasPipelineNodes(nodes)) {
+    return { stages: [], rowCount: null, sample: null, warnings: ['画布不含 pivot/script/json 节点，run 仍按引擎快照模拟执行（无可预览的真实加工）'] };
+  }
+  return dataflowEngine.previewPipeline({ nodes, edges });
+};
+
 module.exports = {
   NODE_TYPES,
   queryDataflows,
@@ -248,6 +332,7 @@ module.exports = {
   runDataflow,
   stopDataflow,
   getProgress,
+  previewCanvas,
   buildEngineSnapshot,
   resolveEndpoints,
   assertCanvas,

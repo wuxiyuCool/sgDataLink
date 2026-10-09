@@ -26,6 +26,23 @@ export function getDataflowApi(id: string) {
   return databridgeHttp.get<Dataflow>({ url: `${Api.Dataflow}/${id}` })
 }
 
+/** 1.8.1 流水线预览结果 */
+export interface DataflowPreviewResult {
+  stages: { nodeId: string; name?: string; type: string; rows: number; skippedWrite?: boolean }[]
+  rowCount: number | null
+  sample?: Recordable[] | null
+  warnings: string[]
+  logs?: string[]
+}
+
+/**
+ * @description: 1.8.1 POST /dataflows/preview —— 画布真实加工预览（不写表），
+ * body 传整张画布，未保存也可预览；仅含 pivot/script/json 节点时有真实加工结果。
+ */
+export function previewDataflowApi(data: { nodes: unknown[]; edges: unknown[] }) {
+  return databridgeHttp.post<DataflowPreviewResult>({ url: `${Api.Dataflow}/preview`, data })
+}
+
 /**
  * @description: 供下拉选择使用的一次性拉取
  */

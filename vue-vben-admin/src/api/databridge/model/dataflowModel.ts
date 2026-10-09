@@ -15,6 +15,10 @@ export type DataflowNodeType =
   | 'sql'
   | 'json_parse'
   | 'validate'
+  /** 1.8.1 真实执行节点：行列转换 / JS 脚本（爬虫）/ JSON 格式化 */
+  | 'pivot'
+  | 'script'
+  | 'json'
 
 /**
  * 节点配置：不同 type 使用不同子集，后端只校验 config 为对象，
@@ -43,6 +47,26 @@ export interface DataflowNodeConfig {
   on?: string
   /** transform：复用字段映射编辑器 */
   mappings?: FieldMapping[]
+  /** input（1.8.1 流水线）：读取行数上限，默认 5 万 */
+  limitRows?: number
+  /** pivot（1.8.1）：to_columns 行转列 / to_rows 列转行 */
+  mode?: 'to_columns' | 'to_rows' | 'parse' | 'stringify' | 'format'
+  groupBy?: string[]
+  pivotColumn?: string
+  valueColumn?: string
+  agg?: 'sum' | 'count' | 'avg' | 'min' | 'max' | 'first'
+  columns?: string[]
+  unpivotColumns?: string[]
+  nameColumn?: string
+  /** json（1.8.1）：目标列与坏数据策略 */
+  column?: string
+  keys?: string[]
+  onError?: 'null' | 'skip' | 'fail'
+  pretty?: boolean
+  /** script（1.8.1）：JS 代码 / 超时 / 注入给脚本的环境变量 */
+  code?: string
+  timeoutMs?: number
+  env?: Record<string, string>
   /** 画布坐标（前端扩展键，随 nodes 一并保存，回显时恢复布局） */
   __x?: number
   __y?: number

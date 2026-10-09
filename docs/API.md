@@ -439,6 +439,38 @@ Offset 对象（增量点位 / 全量分片点位统一结构）：
 
 节点 `type` 枚举：`input | output | filter | transform | join | union | sql | json_parse | validate`（画布组件清单，Mock 阶段仅保存/回显，run 时取首尾 input/output 拼引擎快照）。
 
+#### 1.8.1 内存流水线执行引擎与扩展节点（pivot / script / json）
+
+画布中出现 `pivot | script | json` 任一**新节点**时，`run` 改由 Node 侧内存流水线真实执行（`DB_DRIVER=mysql` 前提，与指标任务同口径）；**不含新节点的旧画布行为完全不变**（仍走引擎快照模拟）。流水线规则：
+
+- 拓扑序执行，一期**单 input、单 output**（多源/多汇 40001）；`filter/transform/join/union/sql/validate` 在流水线中**透传并告警**（"该节点尚未真实执行"），不阻断。
+- input 经引擎 `/sql/query` 读表（`SELECT * FROM t`，上限 `limitRows` 默认 50000，超限报错不截断）。
+- output 经 `/sql/exec` 批量 INSERT（500 行/批）；`writeMode: overwrite`（先 TRUNCATE）| `insert`（仅追加，缺省）；`upsert` 流水线暂不支持（40001）；目标表必须已存在（列取首行键集，缺列由 INSERT 报错暴露）。
+
+**新节点 config 契约**：
+
+```json
+{ "type": "pivot", "config": {
+    "mode": "to_columns",
+    "groupBy": ["ORG_ID"], "pivotColumn": "METRIC_NAME", "valueColumn": "METRIC_VALUE", "agg": "sum",
+    "columns": ["A_NUM", "B_NUM"] } }
+```
+`mode=to_columns`（行转列：groupBy 保留，pivotColumn 的值生成新列，agg ∈ sum/count/avg/min/max/first，columns 缺省自动收集值域）；`mode=to_rows`（列转行：`unpivotColumns` 展开为 nameColumn/valueColumn 两列）。
+
+```json
+{ "type": "script", "config": {
+    "code": "const out = []; for (const row of $input) { out.push({ ID: row.id, URL: row.url }) } return out",
+    "timeoutMs": 30000, "env": { "TOKEN": "***" } } }
+```
+JS 脚本在 **worker_threads + node:vm 沙箱**执行（进程内隔离，超时 worker 强杀；上限 120s，默认 30s）；可用全局仅 `$input`（上游行数组）、`$env`（config.env 键值）、受限 `fetch`（http/https、单响应 2MB、禁云元址/链路本地——同 1.9.3 SSRF 红线）、`console`（输出并入运行日志）；**无 require/process/fs/child_process**。脚本 `return` 数组作为下游数据（爬虫场景：入参表给 URL 清单，脚本抓取返回结果行）。
+
+```json
+{ "type": "json", "config": { "mode": "parse", "column": "PAYLOAD", "keys": ["a", "b.c"], "onError": "null" } }
+```
+`mode=parse`（字符串列按 JSON 解析，`keys` 按点路径抽字段成列，缺省整列转对象）、`stringify`（对象列序列化字符串，`pretty` 可美化）、`format`（仅校验/规整字符串列，`pretty|compact`）；`onError ∈ null|skip|fail`（默认 null：坏数据置空不中断）。
+
+**预览接口**：`POST /dataflows/preview`（body=画布 {nodes,edges}，不落库不写表）→ 执行到 output 前截断，返回 `{ stages: [{nodeId, name, type, rows}], sample: 前50行, warnings }`，供画布调试三新节点。运行记录：流水线模式创建实例走同一 run 结构，`remark` 记录各节点行数与告警。
+
 ### 1.9 数据服务（Data API）`/data-apis`
 
 对标 FDL 数据服务：把表一键发布为 REST API，带鉴权/白名单/限流/调用统计。Mock 阶段返回程序生成的假数据行，**鉴权/限流逻辑真实生效**。

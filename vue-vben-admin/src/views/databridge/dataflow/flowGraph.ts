@@ -123,6 +123,12 @@ export function createDefaultConfig(type: DataflowNodeType): DataflowNodeConfig 
       return { field: '', path: '$.data' }
     case 'validate':
       return { rules: [] }
+    case 'pivot':
+      return { mode: 'to_columns', groupBy: [], pivotColumn: '', valueColumn: '', agg: 'sum', columns: [] }
+    case 'script':
+      return { code: 'const out = []\nfor (const row of $input) {\n  out.push(row)\n}\nreturn out', timeoutMs: 30000 }
+    case 'json':
+      return { mode: 'parse', column: '', keys: [], onError: 'null' }
     default:
       return {}
   }

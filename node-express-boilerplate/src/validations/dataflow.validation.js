@@ -11,7 +11,7 @@ const Joi = require('joi');
  * services/dataflow.service.js 再兜一次（统一 40001），因为它需要查数据源。
  */
 
-const NODE_TYPES = ['input', 'output', 'filter', 'transform', 'join', 'union', 'sql', 'json_parse', 'validate'];
+const NODE_TYPES = ['input', 'output', 'filter', 'transform', 'join', 'union', 'sql', 'json_parse', 'validate', 'pivot', 'script', 'json'];
 const LAST_STATUSES = ['idle', 'running', 'success', 'failed', 'stopped'];
 
 const id = Joi.string().trim().max(64).required();
@@ -120,6 +120,16 @@ const getDataflowProgress = {
   params: Joi.object().keys({ id }),
 };
 
+/** 1.8.1 POST /dataflows/preview：body 传整张画布（未保存也可预览），深校验在 service 兜 */
+const previewDataflow = {
+  body: Joi.object()
+    .keys({
+      nodes: Joi.array().items(node).min(1).required(),
+      edges: Joi.array().items(edge).max(500),
+    })
+    .unknown(true),
+};
+
 module.exports = {
   NODE_TYPES,
   canvasRule,
@@ -131,4 +141,5 @@ module.exports = {
   runDataflow,
   stopDataflow,
   getDataflowProgress,
+  previewDataflow,
 };
