@@ -49,15 +49,6 @@ spec:
                 secretKeyRef:
                   name: databridge-db-secret
                   key: ENGINE_SHARED_SECRET
-            # 出站代理：内网容器经 squid 访问外网 LLM API（Node fetch 不读代理，
-            # 由 src/utils/proxyAgent.js 实现 CONNECT 隧道 + Basic 认证）。
-            # 值含账号口令故走 Secret；本地/有直连出口的环境留空即直连。
-            - name: HTTPS_PROXY
-              valueFrom:
-                secretKeyRef:
-                  name: databridge-db-secret
-                  key: HTTPS_PROXY
-                  optional: true
           envFrom:
             - configMapRef:
                 name: databridge-config

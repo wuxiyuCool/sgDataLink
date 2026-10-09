@@ -11,6 +11,3 @@ data:
   MYSQL_USER: "root"
   MYSQL_DATABASE: "dataLink"
   MYSQL_CONNECTION_LIMIT: "10"
-  # 内网直连白名单：配了 HTTPS_PROXY 时，这些目标绕过代理（集群内服务、内网库、节点网段）
-  # 逗号分隔主机后缀，由 src/utils/proxyAgent.js 解析
-  NO_PROXY: "localhost,127.0.0.1,.svc,.cluster.local,databridge-engine,databridge-admin,10.45.34.222,10.45.34.223,10.45.34.165,10.45.34.167"
