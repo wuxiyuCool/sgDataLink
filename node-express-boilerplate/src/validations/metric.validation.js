@@ -111,8 +111,50 @@ const rollback = {
     .required(),
 };
 
+/** GET /metrics/plaza（契约 1.14）：status 允许 all（广场默认只回 online） */
+const plaza = {
+  query: Joi.object()
+    .keys({
+      domainId: Joi.string().trim().max(64),
+      type: Joi.string().valid('ATOMIC', 'DERIVED', 'COMPOSITE'),
+      status: Joi.string().valid('draft', 'online', 'offline', 'all'),
+      keyword: Joi.string().trim().max(64).allow(''),
+      limit: Joi.number().integer().min(1).max(500),
+    })
+    .unknown(true),
+};
+
+/** POST /metrics/batch：扁平「列→指标」形态，语义校验交给单条 createMetric */
+const batchMetrics = {
+  body: Joi.object()
+    .keys({
+      items: Joi.array()
+        .items(
+          Joi.object()
+            .keys({
+              ...baseKeys,
+              code: baseKeys.code.required(),
+              name: baseKeys.name.required(),
+              domainId: baseKeys.domainId.required(),
+              modelId: Joi.string().trim().max(64).required(),
+              measureColumn: Joi.string().trim().max(128).required(),
+              agg: Joi.string().valid('sum', 'count', 'count_distinct', 'avg', 'max', 'min').required(),
+              timeColumn: Joi.string().trim().max(128).allow(''),
+              filterSql: Joi.string().trim().max(2000).allow(''),
+            })
+            .unknown(true)
+        )
+        .min(1)
+        .max(50)
+        .required(),
+    })
+    .required(),
+};
+
 module.exports = {
   listMetrics,
+  plaza,
+  batchMetrics,
   getMetric,
   createMetric,
   updateMetric,

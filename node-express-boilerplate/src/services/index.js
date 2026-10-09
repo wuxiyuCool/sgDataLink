@@ -22,6 +22,10 @@ module.exports.metricModelService = require('./metricmodel.service');
 module.exports.metricSettingService = require('./metricsetting.service');
 module.exports.metricDashboardService = require('./metricdashboard.service');
 module.exports.metricService = require('./metric.service');
+// 指标广场与批量生成（契约 1.14）
+module.exports.metricPlazaService = require('./metricplaza.service');
+// 维度取值档案与码值登记（契约 1.14）
+module.exports.metricDimService = require('./metricdim.service');
 module.exports.metricCompilerService = require('./metricCompiler.service');
 module.exports.metricExecService = require('./metricExec.service');
 module.exports.metricTaskService = require('./metrictask.service');

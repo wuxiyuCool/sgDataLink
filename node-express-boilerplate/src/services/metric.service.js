@@ -313,6 +313,17 @@ const validateMetric = async (data, selfId = null) => {
   }
 
   const dl = await resolveMetricDialect({ defineParams, resolved, models });
+  // 草稿模型（契约 1.13）表结构还没确认，不允许长出指标依赖
+  const selfModel = models.find((m) => m.id === defineParams.modelId);
+  const draftModels = new Set(
+    [selfModel]
+      .concat(resolved.map((m) => models.find((x) => x.id === (m.modelId || (m.defineParams || {}).modelId))))
+      .filter((model) => model && model.status === 'draft')
+      .map((model) => `「${model.name}」(${model.id})`)
+  );
+  if (draftModels.size) {
+    errors.push(`依赖的模型处于草稿态，请先在数据建模页启用：${[...draftModels].join('、')}`);
+  }
   warnings.push(...dl.warnings('公式', data.expr));
   warnings.push(...dl.warnings('过滤条件', defineParams.filterSql));
 

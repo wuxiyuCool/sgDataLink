@@ -10,6 +10,7 @@ const config = require('../config/config');
 const logger = require('../config/logger');
 const { paramInvalid } = require('../utils/bizError');
 const metricKnowledge = require('./metricKnowledge.service');
+const metricDimService = require('./metricdim.service');
 const llmClient = require('./llmClient.service');
 const metricExampleRepository = require('../repositories/metricexample.repository');
 const metricQueryLogRepository = require('../repositories/metricquerylog.repository');
@@ -41,7 +42,8 @@ const systemPrompt = () => `你是企业指标平台的问数助手，把用户�
 2) 时间条件必须显式写出，时间列固定用「数据日期」；相对时间基于「当前日期」换算为 BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'；
 3) 禁止聚合函数、子查询、JOIN、表别名；禁止发明清单外的名字；
 4) 无法确定用户指的是哪个指标时，只输出一行：CLARIFY:候选指标名1、候选指标名2
-5) 只输出 SQL 本身或 CLARIFY 行，不要解释。`;
+5) 维度行若带「取值:」清单，说明该列可以按这些值过滤：用户话里出现的值名（等号右边的业务名也要认）必须翻译成等号左边的原始值写成 \`列名 = '原始值'\`；不要因不认识值名就丢掉这个过滤条件；
+6) 只输出 SQL 本身或 CLARIFY 行，不要解释。`;
 
 const userPrompt = ({ question, schema, examples, today }) => `### 当前日期
 ${today}
@@ -130,8 +132,35 @@ const literalOf = (node) => {
   return undefined;
 };
 
+/**
+ * 值校正（契约 1.14）：LLM 习惯写业务名（华东），库里可能是码值（01）。
+ * 只对字符串字面量生效（数值比较不碰），档案里没有的取值原样保留并记下来当治理线索。
+ * 注意这一步在 token 解析之后、编译之前，不参与占位符替换，值文本永远不进 token。
+ */
+const correctLiteral = (ref, raw, dimValues, corrections, unmapped) => {
+  if (typeof raw !== 'string' || !dimValues || !dimValues.size) return raw;
+  const archived = dimValues.get(String(ref)) || [];
+  if (!archived.length) return raw;
+  const text = raw.trim();
+  const lower = text.toLowerCase();
+  const asValue = archived.find((item) => String(item.value) === raw);
+  if (asValue) return raw; // 库里就是这个写法
+  const byValueLoose = archived.find((item) => String(item.value).toLowerCase() === lower);
+  if (byValueLoose) {
+    corrections.push({ column: String(ref), from: raw, to: byValueLoose.value, via: 'value' });
+    return byValueLoose.value;
+  }
+  const byLabel = archived.find((item) => item.label && String(item.label).trim().toLowerCase() === lower);
+  if (byLabel) {
+    corrections.push({ column: String(ref), from: raw, to: byLabel.value, via: 'label' });
+    return byLabel.value;
+  }
+  unmapped.push({ column: String(ref), value: raw, candidates: archived.length });
+  return raw;
+};
+
 /** 第二步：token 化文本交给 node-sql-parser，抽取指标/维度/时间/过滤（refs 来自 toTokens） */
-const parseM2Sql = (tokenSql, refs) => {
+const parseM2Sql = (tokenSql, refs, dimValues) => {
   const ast = new Parser().astify(tokenSql, 'mysql');
   const tree = Array.isArray(ast) ? ast[0] : ast;
   if (!tree || tree.type !== 'select') throw new Error('不是合法的 SELECT 语句');
@@ -157,6 +186,8 @@ const parseM2Sql = (tokenSql, refs) => {
   });
   const dateRange = { start: null, end: null };
   const filters = [];
+  const corrections = [];
+  const unmapped = [];
   const unsupported = [];
   flattenConditions(tree.where).forEach((cond) => {
     if (!cond || cond.type !== 'binary_expr') {
@@ -197,15 +228,18 @@ const parseM2Sql = (tokenSql, refs) => {
     // COL 过滤
     const colRef = left.ref;
     if (op === '=' || op === '!=') {
-      filters.push({ ref: colRef, sql: `t.${colRef.split('.')[1]} ${op} ${esc(literalOf(right))}` });
+      const value = correctLiteral(colRef, literalOf(right), dimValues, corrections, unmapped);
+      filters.push({ ref: colRef, sql: `t.${colRef.split('.')[1]} ${op} ${esc(value)}` });
     } else if (op === 'IN' && right.type === 'expr_list') {
-      const values = right.value.map((v) => esc(literalOf(v))).join(', ');
+      const values = right.value
+        .map((v) => esc(correctLiteral(colRef, literalOf(v), dimValues, corrections, unmapped)))
+        .join(', ');
       filters.push({ ref: colRef, sql: `t.${colRef.split('.')[1]} IN (${values})` });
     } else if (['>=', '>', '<=', '<'].includes(op)) {
       filters.push({ ref: colRef, sql: `t.${colRef.split('.')[1]} ${op} ${esc(literalOf(right))}` });
     } else unsupported.push(`维度过滤不支持 ${op}`);
   });
-  return { metrics, dims, from, dateRange, filters, unknown, unsupported };
+  return { metrics, dims, from, dateRange, filters, unknown, unsupported, corrections, unmapped };
 };
 
 const hasDate = (range) => Boolean(range && (range.start || range.end));
@@ -267,7 +301,10 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
   const freshIndex = await metricKnowledge.buildIndex({ force: true });
   const recallResult = await metricKnowledge.recallWith(freshIndex, q);
   const schema = metricKnowledge.buildSchemaSection(recallResult);
-  const examples = (await metricExampleRepository.find({ filters: { enabled: true } })).slice(0, 5);
+  // few-shot 取最近沉淀的 5 条（find 默认 createdAt:asc，管理员刚转的示例会永远排在别人后面、永不生效）
+  const examples = (await metricExampleRepository.find({ filters: { enabled: true }, sort: 'createdAt:desc' })).slice(0, 5);
+  // 值校正在任何 prompt 开关之外都要做：它只是把 LLM 写的业务名换成库里真实值，不外发数据
+  const dimValues = await metricDimService.valuesByModelId();
 
   const history = sessionId ? sessions.get(sessionId) || [] : [];
   const contextMessages = [];
@@ -290,6 +327,9 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
         metrics: recallResult.metrics.map((m) => m.name),
         columns: recallResult.columns.map((c) => c.name),
         source: source || 'jwt',
+        // 值校正是问数质量的可观测项：改了哪些值、哪些值档案里没有（待补录的码值线索）
+        valueCorrections: payload.corrections || [],
+        unmappedValues: payload.unmapped || [],
       },
       metricIds: (payload.metricIds || []).join(','),
       m2sql: payload.m2sql || null,
@@ -322,7 +362,7 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
     if (extracted.error) throw new Error(extracted.error);
     try {
       const tokenized = toTokens(extracted.sql, freshIndex);
-      parsed = parseM2Sql(tokenized.text, tokenized.refs);
+      parsed = parseM2Sql(tokenized.text, tokenized.refs, dimValues);
     } catch (err) {
       // 纠错重试一次：带上失败原因让 LLM 修正
       status = 'corrected';
@@ -344,7 +384,7 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
         });
       }
       const tokenized = toTokens(extracted.sql, freshIndex);
-      parsed = parseM2Sql(tokenized.text, tokenized.refs);
+      parsed = parseM2Sql(tokenized.text, tokenized.refs, dimValues);
     }
   } catch (err) {
     return finish({
@@ -478,6 +518,16 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
   let answer = '查询无数据';
   if (single) answer = `${compiled[0].code} = ${String(single[0])}${compiled[0].unit ? ` ${compiled[0].unit}` : ''}`;
   else if (rows.length) answer = `共 ${rows.length} 行`;
+  const corrections = parsed.corrections || [];
+  const unmapped = parsed.unmapped || [];
+  if (corrections.length) {
+    warnings.push(`已按取值档案把 ${corrections.map((c) => `「${c.from}」→${c.to}`).join('、')} 换成库里真实值`);
+  }
+  if (unmapped.length) {
+    warnings.push(
+      `过滤值 ${unmapped.map((u) => `「${u.value}」`).join('、')} 不在取值档案里，结果可能为空（可在建模页「取值」里补录）`
+    );
+  }
   return finish({
     status,
     answer,
@@ -489,6 +539,8 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
     metricIds,
     metricTree: tree,
     warnings,
+    corrections,
+    unmapped,
     preview: JSON.stringify(rows.slice(0, 3)).slice(0, 900),
     modelName: model.name,
   });

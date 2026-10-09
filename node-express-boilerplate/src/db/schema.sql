@@ -448,8 +448,11 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_model` (
   `table_name`    VARCHAR(128) NOT NULL,
   `create_type`   VARCHAR(16)  NOT NULL COMMENT 'reference 引用已有表 | ddl 界面建表',
   `table_ddl`     TEXT         NULL COMMENT 'create_type=ddl 时的建表语句留档',
+  `table_status`  VARCHAR(16)  NOT NULL DEFAULT 'none' COMMENT '契约 1.13：none 未建 | created 平台已建 | exists 引用表 | failed 建表失败',
+  `table_msg`     VARCHAR(512) NOT NULL DEFAULT '' COMMENT '建表/删表失败的原始报错（界面展示与重试）',
+  `table_at`      DATETIME(3)  NULL COMMENT '最近一次建表动作时间',
   `time_column`   VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '默认时间维度列',
-  `status`        VARCHAR(8)   NOT NULL DEFAULT 'online' COMMENT 'online | offline',
+  `status`        VARCHAR(16)  NOT NULL DEFAULT 'online' COMMENT 'draft 草稿（ddl 模型初始态，不能建表/被引用）| online 启用 | offline 停用',
   `version`       INT          NOT NULL DEFAULT 1,
   `del_flag`      TINYINT(1)   NOT NULL DEFAULT 0,
   `remark`        VARCHAR(512) NOT NULL DEFAULT '',
@@ -646,4 +649,25 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_setting` (
   `updated_at`    DATETIME(3) NULL,
   PRIMARY KEY (`seq`),
   UNIQUE KEY `uk_metricsetting_key` (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 维度取值档案 + 码值业务名（契约 1.14 / V11 二期）：
+-- source=auto 是探查回写的真实值，label 是人工登记的"库里 01、业务叫华东"；两者同表，避免"档案/字典"两套概念。
+CREATE TABLE IF NOT EXISTS `databridge_metric_dimvalue` (
+  `seq`          BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`           VARCHAR(64)  NOT NULL COMMENT 'mdv- 前缀',
+  `model_id`     VARCHAR(64)  NOT NULL,
+  `column_name`  VARCHAR(128) NOT NULL,
+  `value`        VARCHAR(191) NOT NULL COMMENT '库里真实值',
+  `label`        VARCHAR(191) NOT NULL DEFAULT '' COMMENT '业务名，探查不会覆盖人工登记',
+  `hits`         BIGINT       NOT NULL DEFAULT 0 COMMENT '探查时的行数，用于排序与"脏值"识别',
+  `source`       VARCHAR(8)   NOT NULL DEFAULT 'auto' COMMENT 'auto=探查 / manual=人工补录',
+  `stale`        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1=本次探查已见不到该值（不删，历史数据仍可被引用）',
+  `profiled_at`  DATETIME(3)  NULL,
+  `created_at`   DATETIME(3)  NULL,
+  `updated_at`   DATETIME(3)  NULL,
+  `extra`        JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_dimvalue_key` (`model_id`, `column_name`, `value`),
+  KEY `idx_dimvalue_model` (`model_id`, `column_name`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

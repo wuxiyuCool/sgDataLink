@@ -218,6 +218,8 @@ const sqlExec = async (endpoint, statements, opts = {}) => {
         endpoint,
         statements,
         reportUrl: opts.reportUrl || undefined,
+        /** 破坏性动词开闸：只有建模删除平台自建表时传 true（契约 v1.13） */
+        allowDrop: opts.allowDrop === true || undefined,
       }),
       signal: controller.signal,
     });

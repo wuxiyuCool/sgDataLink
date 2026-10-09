@@ -1,7 +1,7 @@
 const pick = require('../utils/pick');
 const catchAsync = require('../utils/catchAsync');
 const { ok, pageResult } = require('../utils/apiResponse');
-const { metricService, metricExecService } = require('../services');
+const { metricService, metricExecService, metricPlazaService } = require('../services');
 
 /**
  * 指标管理 HTTP 层（docs/API.md 1.12 §6）。
@@ -11,6 +11,17 @@ const getMetrics = catchAsync(async (req, res) => {
   const filter = pick(req.query, ['domainId', 'modelId', 'type', 'status']);
   const options = pick(req.query, ['keyword', 'page', 'size', 'sort']);
   pageResult(res, await metricService.queryMetrics(filter, options));
+});
+
+/** GET /metrics/plaza —— 广场按域分节聚合（契约 1.14） */
+const getPlaza = catchAsync(async (req, res) => {
+  ok(res, await metricPlazaService.getPlaza(pick(req.query, ['domainId', 'type', 'status', 'keyword', 'limit'])));
+});
+
+/** POST /metrics/batch —— 从表批量生成原子指标；部分成功回 200，逐条结果在 results 里 */
+const createMetricsBatch = catchAsync(async (req, res) => {
+  const result = await metricPlazaService.createMetricsBatch(req.body.items, req.user && req.user.username);
+  ok(res, result, { message: `创建 ${result.created} 条，失败 ${result.failed} 条` });
 });
 
 const getMetric = catchAsync(async (req, res) => {
@@ -60,6 +71,8 @@ const rollback = catchAsync(async (req, res) => {
 
 module.exports = {
   getMetrics,
+  getPlaza,
+  createMetricsBatch,
   getMetric,
   createMetric,
   updateMetric,

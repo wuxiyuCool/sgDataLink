@@ -38,6 +38,7 @@ const ID_SEQUENCES = [
   { prefix: 'mtk-', startId: 14000, table: 'databridge_metric_task' },
   { prefix: 'mtr-', startId: 14900, table: 'databridge_metric_task_run' },
   { prefix: 'mterm-', startId: 16000, table: 'databridge_metric_term' },
+  { prefix: 'mdv-', startId: 19000, table: 'databridge_metric_dimvalue' },
   { prefix: 'mex-', startId: 17000, table: 'databridge_metric_example' },
   { prefix: 'mlg-', startId: 18000, table: 'databridge_metric_query_log' },
 ];
@@ -68,6 +69,7 @@ require('../repositories/mysql/metricversion.store'); // metricdep 为自然键 
 require('../repositories/mysql/metrictask.store');
 require('../repositories/mysql/metrictaskrun.store');
 require('../repositories/mysql/metricterm.store');
+require('../repositories/mysql/metricdimvalue.store');
 require('../repositories/mysql/metricexample.store');
 require('../repositories/mysql/metricquerylog.store');
 

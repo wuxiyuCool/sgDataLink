@@ -10,6 +10,7 @@ const logger = require('../config/logger');
 const metricTaskRepository = require('../repositories/metrictask.repository');
 const metricTaskRunRepository = require('../repositories/metrictaskrun.repository');
 const metricModelRepository = require('../repositories/metricmodel.repository');
+const metricRepository = require('../repositories/metric.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
 const metricCompilerService = require('./metricCompiler.service');
 const metricExecService = require('./metricExec.service');
@@ -121,6 +122,8 @@ const validateTaskShape = async (data) => {
 const buildPlan = async (task, now = new Date()) => {
   const source = await metricModelRepository.getById(task.sourceModelId);
   if (!source || source.delFlag) throw paramInvalid(`源模型不存在: ${task.sourceModelId}`);
+  // 草稿模型的表结构未确认，不能拿来做物化（契约 1.13）
+  if (source.status === 'draft') throw paramInvalid(`源模型「${source.name}」是草稿，请先在数据建模页启用`);
   const fillBy = new Map();
   const renameBy = new Map();
   const filters = [];
@@ -233,6 +236,54 @@ const previewPlan = async (data, now = new Date()) => {
   const plan = await buildPlan(task, now);
   const statements = await buildStatements(task, plan);
   return { statements, dateRange: plan.dateRange, fromTable: plan.fromTable };
+};
+
+/**
+ * 目标表结构预览（界面「选了哪些维度/指标 → 会建成什么样」的权威口径）。
+ * 字段与类型都取自 buildPlan + 方言层，前端不再自己猜；不落库、不执行。
+ */
+const previewTargetSchema = async (data, now = new Date()) => {
+  const shape = await validateTaskShape(data);
+  const task = { ...data, ...shape };
+  const plan = await buildPlan(task, now);
+  const ds = await datasourceRepository.getById(task.targetDatasourceId);
+  const dl = dialect.dialectOfSource(ds);
+  const [model, metrics] = await Promise.all([metricModelRepository.getById(task.sourceModelId), metricRepository.list()]);
+  const bizBy = new Map(((model || {}).columns || []).map((c) => [c.columnName, c.bizName || '']));
+  const nameBy = new Map(active(metrics).map((m) => [m.code, m.name]));
+  const columns = [
+    ...plan.dims.map((d) => ({
+      name: dl.ident(d.target).replace(/`/g, ''),
+      type: dl.columnType(d.type),
+      source: '维度',
+      comment: bizBy.get(d.source) || '',
+    })),
+    ...plan.metrics.map((m) => ({
+      name: dl.ident(m.target).replace(/`/g, ''),
+      type: dl.columnType(m.type),
+      source: '指标',
+      comment: nameBy.get(m.target) || '',
+    })),
+  ];
+  if (!task.targetModelId) {
+    columns.push({
+      name: dl.ident(dl.etlColumn).replace(/`/g, ''),
+      type: dl.columnType('DATETIME'),
+      source: '留痕',
+      comment: '本次物化时间（系统列）',
+    });
+  }
+  const statements = await buildStatements(task, plan);
+  return {
+    dialect: dl.type,
+    table: task.targetTable,
+    autoCreate: !task.targetModelId,
+    writeMode: task.writeMode,
+    primaryKeys: task.writeMode === 'upsert' ? plan.dims.map((d) => d.target) : [],
+    columns,
+    createSql: statements.find((sql) => /^CREATE TABLE/i.test(sql)) || null,
+    insertSql: statements.find((sql) => /^INSERT INTO/i.test(sql)) || null,
+  };
 };
 
 const queryTasks = (filter = {}, options = {}) =>
@@ -389,6 +440,7 @@ module.exports = {
   buildPlan,
   buildStatements,
   previewPlan,
+  previewTargetSchema,
   queryTasks,
   getTask,
   saveTask,

@@ -2,7 +2,7 @@ const Joi = require('joi');
 
 /** 数据模型校验（契约 1.12） */
 
-const { LAYERS, ROLES, AGGS } = require('../services/metricmodel.service');
+const { LAYERS, ROLES, AGGS, STATUSES } = require('../services/metricmodel.service');
 
 const id = Joi.string().trim().max(64).required();
 
@@ -30,7 +30,7 @@ const listModels = {
       domainId: Joi.string().trim().max(64),
       layer: Joi.string().valid(...LAYERS),
       datasourceId: Joi.string().trim().max(64),
-      status: Joi.string().valid('online', 'offline'),
+      status: Joi.string().valid(...STATUSES),
       keyword: Joi.string().trim().max(64).allow(''),
       sort: Joi.string()
         .trim()
@@ -54,12 +54,11 @@ const createModel = {
         .required(),
       tableName: Joi.string()
         .trim()
-        .pattern(/^[A-Za-z_][A-Za-z0-9_.]{0,63}$/)
-        .required(),
+        .pattern(/^[A-Za-z_][A-Za-z0-9_.]{0,63}$/),
       createType: Joi.string().valid('reference', 'ddl'),
       columns: Joi.array().items(column).max(500),
       timeColumn: Joi.string().trim().max(64).allow(''),
-      status: Joi.string().valid('online', 'offline'),
+      status: Joi.string().valid(...STATUSES),
       remark: Joi.string().trim().max(512).allow('', null),
     })
     .required(),
@@ -75,7 +74,7 @@ const updateModel = {
         .trim()
         .pattern(/^[A-Za-z_][A-Za-z0-9_.]{0,63}$/),
       timeColumn: Joi.string().trim().max(64).allow(''),
-      status: Joi.string().valid('online', 'offline'),
+      status: Joi.string().valid(...STATUSES),
       remark: Joi.string().trim().max(512).allow('', null),
       columns: Joi.array().items(column).max(500),
     })
@@ -89,7 +88,13 @@ const replaceColumns = {
     .required(),
 };
 
-const deleteModel = { params: Joi.object().keys({ id }) };
+const deleteModel = {
+  params: Joi.object().keys({ id }),
+  /** dropTable=true 连带删除物理表（仅平台建的表，服务端另有硬闸门） */
+  query: Joi.object().keys({ dropTable: Joi.boolean() }),
+};
+
+const createTable = { params: Joi.object().keys({ id }) };
 
 const previewDdl = {
   body: Joi.object()
@@ -103,10 +108,75 @@ const previewDdl = {
         .trim()
         .pattern(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
       columns: Joi.array().items(column).min(1).max(500).required(),
+      /** 目标数据源：决定 DDL 用哪家方言（不传按 mysql） */
+      datasourceId: Joi.string().trim().max(64),
     })
     .required()
-    .oxor('name', 'tableName')
-    .messages({ 'object.oxor': 'name 与 tableName 二选一（都不传按 name=表名主体自动生成）' }),
+    .or('name', 'tableName')
+    .messages({ 'object.or': 'name 与 tableName 至少给一个（给了 tableName 以它为准，否则按 name 自动拼表名）' }),
 };
 
-module.exports = { listModels, getModel, createModel, updateModel, replaceColumns, deleteModel, previewDdl };
+/** 维度取值探查（契约 1.14）：只允许探查该模型的维度列，条数与基数阈值有上限（防大表 GROUP BY 压库） */
+const profileDimensions = {
+  params: Joi.object().keys({ id }),
+  body: Joi.object()
+    .keys({
+      columns: Joi.array().items(Joi.string().trim().max(64)).max(50),
+      topN: Joi.number().integer().min(1).max(200),
+      distinctGuard: Joi.number().integer().min(1).max(5000),
+    })
+    .unknown(true),
+};
+
+const getDimensionValues = {
+  params: Joi.object().keys({ id }),
+  query: Joi.object()
+    .keys({
+      columnName: Joi.string().trim().max(64),
+      keyword: Joi.string().trim().max(64).allow(''),
+    })
+    .unknown(true),
+};
+
+const saveDimensionValues = {
+  params: Joi.object().keys({ id }),
+  body: Joi.object()
+    .keys({
+      columnName: Joi.string().trim().max(64).required(),
+      values: Joi.array()
+        .items(
+          Joi.object()
+            .keys({
+              value: Joi.string().trim().min(1).max(191).required(),
+              label: Joi.string().trim().max(191).allow('', null),
+            })
+            .required()
+        )
+        .min(1)
+        .max(200)
+        .required(),
+    })
+    .required(),
+};
+
+const clearDimensionValues = {
+  params: Joi.object().keys({ id }),
+  query: Joi.object()
+    .keys({ columnName: Joi.string().trim().max(64).required() })
+    .unknown(true),
+};
+
+module.exports = {
+  listModels,
+  getModel,
+  createModel,
+  updateModel,
+  replaceColumns,
+  deleteModel,
+  createTable,
+  previewDdl,
+  profileDimensions,
+  getDimensionValues,
+  saveDimensionValues,
+  clearDimensionValues,
+};

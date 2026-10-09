@@ -18,6 +18,9 @@ const SETTING_DEFS = [
   // embedding 可与对话模型不同供应商；留空回落主 llm.baseUrl/apiKey
   { key: 'llm.embed.baseUrl', env: 'LLM_EMBED_BASE_URL', secret: false, default: '' },
   { key: 'llm.embed.apiKey', env: 'LLM_EMBED_API_KEY', secret: true, default: '' },
+  // 问数候选值（契约 1.14）：真实业务数据进 prompt = 数据出境，默认关，按环境显式开
+  { key: 'chat.dimValuePrompt', env: 'CHAT_DIM_VALUE_PROMPT', secret: false, default: '0' },
+  { key: 'chat.dimValueTopN', env: 'CHAT_DIM_VALUE_TOPN', secret: false, default: '20' },
 ];
 
 const KNOWN_KEYS = new Set(SETTING_DEFS.map((def) => def.key));
@@ -125,4 +128,21 @@ const getLlmConfig = async () => {
   return result;
 };
 
-module.exports = { SETTING_DEFS, getSettings, updateSettings, getLlmConfig };
+/** 问数侧生效配置（契约 1.14）：候选值是否进 prompt + 每列条数上限 */
+const getChatConfig = async () => {
+  const stored = await metricSettingRepository.list();
+  const storeMap = new Map(stored.map((item) => [item.settingKey, item.settingValue]));
+  const valueOf = (key) => {
+    const def = SETTING_DEFS.find((item) => item.key === key);
+    const tableValue = storeMap.get(key);
+    if (tableValue !== undefined && tableValue !== '') return tableValue;
+    return `${process.env[def.env] || def.default}`;
+  };
+  const topN = Number(valueOf('chat.dimValueTopN'));
+  return {
+    dimValuePrompt: valueOf('chat.dimValuePrompt') === '1' || valueOf('chat.dimValuePrompt') === 'true',
+    dimValueTopN: Number.isFinite(topN) && topN > 0 ? Math.min(Math.trunc(topN), 200) : 20,
+  };
+};
+
+module.exports = { SETTING_DEFS, getSettings, updateSettings, getLlmConfig, getChatConfig };

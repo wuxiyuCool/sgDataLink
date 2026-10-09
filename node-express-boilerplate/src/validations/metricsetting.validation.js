@@ -11,6 +11,9 @@ const SETTING_KEYS = [
   'llm.embedModel',
   'llm.embed.baseUrl',
   'llm.embed.apiKey',
+  // 契约 1.14：问数候选值进 prompt 的开关与每列条数上限
+  'chat.dimValuePrompt',
+  'chat.dimValueTopN',
 ];
 
 const updateSettings = {

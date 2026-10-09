@@ -37,6 +37,11 @@ const run = catchAsync(async (req, res) => {
 });
 
 /** 保存前查看将要执行的语句（不执行） */
+/** POST /metric-tasks/target-schema —— 目标表结构回显（选了哪些字段会建成什么样，不落库不执行） */
+const targetSchema = catchAsync(async (req, res) => {
+  ok(res, await metricTaskService.previewTargetSchema(req.body || {}));
+});
+
 const preview = catchAsync(async (req, res) => {
   ok(res, await metricTaskService.previewPlan(req.body || {}));
 });
@@ -46,4 +51,4 @@ const getRuns = catchAsync(async (req, res) => {
   pageResult(res, await metricTaskService.queryRuns(req.params.id, options));
 });
 
-module.exports = { getTasks, getTask, createTask, updateTask, deleteTask, run, preview, getRuns };
+module.exports = { getTasks, getTask, createTask, updateTask, deleteTask, run, preview, targetSchema, getRuns };

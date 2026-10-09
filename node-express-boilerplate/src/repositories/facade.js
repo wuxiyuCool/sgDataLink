@@ -43,6 +43,7 @@ const MYSQL_STORES = {
   metrictask: () => require('./mysql/metrictask.store'),
   metrictaskrun: () => require('./mysql/metrictaskrun.store'),
   metricterm: () => require('./mysql/metricterm.store'),
+  metricdimvalue: () => require('./mysql/metricdimvalue.store'),
   metricexample: () => require('./mysql/metricexample.store'),
   metricquerylog: () => require('./mysql/metricquerylog.store'),
 };

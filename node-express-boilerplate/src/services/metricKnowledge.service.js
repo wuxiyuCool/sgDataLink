@@ -9,6 +9,7 @@ const metricDomainRepository = require('../repositories/metricdomain.repository'
 const metricModelRepository = require('../repositories/metricmodel.repository');
 const metricRepository = require('../repositories/metric.repository');
 const metricTermRepository = require('../repositories/metricterm.repository');
+const metricDimService = require('./metricdim.service');
 
 const TTL_MS = 30000;
 const MIN_MATCH_LEN = 2;
@@ -32,12 +33,16 @@ const pushEntry = (entries, entry) => {
 };
 
 const buildIndexInner = async () => {
-  const [domains, models, metrics, terms] = await Promise.all([
+  const [domains, models, metrics, terms, chatConfig] = await Promise.all([
     metricDomainRepository.list(),
     metricModelRepository.list(),
     metricRepository.list(),
     metricTermRepository.list(),
+    metricDimService.promptConfig(),
   ]);
+  // 候选值是真实业务数据，进 prompt 属数据出境：开关关掉时连档案都不读
+  const dimValues = chatConfig.dimValuePrompt ? await metricDimService.valuesByModelId() : new Map();
+  const valueTopN = chatConfig.dimValueTopN;
   const entries = [];
   active(domains).forEach((domain) => pushEntry(entries, { kind: 'domain', id: domain.id, name: domain.name }));
   const modelById = new Map();
@@ -51,6 +56,7 @@ const buildIndexInner = async () => {
     pushEntry(entries, { kind: 'model', id: model.id, name: model.name, domainId: model.domainId });
     (detail.columns || []).forEach((column) => {
       if (column.role === 'measure') return; // 度量列不直接暴露给问数，走指标
+      const archived = dimValues.get(`${model.id}.${column.columnName}`) || [];
       pushEntry(entries, {
         kind: 'column',
         id: `${model.id}.${column.columnName}`,
@@ -59,6 +65,24 @@ const buildIndexInner = async () => {
         name: column.bizName || column.columnName,
         aliases: [column.columnName],
         role: column.role,
+        // 候选值：01=华东 这种「库里值=业务名」的写法让 LLM 既能按业务名过滤，也知道真实值长什么样
+        values: archived.slice(0, valueTopN).map((item) => (item.label ? `${item.value}=${item.label}` : item.value)),
+        valueTotal: archived.length,
+      });
+      // 取值本身也要能被召回：用户问「华东」时不会提到列名，靠 value 词条把上面的维度列拉进 schema。
+      // kind='value' 不参与 toTokens（否则 '华东' 会被换成列 token，WHERE 的字面量就毁了）。
+      archived.slice(0, valueTopN).forEach((item) => {
+        if (!item.label) return; // 值即业务名的普通维度不必占词条，避免索引被大数据量列撑爆
+        pushEntry(entries, {
+          kind: 'value',
+          id: `${model.id}.${column.columnName}=${item.value}`,
+          modelId: model.id,
+          columnName: column.columnName,
+          columnId: `${model.id}.${column.columnName}`,
+          name: item.label,
+          aliases: [item.value],
+          value: item.value,
+        });
       });
     });
     if (detail.timeColumn) {
@@ -129,10 +153,39 @@ const recallWith = (entries, question) => {
     }
   });
   const byKind = (kind) => hits.filter((entry) => entry.kind === kind);
+  const valueHits = byKind('value');
+  // 同一张表的列会被按「业务名 + 物理列名」展开成多条词条，schema 里只留一条，否则一列刷两行
+  const dedupeById = (list) => {
+    const seen = new Set();
+    return list.filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    });
+  };
+  const columnEntries = dedupeById([...byKind('column'), ...byKind('date')]);
+  const columnById = new Map(entries.filter((entry) => entry.kind === 'column').map((entry) => [entry.id, entry]));
+  // 用户只说值名（华东）不提列名（region_code）时，靠 value 词条把所属维度列补进 schema —— 否则取值永远进不了 prompt
+  valueHits.forEach((hit) => {
+    const parent = columnById.get(hit.columnId);
+    if (parent && !columnEntries.some((entry) => entry.id === parent.id)) columnEntries.push(parent);
+  });
+  // 命中指标时把维度清单收敛到「主指标所属的模型」：同名值散在多个模型上（demo 库与业务库都叫华东）
+  // 会让 LLM 抓错列，而编译期本来也只允许单模型（多模型直接 clarify），收敛不丢能力只去噪。
+  // 主指标取最长命中（「码值订单额」与「订单额」同时命中时以更长者为准，避免子串误召回把别的模型拽进来）。
+  const metricHits = byKind('metric')
+    .slice()
+    .sort((a, b) => b.labelLen - a.labelLen);
+  const primary = metricHits.find((entry) => entry.modelId);
+  const scoped = primary
+    ? columnEntries.filter((entry) => String(entry.modelId) === String(primary.modelId))
+    : columnEntries;
   return {
     entries: hits,
     metrics: byKind('metric'),
-    columns: [...byKind('column'), ...byKind('date')],
+    // 收敛到空（指标全是不落模型的复合指标）时回退全集，别把维度清单清空
+    columns: scoped.length ? scoped : columnEntries,
+    values: valueHits,
     domains: byKind('domain'),
     models: byKind('model'),
     terms: byKind('term'),
@@ -149,9 +202,12 @@ const buildSchemaSection = (recallResult) => {
           m.caliber ? `, 口径:${String(m.caliber).slice(0, 60)}` : ''
         })`
     );
-  const columns = recallResult.columns
-    .slice(0, 25)
-    .map((c) => `- ${c.name}(别名:${[...(c.aliases || [])].join('、') || '无'}, 类型:维度)`);
+  const columns = recallResult.columns.slice(0, 25).map((c) => {
+    const values = c.values || [];
+    const more = c.valueTotal > values.length ? `…（另有 ${c.valueTotal - values.length} 种未列出）` : '';
+    const valuePart = values.length ? `, 取值:${values.join('、')}${more}` : '';
+    return `- ${c.name}(别名:${[...(c.aliases || [])].join('、') || '无'}, 类型:维度${valuePart})`;
+  });
   const domains = recallResult.domains.map((d) => `- ${d.name}`);
   const terms = recallResult.terms.slice(0, 8).map((t) => `- ${t.name}=${String(t.description || '').slice(0, 120)}`);
   return {

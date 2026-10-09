@@ -13,6 +13,10 @@ router.use(auth());
 
 router.post('/validate', validate(metricValidation.validateDraft), metricController.validateDraft);
 
+// 广场聚合与批量生成必须在 /:id 之前注册（否则 plaza/batch 会被当成 id）
+router.get('/plaza', validate(metricValidation.plaza), metricController.getPlaza);
+router.post('/batch', validate(metricValidation.batchMetrics), metricController.createMetricsBatch);
+
 router
   .route('/')
   .get(validate(metricValidation.listMetrics), metricController.getMetrics)

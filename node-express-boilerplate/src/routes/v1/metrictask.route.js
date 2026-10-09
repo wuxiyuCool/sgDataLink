@@ -11,6 +11,8 @@ const router = express.Router();
 
 router.use(auth());
 
+router.post('/target-schema', validate(metricTaskValidation.previewPlan), metricTaskController.targetSchema);
+
 router.post('/preview', validate(metricTaskValidation.previewPlan), metricTaskController.preview);
 
 router
