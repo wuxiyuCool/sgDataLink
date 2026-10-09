@@ -750,7 +750,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
   | 行数限制 | `LIMIT n` | `SELECT * FROM (…) dbr_page WHERE ROWNUM <= n`（与引擎侧 dbio 一致；`FETCH FIRST` 需 12c+，11g 直接语法错，故不用） |
   | 当前时间 | `NOW()` | `SYSDATE` |
   | ETL 留痕列 | `_etl_time` DATETIME | `ETL_TIME` TIMESTAMP（下划线开头会 ORA-00911，故跨库列名不同，属已知差异） |
-  | 列类型 | 原样（NUMERIC→DECIMAL） | `VARCHAR→VARCHAR2`、`INT→NUMBER(10)`、`BIGINT→NUMBER(19)`、`DECIMAL(p,s)→NUMBER(p,s)`、`TEXT→CLOB`、`DATETIME→TIMESTAMP`；>4000 宽直接 40001 拒 |
+  | 列类型 | 原样（NUMERIC→DECIMAL） | `VARCHAR→VARCHAR2(n CHAR)`、`CHAR→CHAR(n CHAR)`、`INT→NUMBER(10)`、`BIGINT→NUMBER(19)`、`DECIMAL(p,s)→NUMBER(p,s)`、`TEXT→CLOB`、`DATETIME→TIMESTAMP`；>4000 宽直接 40001 拒。**字符串必须带 `CHAR` 语义**：MySQL 的 `VARCHAR(n)` 按字符计数、Oracle 默认按字节计数，AL32UTF8 下中文一字符 3~4 字节，写成 `VARCHAR2(n)` 会在物化 INSERT 时报 ORA-12899（实测 `PRODUCE_LINE` 声明 2、实际 4 字节即中招） |
   | 建表 | `CREATE TABLE IF NOT EXISTS … ENGINE=InnoDB … utf8mb4` | `CREATE TABLE T (…)`；无 IF NOT EXISTS → 执行前用 `SELECT COUNT(*) FROM user_tables WHERE table_name='T'` 探测，已存在则跳过建表（等价幂等） |
   | 清空 | `` TRUNCATE TABLE `t` `` | `TRUNCATE TABLE T` |
   | 列注释 | 内联 `COMMENT '…'` | 拆成 `COMMENT ON TABLE/COLUMN` 语句 |
@@ -759,30 +759,86 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
   | 未接入类型 | — | `postgresql` 等按方言层不支持 → 40001（不再静默按 MySQL 生成） |
 
 
+**模型生命周期与建表（v1.13 / V11 一期）**：物理表结构只有建模一个出口，任务不再建表（任务侧改造在二期）。
+
+- 状态机：`status ∈ draft | online | offline`。`createType=ddl` 新建默认 **draft**（草稿：可反复改字段，不能建表、不能被指标/任务引用）；`createType=reference` 仍默认 `online`（引用已有物理表，平台不建也不删，无危险动作）。启用 = `PUT {status:'online'}`，启用时校验「至少一列 + 表名合法」。
+- 建表留痕字段（新增列，`init.js` 自动补可空列，无需人工迁移）：`tableStatus ∈ none | created | exists | failed`、`tableMsg`（失败时存原始 ORA-/1146 报错，界面可看）、`tableAt`。`reference` 恒为 `exists`；`ddl` 初始 `none`，点「生成表」后 `created`/`failed`。
+- `POST /metric-models/:id/create-table`：仅 `createType=ddl` 且 `status=online` 可调，否则 40001。DDL 由方言层 `buildDdl` 生成（MySQL `CREATE TABLE IF NOT EXISTS ... utf8mb4`；Oracle 无 IF NOT EXISTS → 先探 `user_tables`，已存在即视为幂等成功并回 `existed:true`），经 engine `/sql/exec` 真执行；`DB_DRIVER≠mysql` 时 40001（内存模式不发起真实执行）。响应 `{tableStatus, tableMsg, tableAt, ddl, executed}`，`executed=false` 表示库里已建好、本次只补状态。
+- `DELETE /metric-models/:id?dropTable=true`（缺省 false）：默认只软删模型、**不动物理表**。只有「平台建的表」（`createType=ddl` 且 `tableStatus=created`）允许 `dropTable=true`；`reference` 传 true → **40001 拒绝**（引用表不归平台所有，平台永远不 DROP——这条是硬闸门，不依赖前端隐藏按钮）。删除前照旧挡引用（下有指标/任务 → 40903/40902 语义）。DROP 失败不阻断软删，但把报错回给前端（`dropped:false, dropMsg`），避免"表还在、模型没了"变成无人知晓的孤儿表。
+- 引擎侧配套：`/sql/exec` 语句白名单新增 `DROP TABLE`——仅单语句、单表、禁止 `CASCADE`/`PURGE`/多表逗号尾巴（见 `databridge-engine/api/v1/sql.go` 与 `sql_test.go`）；仍受 `X-Engine-Token` 与标识符白名单约束。
+
+**指标广场与维度取值（v1.14 / V11 二期）**：指标的管理入口从表格改成「按域浏览的广场」，并把「维度候选值 + 码值业务名」补进问数链路（治的是「用户问华东、库里存 01，LLM 只能猜」这类命中问题）。
+
+_A. 广场聚合（只读，不改 `/metrics` 既有分页契约）_
+
+- `GET /metrics/plaza?domainId=&type=&status=&keyword=&limit=500` → `{domains:[{id,name,code,path,total,items:[卡片]}], total, truncated}`。
+- 卡片字段：`{id,code,name,alias,type,status,unit,dataFormat,caliber,owner,modelId,modelName,domainId,referencedBy,hot7d,updatedAt}`。`referencedBy` ＝被多少指标当子依赖引用（dep 表 count），`hot7d` ＝近 7 天 query_log 命中次数（零额外查询，来自已有埋点）。
+- 分组口径：**按根域分节**；传 `domainId` 时该域**含全部子孙域**聚合成一节（树形域的实际用法）。节内排序 `hot7d desc → updatedAt desc`。
+- `status` 缺省只回 `online`（广场=上架目录）；显式传 `draft`/`offline`/`all` 才出现草稿与下架卡片，界面须标注「草稿不可被引用」。
+- 不分页：卡片流按域分节，分页会打断分组；`limit` 上限 500，超出回 `truncated:true`（界面提示改用搜索或选域）。
+
+_B. 从表批量生成指标_
+
+- `POST /metrics/batch`，body `{items:[{code,name,alias?,domainId,modelId,measureColumn,agg,timeColumn?,filterSql?,unit?,dataFormat?,caliber?,status}]}`，单次 ≤50 条。
+- **逐条走既有 `createMetric` 校验器**（语法探针/聚合规则/循环/跨源/草稿模型闸门一个都不绕），返回 `{results:[{index,code,ok,id?,message?}], created, failed}`；HTTP 恒 200——部分失败不是接口失败，前端按条显示红行。无事务、不回滚已成功条。
+- 默认命名口径（界面预填、允许逐条改）：`code = 域编码_列名`、`name = 列业务名 || 列名`、`agg` 取列的 `aggDefault`（无则 sum/c count 按类型推）。界面**不许静默改名**，撞码就报错给人看。
+- 不做「就地建模型」的复合接口：先 `POST /metric-models`（`createType=reference`）登记，再批量建指标——职责单一，一期的草稿模型闸门与 40904 撞表判定自动复用。
+
+_C. 维度取值档案 + 码值字典（一张表两种来源，别做成两个概念）_
+
+- 新表 `databridge_metric_dimvalue`（`init.js` 自动建）：`id(mdv-，startId 19000)`、`model_id`、`column_name`、`value VARCHAR(191)`、`label VARCHAR(191) NOT NULL DEFAULT ''`、`hits BIGINT`、`source`（`auto` 探查 / `manual` 人工补录）、`stale`（本次探查没再见到该值）、`profiled_at`；唯一键 `(model_id, column_name, value)`。
+- `POST /metric-models/:id/profile-dimensions`，body `{columns?:string[], topN?=50, distinctGuard?=200, timeColumn?/timePreset?}`：经 engine `/sql/query` **真查**目标库，SQL 一律由方言层新方法 `dimProfileSql` 生成（MySQL `GROUP BY col ORDER BY COUNT(*) DESC LIMIT n`；Oracle 用 `SELECT * FROM (…) WHERE ROWNUM<=n` 嵌套，与既有限行口径一致）。
+  - 先算基数：`COUNT(DISTINCT col) > distinctGuard` → 该列**不取值**，只回 `highCardinality:true`（防把用户ID/时间戳灌进 prompt，也防大表 GROUP BY 压库）。
+  - 只覆盖 `source=auto` 的行，**已登记的 `label` 按 (model,column,value) 保留**；库里已消失的旧值置 `stale:true` 不删（历史数据仍可被引用）。
+  - 响应 `{columns:[{columnName,highCardinality,distinctCount,values:[{value,label,hits,source,stale}]}], profiledAt}`；`DB_DRIVER≠mysql` → 40001（内存模式不发起真实执行，与 create-table 同口径）。
+- `GET /metric-models/:id/dimension-values?columnName=&keyword=`：只读档案（界面/下拉），不打库。
+- `PUT /metric-models/:id/dimension-values`，body `{columnName, values:[{value,label}]}`：登记「库里是 01、业务叫华东」。档案里没有的 value 允许新增并记 `source=manual`——这是"探查没覆盖但业务知道"的补录通道。
+- `DELETE /metric-models/:id/dimension-values?columnName=`：清该列档案。
+
+_D. 候选值进 prompt 与解析后值校正_
+
+- 系统配置新增两项：`chat.dimValuePrompt`（`0|1`，**默认 0 关**）、`chat.dimValueTopN`（默认 20）。默认关的理由：候选值是真实业务数据，进 prompt＝数据出境边界，须按模型/环境显式打开（沿用 apiKey 掩码那套「默认可信最小」口径）。
+- 开关打开时：`metricKnowledge.buildIndex` 给维度列附 `values`，`buildSchemaSection` 的维度行从 `- 地区(别名:region, 类型:维度)` 变成 `- 地区(别名:region, 类型:维度, 取值:01=华东、02=华南…（共4）)`；条数受 `chat.dimValueTopN` 截断并标注「另有 M 种未列出」。
+- **值校正发生在解析之后、编译之前**：`parseM2Sql(tokenSql, refs, dimValues)` 新增第 3 参（缺省 `undefined`＝行为完全不变，老调用零风险）。规则：过滤 literal 若不是该列档案里的真实 `value`，但能按 `label` 精确/大小写不敏感/去空白匹配到，就换成真实 `value`；`IN` 列表逐元素处理；时间列、数值比较（`>=` 等）不校正。
+- 响应与审计：`{corrections:[{column,from,to}]}`，问数答案卡下方界面显示「已按字典把 华东→01」；未命中档案的值原样保留并记入 query_log，作为「待补录码值」的治理线索。
+- 红线：占位 token 内**绝不嵌原始值**（沿用 `@COL(n)@` 注册表写法，历史上嵌列名导致过二次替换污染）；探查/校正涉及的标识符全过白名单；两条新 SQL 属方言差异，只能加进 `src/utils/dialect.js`（红线 9）。
+
+**三期预告（未实现，勿按此设计写码）**：任务改为「选目标模型表 + 同数据源内多指标按共同维度拼宽表」，缺列只报错不自动 ALTER，保持"表结构唯一权威在建模"；本期的 `dimvalue.label` 正是那时「同维度判定/值映射（region ↔ area_code、华东 ↔ 01）」的原料。
+
+
 **路由**：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/metric-dashboard` | 首页概览：域/模型/指标计数（按类型/状态/分层分组）、任务近 24h 运行统计与成功率、近 7d 问数量与失败数、hotMetrics Top10 |
 | GET/POST | `/metric-domains`；GET `/metric-domains/tree`；PUT/DELETE `/metric-domains/:id` | 指标域树（`dom-`；删除撞 40902；code `^[a-z][a-z0-9_]{1,30}$` 兼建表前缀） |
-| GET/POST | `/metric-models`（筛选 domainId/layer/datasourceId/keyword）；GET/PUT/DELETE `/metric-models/:id` | 模型（`mdl-`；createType=`reference`\|`ddl`；详情含 columns[{columnName,bizName,dataType,role:dimension\|time\|measure,aggDefault}]） |
-| POST | `/metric-models/preview-ddl` | 列定义 → CREATE TABLE SQL 回显（不执行；表名=域前缀+分层+名称，撞库 40904） |
+| GET/POST | `/metric-models`（筛选 domainId/layer/datasourceId/**status**/keyword）；GET/PUT/DELETE `/metric-models/:id` | 模型（`mdl-`；createType=`reference`\|`ddl`；列表行含 `status`/`tableStatus`/`tableMsg`/`tableAt`，`status` 可按 draft\|online\|offline 筛；详情含 columns[{columnName,bizName,dataType,role:dimension\|time\|measure,aggDefault}]）。**dataType 服务端归一**：一律收成 MySQL 风格规范串（`varchar`→`VARCHAR(64)`、`VARCHAR2(58)`→`VARCHAR(58)`、`NUMBER`→`DECIMAL(18,4)`、`NUMBER(10)`→`DECIMAL(10,0)`、`timestamp(6)`→`TIMESTAMP`、`CLOB`→`TEXT`），目录外的冷门写法兜底成 `VARCHAR(64)` 而非报错（免得引用表被源库类型卡死）；长度/精度超出目标库上限（oracle VARCHAR2 4000、NUMBER 精度 38）按 40001 拒绝 |
+| GET | `/metric-models/column-types` | 字段类型族目录（方言层产物，界面下拉唯一来源）：`{mysql:[...], oracle:[...]}`，每项 `{family,label(中文),rendered(该方言真实类型名),hasLength,hasScale,defaultLength,defaultPrecision,defaultScale,maxLength}` |
+| POST | `/metric-models/preview-ddl` | 列定义 → CREATE TABLE SQL 回显（不执行；表名=域前缀+分层+名称，撞库 40904）。可传 `datasourceId` 决定 DDL 方言，响应回 `dialect`；不传按 mysql。`name` 与 `tableName` **至少给一个**（给了 tableName 以它为准，否则按 name 拼表名；两者同传不报错） |
+| POST | `/metric-models` | `createType=reference` 必须给 `tableName`（已有物理表）；`createType=ddl` 可留空，服务端按「域前缀_分层_名称」自动命名（与 preview-ddl 同口径） |
+| POST | `/metric-models/:id/create-table` | 生成表（v1.13）：仅 `createType=ddl` + `status=online`，方言层出 DDL 经 engine 执行；幂等（Oracle 先探 `user_tables`）。返回 `{tableStatus, tableMsg, tableAt, ddl, executed}`；失败也落 `tableStatus=failed` + 原始报错供界面展示与重试 |
+| DELETE | `/metric-models/:id?dropTable=true` | 删除模型（默认只软删）。`dropTable=true` 仅当 `createType=ddl` 且 `tableStatus=created`；`reference` → 40001（引用表平台永不 DROP）。返回 `{id, deleted:true, dropped, dropMsg?}` |
+| GET | `/metrics/plaza` | 指标广场聚合（v1.14）：按根域分节，`domainId` 时含子孙域；只回 online（除非 status=draft/offline/all）；卡片含 `referencedBy`（被引用数）与 `hot7d`（近 7 天问数命中）。见上方 A 节 |
+| POST | `/metrics/batch` | 从表批量生成原子指标（v1.14）：`{items:[...]}` ≤50 条，逐条走单条校验器，返回 `{results:[{index,code,ok,id?/message?}],created,failed}`，HTTP 恒 200。见上方 B 节 |
+| POST | `/metric-models/:id/profile-dimensions` | 维度取值探查（v1.14）：真查目标库（engine `/sql/query` + 方言层 `dimProfileSql`），先基数保护后取 topN，保留人工 label、消失值置 stale；`DB_DRIVER≠mysql` → 40001 |
+| GET/PUT/DELETE | `/metric-models/:id/dimension-values` | 取值档案读/码值业务名登记/清列（v1.14）。GET 只读库内档案不打源库 |
 | GET | `/metric-models/:id/preview` | 前 20 行真实数据（engine `/sql/query`，失败 50201） |
+| PUT | `/metric-models/:id` | 只收 `name/layer/tableName/timeColumn/status/remark/columns`——**域与数据源创建后不可迁移，多传 `domainId`/`datasourceId` 直接 40001**（前端编辑态因此不下发这两个字段）；ddl 模型改 `columns` 时服务端按目标方言归一并**同步重算留档 `tableDdl`**（`PUT /:id/columns` 同口径） |
 | GET/POST | `/metrics`；GET/PUT/DELETE `/metrics/:id` | 指标分页（domainId/type/status/keyword 搜 name/code/alias）；保存即写版本；删除撞 40903 |
 | POST | `/metrics/validate` | 草稿校验（语法/聚合规则/循环 40905/维度合法性），返回 `{errors, warnings}`，无副作用 |
 | GET | `/metrics/:id/tree` | 子指标展开树（type/expr/model/children，深度 ≤8） |
 | GET | `/metrics/:id/lineage` | 双向血缘 `{parents, children}`（LogicFlow 数据，边带引用表达式） |
 | POST | `/metrics/:id/preview` | 试跑 `{dateRange, dimensions[], limit}` → `{sql, columns, rows, elapsedMs}`（编译产物真实执行，黄金对照入口） |
 | GET/POST | `/metrics/:id/versions`；`/metrics/:id/rollback` | 版本列表（`mver-`）/ 指定版本回滚为新草稿 |
-| CRUD | `/metric-tasks`（`mtk-`）；POST `/metric-tasks/:id/run`；GET `/metric-tasks/:id/runs`；POST `/metric-tasks/preview` | 清洗汇总任务：sourceModelId/metricIds/dimensionColumnIds/cleanRules/timePreset/target(writeMode ∈ overwrite\|append\|upsert，upsert 仅 MySQL)/scheduleCron（格式同 1.2，调度走 Node 现有 scheduler）；执行记录 `mtr-` 含 sqlText/readRows/writeRows/elapsedMs；preview 返回将要执行的语句数组（不落库）。cleanRules 一期支持 filter/fill/rename，**dedup 明确 40001 拒绝**（5.7 无窗口函数，去重放上游同步任务）；全部指标必须同挂源模型（跨模型复合不可物化）；保存即组一次计划生成，配置错误挡在保存期 |
+| CRUD | `/metric-tasks`（`mtk-`）；POST `/metric-tasks/:id/run`；GET `/metric-tasks/:id/runs`；POST `/metric-tasks/preview`；POST `/metric-tasks/target-schema` | 清洗汇总任务：sourceModelId/metricIds/dimensionColumnIds/cleanRules/timePreset/target(writeMode ∈ overwrite\|append\|upsert，upsert 仅 MySQL)/scheduleCron（格式同 1.2，调度走 Node 现有 scheduler）；执行记录 `mtr-` 含 sqlText/readRows/writeRows/elapsedMs；preview 返回将要执行的语句数组（不落库）。**target-schema 返回目标表结构回显**（同 preview 的入参与校验，不落库不执行）：`{dialect, table, autoCreate, writeMode, primaryKeys[], columns[{name,type,source:维度\|指标\|留痕,comment}], createSql, insertSql}`——类型由 `buildPlan` + 方言层给权威值，界面「选了哪些字段 → 会建成什么样」直接用它，前端不自行推断。cleanRules 一期支持 filter/fill/rename，**dedup 明确 40001 拒绝**（5.7 无窗口函数，去重放上游同步任务）；全部指标必须同挂源模型（跨模型复合不可物化）；保存即组一次计划生成，配置错误挡在保存期 |
 | CRUD | `/metric-terms`（`mterm-`）、`/metric-examples`（`mex-`） | LLM 术语与示例问答 few-shot（example={question, m2sql, enabled}） |
 | POST | `/metric-chat/ask` | `{question, sessionId?, dateRange?}` → `{status: success\|corrected\|clarify\|failed, answer, value?\|columns?/rows?, m2sql, physicalSql, metricTree（子指标逐层展开并回填 value）, candidates?（clarify 时的候选指标）}`；每次问答落 `mlg-` 日志 |
 | GET/POST | `/metric-chat/sessions/:id/history` | 多轮上下文查询/清空（内存态，重启即失） |
 | GET | `/metric-logs`（筛选 keyword/result/user/时间段）；POST `/metric-logs/:id/to-example` | 问数审计（滚动 5 万条）；审核转示例（admin） |
-| GET/PUT | `/metric-settings` | 系统配置（metric_setting 表，优先于 env）：`llm.baseUrl/llm.model/llm.apiKey/llm.timeoutMs/llm.embed.enabled/llm.embedModel/llm.embed.baseUrl/llm.embed.apiKey`——embedding 可与对话模型不同供应商，`llm.embed.baseUrl/apiKey` 未配置时回落主 `llm.baseUrl/apiKey`（env：LLM_EMBED_BASE_URL/LLM_EMBED_API_KEY）；**apiKey 掩码回显**（`sk-xx***`，仿 docKey 做法），PUT 传空串=保持不变。PUT 请求体为**嵌套形态** `{settings:{llm:{baseUrl:"",model:"",apiKey:"",timeoutMs:"",embedModel:"",embed:{enabled:"",baseUrl:"",apiKey:""}}}}`（全局 mongo-sanitize 会把点分键拆嵌套，契约顺势定义嵌套；服务端扁平化为点分 key 后按白名单校验） |
+| GET/PUT | `/metric-settings` | 系统配置（metric_setting 表，优先于 env）：`llm.baseUrl/llm.model/llm.apiKey/llm.timeoutMs/llm.embed.enabled/llm.embedModel/llm.embed.baseUrl/llm.embed.apiKey`——embedding 可与对话模型不同供应商，`llm.embed.baseUrl/apiKey` 未配置时回落主 `llm.baseUrl/apiKey`（env：LLM_EMBED_BASE_URL/LLM_EMBED_API_KEY）；**v1.14 起共 10 项**，新增 `chat.dimValuePrompt`（`0|1`，默认 `0`；维度候选值/码值是否进问数 prompt——真实业务数据出境，必须显式开）与 `chat.dimValueTopN`（默认 20，prompt 内每列条数上限）（env：`CHAT_DIM_VALUE_PROMPT`/`CHAT_DIM_VALUE_TOPN`）；**apiKey 掩码回显**（`sk-xx***`，仿 docKey 做法），PUT 传空串=保持不变。PUT 请求体为**嵌套形态** `{settings:{llm:{...},chat:{dimValuePrompt:"",dimValueTopN:""}}}`（全局 mongo-sanitize 会把点分键拆嵌套，契约顺势定义嵌套；服务端扁平化为点分 key 后按白名单校验） |
 
 - **对外服务边界**：指标结果对外交付复用 1.9 `/data-apis`（ADS 表/SQL 发布为 API）与 `/ds` runtime（apiKey/白名单/限流/调用日志/swagger/docKey 全套）；本节不提供独立对外查询端点。
-- **落库**：`databridge_metric_*` 共 12 张（domain/model/model_column/metric/metric_dep/metric_version/task/task_run/term/example/query_log/setting），mysql 模式启动自动建表（DDL 见 METRIC-DEV §5，utf8mb4 显式）；memory 模式走内存实现。
+- **落库**：`databridge_metric_*` 共 13 张（domain/model/model_column/**dimvalue**/metric/metric_dep/metric_version/task/task_run/term/example/query_log/setting），mysql 模式启动自动建表（DDL 见 METRIC-DEV §5，utf8mb4 显式）；memory 模式走内存实现。
 - **engine 交互**：所有 SQL 执行经第 2 节「通用 SQL 执行接口」，携带 `X-Engine-Token`（见引擎共享密钥）。
 
 **问数对外服务（v1.12 增补，仿 1.9.5 docKey 模式）**：把智能问数发布为外部可调用 API，权限位绑定用户、密钥走 API 头、审计仅 admin。
@@ -838,10 +894,13 @@ POST /api/v1/engine/sql/query
 POST /api/v1/engine/sql/exec
   req  { "instanceId": "mtr-14900", "endpoint": { ... },
          "statements": ["CREATE TABLE IF NOT EXISTS ...", "TRUNCATE TABLE ...", "INSERT INTO t (c1,c2) SELECT ..."],
+         "allowDrop": false,   // v1.13：破坏性动词开闸位，仅「建模删除平台自建表」链路传 true
          "reportUrl": "可选；携带则异步：立即 accepted，完成后按 1.4 ProgressReport 回报" }
   resp（同步）data { "results": [ { "affectedRows": 1200, "elapsedMs": 340 } ] }
-  校验：每条语句首关键字 ∈ {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD COLUMN}；
-        DROP/DELETE/UPDATE/GRANT/分号多语句拼接一律 40001；
+  校验：每条语句首关键字 ∈ {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD COLUMN, DROP TABLE(v1.13 起，仅 `DROP TABLE [IF EXISTS] <单表>`)}；
+        DROP 还必须带 `allowDrop=true`，否则 40001（引擎无状态、判不出调用方意图，故把开关做成显式请求字段）；
+        DELETE/UPDATE/GRANT/DROP USER、多表逗号、CASCADE/PURGE 尾巴、分号多语句拼接一律 40001；
+        DROP 只服务「建模删除平台自己创建的表」，引用型表在 Node 侧就被挡（见 1.13 模型生命周期）；
         标识符白名单与口令处理同第 5 节（凭据不进日志与回报）；type ∈ {mysql, oracle} 仅
 ```
 

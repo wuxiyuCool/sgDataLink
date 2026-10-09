@@ -186,3 +186,48 @@ curl -s -X POST http://10.45.34.165:32614/api/v1/auth/login \
 `secret.example.yaml`（生成命令与说明）。存量环境仍按上面 patch 走，不要 apply 整份清单。
 **注意：配置生效前登录的浏览器会话，其旧 token 的 exp 仍是旧值，到点照样掉，需重新登录一次。**
 
+
+## 本次 V10+V11（方言层收敛 + 建模生命周期一期 + 指标广场/维度取值二期）
+
+**改动范围**：三端都有，需三镜像全重建（web 也可只按 §5 走预打包产物）。
+
+- `engine`：`/sql/exec` 白名单新增 `DROP TABLE`，但**必须请求体显式 `allowDrop=true`**，
+  且只放单表（拒绝多表列表 / `CASCADE` / `PURGE` / 无表名）。这是为「建模删除平台自建表」
+  服务的最小口子，Node 侧另有闸门（引用表、未建过表的模型根本不会下发 DROP）。
+- `admin`：① 方言层 `src/utils/dialect.js` 成为 MySQL/Oracle 语法差异的唯一来源
+  （编译/物化/建表/预览/问数五个生成点全部接入，Oracle 字符串出 `VARCHAR2(n CHAR)`）；
+  ② 建模生命周期（契约 1.13）：`status` 三态 `draft|online|offline`、
+  新列 `table_status/table_msg/table_at`、`POST /metric-models/:id/create-table`、
+  `DELETE /metric-models/:id?dropTable=true`、`GET /metric-models/column-types`、
+  `POST /metric-tasks/target-schema`。**无新表**，三个新列由 `init.js` 自动 ALTER
+  补可空列，真库上线不用手工迁移（回滚到 v9 镜像也不影响，旧代码不读这几列）。
+- `web`：建模页状态机（表状态列、启用/停用、生成表弹窗带方言 DDL 预览、删除弹窗按
+  createType/tableStatus 区分并需手输表名）、字段编辑器类型族+长度/小数位、任务弹窗
+  目标表结构自动生成；**V11 二期（契约 1.14）**：指标页改造成「指标广场」（按域分节卡片流 +
+  广场/表格双视图 + 状态默认只回已上架）、「从表生成指标」三步批量向导（可就地登记引用表模型，
+  逐条回显成败并只重投失败项）、字段弹窗维度列「取值」入口（探查/登记码值业务名/看失效值）、
+  系统配置新增「候选值进问数 Prompt」开关与条数、菜单改名 指标管理→指标广场。
+- **admin 二期新增（同上 v1.14）**：`GET /metrics/plaza`、`POST /metrics/batch`、
+  `POST /metric-models/:id/profile-dimensions`、`GET/PUT/DELETE /metric-models/:id/dimension-values`；
+  新表 `databridge_metric_dimvalue`（第 13 张，init.js 自动建，`mdv-` 序列 19000 自动补）；
+  系统配置 8→10 项（`chat.dimValuePrompt` 默认 `0`、`chat.dimValueTopN` 默认 20，
+  env `CHAT_DIM_VALUE_PROMPT`/`CHAT_DIM_VALUE_TOPN`）。**取值探查会向业务源库发只读 GROUP BY**，
+  上线后先在高基数保护的默认值（200）下用，别拿大表列直接试。
+
+**回归门禁（2026-10-09 本地真库全绿）**：metric-dialect **67**（离线，含 V11 二期双方言探查 SQL 形状与标识符注入拒绝）/ metric-base 40 /
+metric-model **62**（一期生命周期 15 条 + 配置项 10 项与取值开关默认关）/
+metric-compile 60 / metric-sql 24 / metric-task 34 / **metric-dimvalue 37**（二期新套件：真建码值表探查、高基数保护、
+人工 label 不被探查覆盖、候选值进 prompt 开关两侧行为、华东→E1 值校正与 unmapped、广场分组/状态/别名搜索、
+批量 2 成 2 败逐条原因、真 LLM 问数落地 SQL 出现 E1）；engine `go test ./api/v1` 通过。
+metric-chat 依赖内网 LLM 网关：`llm.model` 必须是网关白名单内的模型（`deepseek-chat` 会被 400 拒），
+当前网关只放行 `deepseek-ai/DeepSeek-V4-Flash`（10 问命中 6~8 波动，通过线 ≥7）与 `Qwen/Qwen3-8B`（实测更差 4/10）——
+命中率是模型能力边界，不是平台链路问题；要提升得让网关加白更强的对话模型或用「转示例」沉 few-shot。
+回归套件已改为对 `databridge_metric_setting` 先快照后还原，跑完不会把线上模型设置抹掉。
+
+**上线后演示资产**：在生产 admin 上跑一次
+`ADMIN_USER=mtlint01 ADMIN_PASS=<口令> BASE=http://10.45.34.165:32614/api/v1 node deploy/tests/seed-metric-demo.js`
+即可获得「渠道日报(草稿) / 渠道日报(已建表) / 订单明细(引用表)」三种表状态各一条，
+供界面走查（会真建 `dm_demo_ads` 一张表，属预期演示资产）。
+
+**⚠️ 与本轮改动强绑定的配置项**：`ENGINE_SHARED_SECRET` 必须已在 admin/engine 两侧注入
+（见上文 v9 必做节），否则 `create-table` 会被引擎以未鉴权拒绝。
