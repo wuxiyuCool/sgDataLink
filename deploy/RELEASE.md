@@ -90,23 +90,27 @@ LLM 系统配置/智能问数（ChatBI）/问数对外服务（X-CHAT-KEY）/首
   Oracle 方言编译（FETCH FIRST / TO_DATE）→ 必须重建。
 - `web`：指标中心 7 个页面 + 文档中心问数 Key 卡片 + 弹窗 vben 化 + 每页使用指南 → 重建。
 
-**回归门禁（全 12 套件，2026-10-08 全绿）**：
-metric-base 40 / metric-model 39 / metric-compile 51 / metric-sql 19 / metric-task 29 /
+**回归门禁（全 12 套件，2026-10-09 全绿）**：
+metric-base 40 / metric-model 39 / metric-compile 60 / metric-sql 19 / metric-task 29 /
 metric-chat 19 / chat-api 19 / users 33 / dockey 31 / swagger 40 / forward 19 / parse-curl ALL PASS。
 其中 users、swagger 是 **memory 模式**用例（需 `DB_DRIVER=memory ADMIN_INIT_PASSWORD=testpass123`
 起一个 :3001 实例再跑，跑完切回 mysql 联调实例）；其余对真库 :3001 跑。
 
-**发版命令（把 `<N>` 换成 9）**：
+**发版命令（v9 从 `main` HEAD 构建，不用 `V9` 标签）**：
+
+> 标签说明：`V9` 指向指标中心合并提交 `06f1612`；其后 `a0d47df` 又修了
+> **跨库方言（NVL/IFNULL→COALESCE、方言专有函数告警、标量白名单 7→19）** 并加了
+> 15 条示例指标库。这些**不在 V9 标签内**，故本轮镜像按 main HEAD 构建。
+> 不要 force 移动已推送的 V9 标签（会重写 GitHub/Gitea 共享状态）。
 
 ```bash
 cd D:/code/code/go/dataLink
-bash deploy/build-web-dist.sh                       # 产出 web-dist.tar.gz
+bash deploy/build-web-dist.sh                       # 产出 web-dist.tar.gz（已随 a0d47df 提交，可跳过）
 git add -f deploy/web-dist/web-dist.tar.gz
-git commit -m "release: v9 指标中心整模块"
-git tag V9
-git push && git push origin V9                       # GitHub+Gitea 双推
+git commit -m "release: web dist v9 产物更新"
+git push                                            # origin 双 pushurl：GitHub + Gitea 一次到位
 # master-01（或构建机）：
-cd /path/to/dataLink && git pull && git checkout V9
+cd /path/to/dataLink && git fetch origin && git checkout main && git pull
 ONLY=admin,engine,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v9
 # 三镜像推 Harbor 10.45.34.167:5000/datalink/{admin,engine,web}:v9，回写 kustomization newTag
 ```
