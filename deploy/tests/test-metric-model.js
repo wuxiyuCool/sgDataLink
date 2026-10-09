@@ -35,10 +35,40 @@ const req = async (path, { method = 'GET', token, body } = {}) => {
   return { status: res.status, json, text }
 }
 
+/** 本套件会写/删这几项配置——它们是共享元库里的真实生产配置，必须先快照后还原 */
+const SETTINGS_TOUCHED = ['llm.model', 'llm.embed.baseUrl', 'llm.embed.apiKey']
+/** 只快照一次，且必须在 main() 写配置之前拍：cleanup 末尾再拍就会把本套件写进去的假模型名当成用户原值 */
+let settingsSnapshot = null
+
+const snapshotSettings = async () => {
+  if (settingsSnapshot) return settingsSnapshot
+  process.env.DB_DRIVER = 'mysql'
+  const db = require('../../node-express-boilerplate/src/db/mysql')
+  try {
+    settingsSnapshot = await db.query(
+      `SELECT setting_key, setting_value, secret, updated_by, updated_at FROM databridge_metric_setting
+        WHERE setting_key IN (${SETTINGS_TOUCHED.map(() => '?').join(', ')})`,
+      SETTINGS_TOUCHED
+    )
+  } catch (e) {
+    // 表还不存在（首次启动）时没什么可还原的
+    settingsSnapshot = []
+  }
+  return settingsSnapshot
+}
+
 const cleanup = async () => {
   process.env.DB_DRIVER = 'mysql'
   const db = require('../../node-express-boilerplate/src/db/mysql')
+  // 血泪教训（2026-10-09）：这里的 DELETE 曾把用户在线上配好的 llm.model 抹掉，
+  // 回落成 env 默认值 deepseek-chat → 被内网网关模型白名单 400 拒，问数整体不可用。
+  const snapshot = await snapshotSettings()
   const stmts = [
+    // 生命周期用例会在联调库真建表；软删模型默认不动物理表，这里兜底清掉本次 RUN 前缀的表（绝不涉及平台表）
+    [`DROP TABLE IF EXISTS \`${RUN}_ads_demo\``, []],
+    [`DROP TABLE IF EXISTS \`${RUN}_ads_none\``, []],
+    [`DROP TABLE IF EXISTS \`${RUN}_ads_drop\``, []],
+    ['DELETE FROM databridge_metric_metric WHERE code LIKE ?', [`${RUN}_%`]],
     ["DELETE FROM databridge_metric_model_column WHERE model_id LIKE 'mdl-%' AND model_id IN (SELECT id FROM databridge_metric_model WHERE domain_id IN (SELECT id FROM databridge_metric_domain WHERE code LIKE ?))", [`${RUN}_%`]],
     ['DELETE FROM databridge_metric_task_run WHERE id LIKE ?', ['mtr-%']],
     ['DELETE FROM databridge_metric_model WHERE id IN (SELECT id FROM (SELECT id FROM databridge_metric_model m WHERE m.domain_id IN (SELECT id FROM databridge_metric_domain WHERE code LIKE ?)) x)', [`${RUN}_%`]],
@@ -56,9 +86,20 @@ const cleanup = async () => {
   for (const [sql, args] of stmts) {
     try { await db.run(sql, args) } catch (e) { /* 表间无依赖时忽略个别失败 */ }
   }
+  // 把快照里的真实配置写回去（跑测试期间被改/被删的都还原，不让线上问数失去模型设置）
+  for (const row of snapshot) {
+    try {
+      await db.run(
+        `REPLACE INTO databridge_metric_setting (setting_key, setting_value, secret, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [row.setting_key, row.setting_value, row.secret, row.updated_by, row.updated_at]
+      )
+    } catch (e) { /* 单条还原失败不影响其余 */ }
+  }
 }
 
 const main = async () => {
+  await snapshotSettings() // 先拍用户原值，再开始任何写操作（含本套件的 llm.model PUT）
   console.log(`== 鉴权红线（${BASE}）==`)
   check('无 token /metric-domains → 401', (await req('/metric-domains')).status === 401)
   check('无 token /metric-dashboard → 401', (await req('/metric-dashboard')).status === 401)
@@ -140,10 +181,159 @@ const main = async () => {
   check('ddl 模式创建 + tableDdl 留档', ddlModel.status === 200
     && /CREATE TABLE IF NOT EXISTS/.test(ddlModel.json.result.tableDdl || '')
     && /utf8mb4/.test(ddlModel.json.result.tableDdl || ''), ddlModel.text.slice(0, 200))
+
+  console.log('== 模型生命周期（草稿→启用→生成表→删除连带 DROP；真建真删 ' + `${RUN}_ads_demo` + '）==')
+  const ddlId = (ddlModel.json.result || {}).id
+  check('界面建表新建即草稿', ddlModel.json.result.status === 'draft', ddlModel.text.slice(0, 120))
+  check('草稿表状态 none（还没建表）', ddlModel.json.result.tableStatus === 'none')
+  check('引用表登记即存在（exists）', (refModel.json.result || {}).tableStatus === 'exists')
+
+  const draftCreate = await req(`/metric-models/${ddlId}/create-table`, { method: 'POST', token })
+  check('草稿不可生成表 → 40001', draftCreate.status === 400 && draftCreate.json.code === 40001
+    && /启用/.test(draftCreate.text), draftCreate.text.slice(0, 200))
+
+  const draftMetric = await req('/metrics', {
+    method: 'POST', token,
+    body: {
+      domainId: rootId, code: `${RUN}_draftref`, name: '草稿引用试装', status: 'online',
+      defineType: 'MEASURE', defineParams: { modelId: ddlId, measureColumn: 'amt', agg: 'sum' },
+    },
+  })
+  check('草稿模型不可被指标引用（报错指明先启用）', draftMetric.status === 400
+    && /草稿|启用/.test(draftMetric.text), draftMetric.text.slice(0, 220))
+
+  const enable = await req(`/metric-models/${ddlId}`, { method: 'PUT', token, body: { status: 'online' } })
+  check('启用草稿 → online', enable.status === 200 && enable.json.result.status === 'online', enable.text.slice(0, 160))
+
+  const createTable = await req(`/metric-models/${ddlId}/create-table`, { method: 'POST', token })
+  check('生成表真执行（created + executed）', createTable.status === 200
+    && createTable.json.result.tableStatus === 'created'
+    && createTable.json.result.executed === true
+    && !createTable.json.result.tableMsg, createTable.text.slice(0, 300))
+
+  // 建表是否真落到库里：直接预览这张新表（SELECT 走真实引擎，空表也返回 3 个列名）
+  const createdPreview = await req(`/metric-models/${ddlId}/preview`, { token })
+  check('生成的物理表可被真实读取（3 列）', createdPreview.status === 200
+    && createdPreview.json.result.executable === true
+    && (createdPreview.json.result.columns || []).length === 3, createdPreview.text.slice(0, 240))
+
+  const again = await req(`/metric-models/${ddlId}/create-table`, { method: 'POST', token })
+  check('重复生成表幂等（仍 created）', again.status === 200
+    && again.json.result.tableStatus === 'created', again.text.slice(0, 200))
+
+  const refDrop = await req(`/metric-models/${refId}?dropTable=true`, { method: 'DELETE', token })
+  check('引用表 dropTable → 40001（平台永不 DROP 源表）', refDrop.status === 400
+    && refDrop.json.code === 40001 && /引用表|界面建表/.test(refDrop.text), refDrop.text.slice(0, 200))
+  check('被拒后引用模型未被误删', (await req(`/metric-models/${refId}`, { token })).status === 200)
+
+  const neverBuilt = await req('/metric-models', {
+    method: 'POST', token,
+    body: { name: '联调从未建表', datasourceId: dsId, domainId: rootId, layer: 'ADS', createType: 'ddl', tableName: `${RUN}_ads_none`, columns: newCols },
+  })
+  const neverBuiltId = (neverBuilt.json.result || {}).id
+  await req(`/metric-models/${neverBuiltId}`, { method: 'PUT', token, body: { status: 'online' } })
+  const dropNeverBuilt = await req(`/metric-models/${neverBuiltId}?dropTable=true`, { method: 'DELETE', token })
+  check('未建表的 ddl 模型 dropTable → 40001', dropNeverBuilt.status === 400
+    && dropNeverBuilt.json.code === 40001 && /拒绝 DROP|并未创建/.test(dropNeverBuilt.text), dropNeverBuilt.text.slice(0, 200))
+
   const delChild = await req(`/metric-domains/${child.json.result.id}`, { method: 'DELETE', token })
   check('删有模型的域 → 40902', delChild.status === 409 && delChild.json.code === 40902)
-  const delModel = await req(`/metric-models/${ddlModel.json.result.id}`, { method: 'DELETE', token })
-  check('模型软删', delModel.status === 200 && delModel.json.result.deleted === true)
+  const delModel = await req(`/metric-models/${ddlId}`, { method: 'DELETE', token })
+  check('模型软删（默认不动物理表）', delModel.status === 200 && delModel.json.result.deleted === true
+    && delModel.json.result.dropped === false, delModel.text.slice(0, 160))
+
+  // 平台自建表走完整回路：重新登记 → 启用 → 建表 → 带 dropTable 删除 → 表应真的没了
+  const rebuild = await req('/metric-models', {
+    method: 'POST', token,
+    body: { name: '联调建表再删', datasourceId: dsId, domainId: rootId, layer: 'ADS', createType: 'ddl', tableName: `${RUN}_ads_drop`, columns: newCols },
+  })
+  const rebuildId = (rebuild.json.result || {}).id
+  await req(`/metric-models/${rebuildId}`, { method: 'PUT', token, body: { status: 'online' } })
+  check('重建模型并建表', (await req(`/metric-models/${rebuildId}/create-table`, { method: 'POST', token })).json.result.tableStatus === 'created')
+  const dropOk = await req(`/metric-models/${rebuildId}?dropTable=true`, { method: 'DELETE', token })
+  check('删除平台自建表（dropped=true）', dropOk.status === 200 && dropOk.json.result.deleted === true
+    && dropOk.json.result.dropped === true, dropOk.text.slice(0, 240))
+  // 表名此刻已无人登记，再登记成引用模型能成功；随后预览必然报「表不存在」——以此证明 DROP 真的执行了
+  const ghost = await req('/metric-models', {
+    method: 'POST', token,
+    body: { name: '已删表回读', datasourceId: dsId, domainId: rootId, layer: 'ADS', tableName: `${RUN}_ads_drop` },
+  })
+  const ghostResult = (ghost.json || {}).result || {}
+  const ghostId = ghostResult.id
+  const ghostPreview = ghostId ? await req(`/metric-models/${ghostId}/preview`, { token }) : null
+  check('DROP 后物理表确实不存在', ghost.status !== 200
+    || ((ghostResult.columns || []).length === 0
+      && ghostPreview && (ghostPreview.status >= 400 || ghostPreview.json.result.executable !== true)),
+  `${ghost.text.slice(0, 120)}|${(ghostPreview && ghostPreview.text || '').slice(0, 160)}`)
+
+  console.log('== 字段类型归一 / 编辑约束 / 方言目录 ==')
+  const catRes = await req('/metric-models/column-types', { token })
+  const cat = (catRes.json && catRes.json.result) || {}
+  const fam = (list, name) => (list || []).find((f) => f.family === name) || {}
+  check('类型目录双方言', catRes.status === 200 && fam(cat.mysql, 'VARCHAR').rendered === 'VARCHAR(64)'
+    && fam(cat.oracle, 'VARCHAR').rendered === 'VARCHAR2(64 CHAR)' && fam(cat.oracle, 'VARCHAR').maxLength === 4000,
+  catRes.text.slice(0, 200))
+  check('只有字符串/定点数族要填长度', fam(cat.mysql, 'VARCHAR').hasLength === true && fam(cat.mysql, 'DATE').hasLength === false)
+
+  // 手打的无长度/异方言类型（用户截图里的现场）：保存要归一，DDL 不能出现 VARCHAR 不带长度
+  const looseModel = await req('/metric-models', {
+    method: 'POST', token,
+    body: {
+      name: '联调指标模型归一', datasourceId: dsId, domainId: rootId, layer: 'DWS', createType: 'ddl',
+      tableName: `${RUN}_norm_demo`,
+      columns: [
+        { columnName: 'shop_sign', bizName: '牌号', dataType: 'varchar', role: 'dimension' },
+        { columnName: 'weight', bizName: '重量', dataType: 'NUMBER(24,6)', role: 'measure' },
+        { columnName: 'etl_dt', bizName: '时间', dataType: 'TIMESTAMP(6)', role: 'time' },
+      ],
+    },
+  })
+  const normCols = ((looseModel.json || {}).result || {}).columns || []
+  check('dataType 服务端归一（varchar→VARCHAR(64)、NUMBER(24,6)→DECIMAL(24,6)、TIMESTAMP(6)→TIMESTAMP）',
+    looseModel.status === 200 && normCols[0].dataType === 'VARCHAR(64)'
+      && normCols[1].dataType === 'DECIMAL(24,6)' && normCols[2].dataType === 'TIMESTAMP',
+  JSON.stringify(normCols.map((c) => c.dataType)))
+  const normId = normCols.length && looseModel.json.result.id
+  const badUpd = await req(`/metric-models/${normId}`, {
+    method: 'PUT', token, body: { name: 'x', domainId: rootId, datasourceId: dsId },
+  })
+  check('编辑不可迁移域/数据源（多传 → 40001，前端因此不下发）',
+    badUpd.status === 400 && /domainId/.test(badUpd.text) && /datasourceId/.test(badUpd.text), badUpd.text.slice(0, 160))
+  const okUpd = await req(`/metric-models/${normId}`, {
+    method: 'PUT', token,
+    body: { layer: 'DWS', columns: [...normCols, { columnName: 'steel_type', bizName: '钢种', dataType: 'varchar', role: 'dimension' }] },
+  })
+  const afterUpd = await req(`/metric-models/${normId}`, { token })
+  const ddlAfter = ((afterUpd.json || {}).result || {}).tableDdl || ''
+  check('改字段后留档 DDL 同步重算（新列进入 CREATE，且无「VARCHAR 不带长度」）',
+    okUpd.status === 200 && /steel_type/i.test(ddlAfter) && !/VARCHAR\s+NOT NULL/.test(ddlAfter), ddlAfter.slice(0, 200))
+
+  // Oracle 数据源上的 DDL 方言（建记录即可，preview-ddl 不连库）
+  const oraDs = await req('/datasources', {
+    method: 'POST', token,
+    body: { name: `联调指标数据源-${RUN}-ora`, type: 'oracle', host: '127.0.0.1', port: 1521, database: 'ORCLPDB', username: 'scott', password: 'tiger' },
+  })
+  const oraPreview = await req('/metric-models/preview-ddl', {
+    method: 'POST', token,
+    body: {
+      domainId: rootId, layer: 'DWS', tableName: `${RUN}_ora_demo`, datasourceId: oraDs.json.result.id,
+      columns: [{ columnName: 'shop_sign', bizName: '牌号', dataType: 'varchar', role: 'dimension' }],
+    },
+  })
+  const opv = (oraPreview.json || {}).result || {}
+  check('preview-ddl 带 datasourceId 出 Oracle 方言（VARCHAR2 + COMMENT ON，无反引号/ENGINE）',
+    oraPreview.status === 200 && opv.dialect === 'oracle' && /CREATE TABLE .*SHOP_SIGN VARCHAR2\(64 CHAR\) NOT NULL/.test(opv.ddl || '')
+      && /COMMENT ON COLUMN/.test(opv.ddl || '') && !/`|ENGINE=/.test(opv.ddl || ''), oraPreview.text.slice(0, 240))
+  const overWide = await req('/metric-models/preview-ddl', {
+    method: 'POST', token,
+    body: {
+      domainId: rootId, layer: 'DWS', tableName: `${RUN}_ora_wide`, datasourceId: oraDs.json.result.id,
+      columns: [{ columnName: 'big', dataType: 'VARCHAR(5000)', role: 'dimension' }],
+    },
+  })
+  check('oracle 超宽列按 40001 拒绝', overWide.status === 400 && /4000/.test(overWide.text), overWide.text.slice(0, 160))
+  await req(`/metric-models/${normId}`, { method: 'DELETE', token })
+  await req(`/datasources/${oraDs.json.result.id}`, { method: 'DELETE', token })
 
   console.log('== 预览 DDL ==')
   const preview = await req('/metric-models/preview-ddl', {
@@ -167,11 +357,15 @@ const main = async () => {
 
   console.log('== 系统配置（admin 专属）==')
   const settingsGet = await req('/metric-settings', { token })
-  check('GET 8 个配置项（含 embed baseUrl/apiKey）', settingsGet.status === 200 && settingsGet.json.result.items.length === 8
+  check('GET 10 个配置项（含 embed 与问数候选值开关）', settingsGet.status === 200 && settingsGet.json.result.items.length === 10
     && settingsGet.json.result.items.some((i) => i.settingKey === 'llm.embed.baseUrl')
     && settingsGet.json.result.items.some((i) => i.settingKey === 'llm.embed.apiKey'))
   const apiKeyItem = settingsGet.json.result.items.find((i) => i.settingKey === 'llm.apiKey')
   check('llm.apiKey 掩码或空（无明文）', !apiKeyItem.value || /\*\*\*$/.test(apiKeyItem.value))
+  // 契约 1.14：配置项必须存在；内置默认是 0（关）——真实环境里管理员可以打开，所以只在没有表值时断言默认
+  const dimSwitch = settingsGet.json.result.items.find((i) => i.settingKey === 'chat.dimValuePrompt')
+  check('chat.dimValuePrompt 存在且取值为 0|1（未配置时默认 0）', dimSwitch && ['0', '1'].includes(dimSwitch.value)
+    && (dimSwitch.source !== 'default' || dimSwitch.value === '0'), JSON.stringify(dimSwitch))
   const settingsPut = await req('/metric-settings', { method: 'PUT', token, body: { settings: { llm: { model: `${RUN}-model` } } } })
   check('PUT llm.model 保存（嵌套契约形态）', settingsPut.status === 200 && settingsPut.json.result.updated.includes('llm.model'), settingsPut.text.slice(0, 200))
   const afterPut = await req('/metric-settings', { token })
@@ -204,7 +398,9 @@ const main = async () => {
   process.exit(fail ? 1 : 0)
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   console.error('test-metric-model crashed:', e.message, e.stack)
+  // 崩了也要还原共享配置并清残留，否则生产 admin 会读到本套件的假模型名
+  try { await cleanup() } catch (cleanupErr) { console.error('cleanup 也失败：', cleanupErr.message) }
   process.exit(1)
 })

@@ -68,16 +68,34 @@ const main = async () => {
   check('query 拒绝非 SELECT', drop.status === 400 && drop.json.code === 40001, drop.text.slice(0, 140))
   const multi = await call(`${ENGINE}/sql/query`, { engineToken: SECRET, body: { endpoint, sql: 'SELECT 1; SELECT 2' } })
   check('query 拒绝多语句', multi.status === 400 && /多语句/.test(multi.text), multi.text.slice(0, 140))
+  // 守卫用例的语句目标一律用「不存在的表」：白名单一旦回退成放行，也不会真删到任何业务表
+  // （历史上这里写过 DROP TABLE databridge_datasource，白名单放开 DROP 后它真的执行了，务必别再那么写）
   const badExec = await call(`${ENGINE}/sql/exec`, {
     engineToken: SECRET,
-    body: { instanceId: 'mtr-guard', endpoint, statements: ['DELETE FROM databridge_datasource'] },
+    body: { instanceId: 'mtr-guard', endpoint, statements: ['DELETE FROM __guard_missing_table__'] },
   })
   check('exec 拒绝 DELETE', badExec.status === 400 && /白名单/.test(badExec.text), badExec.text.slice(0, 160))
-  const dropExec = await call(`${ENGINE}/sql/exec`, {
+  const dropUser = await call(`${ENGINE}/sql/exec`, {
     engineToken: SECRET,
-    body: { instanceId: 'mtr-guard', endpoint, statements: ['DROP TABLE databridge_datasource'] },
+    body: { instanceId: 'mtr-guard', endpoint, statements: ['DROP USER guard_probe'] },
   })
-  check('exec 拒绝 DROP', dropExec.status === 400)
+  check('exec 拒绝 DROP USER', dropUser.status === 400 && /白名单/.test(dropUser.text), dropUser.text.slice(0, 160))
+  const dropMulti = await call(`${ENGINE}/sql/exec`, {
+    engineToken: SECRET,
+    body: { instanceId: 'mtr-guard', endpoint, statements: ['DROP TABLE __guard_missing_a__, __guard_missing_b__'] },
+  })
+  check('exec 拒绝多表 DROP', dropMulti.status === 400 && /白名单/.test(dropMulti.text), dropMulti.text.slice(0, 160))
+  const dropPurge = await call(`${ENGINE}/sql/exec`, {
+    engineToken: SECRET,
+    body: { instanceId: 'mtr-guard', endpoint, statements: ['DROP TABLE __guard_missing__ PURGE'] },
+  })
+  check('exec 拒绝带尾巴的 DROP', dropPurge.status === 400 && /白名单/.test(dropPurge.text), dropPurge.text.slice(0, 160))
+  const dropNoGate = await call(`${ENGINE}/sql/exec`, {
+    engineToken: SECRET,
+    body: { instanceId: 'mtr-guard', endpoint, statements: ['DROP TABLE __guard_missing__'] },
+  })
+  check('DROP 未带 allowDrop 被拒（破坏性动词需显式开闸）', dropNoGate.status === 400 && /allowDrop/.test(dropNoGate.text), dropNoGate.text.slice(0, 160))
+
   const pwLeak = await call(`${ENGINE}/sql/query`, { engineToken: SECRET, body: { endpoint: { ...endpoint, password: 'Sup3rSecret!' }, sql: 'SELECT * FROM __no_such_table__' } })
   check('执行失败错误已去密码', pwLeak.status === 502 && pwLeak.json.code === 50002 && !pwLeak.text.includes('Sup3rSecret!'), pwLeak.text.slice(0, 200))
 
@@ -102,6 +120,20 @@ const main = async () => {
   check('exec TRUNCATE 成功', truncate.status === 200 && truncate.json.code === 0)
   const verify = await call(`${ENGINE}/sql/query`, { engineToken: SECRET, body: { endpoint, sql: `SELECT COUNT(*) AS c FROM ${EXEC_TABLE}` } })
   check('TRUNCATE 后行数为 0', JSON.stringify(verify.json.data.rows) === '[[0]]', verify.text.slice(0, 140))
+
+  // DROP 正路径：只针对本用例自己建的临时表，验完即删（绝不拿业务表做样本）
+  const dropTable = `${EXEC_TABLE}_drop`
+  await call(`${ENGINE}/sql/exec`, {
+    engineToken: SECRET,
+    body: { endpoint, instanceId: 'mtr-drop', statements: [`CREATE TABLE IF NOT EXISTS \`${dropTable}\` (id INT)`] },
+  })
+  const dropOk = await call(`${ENGINE}/sql/exec`, {
+    engineToken: SECRET,
+    body: { endpoint, instanceId: 'mtr-drop', statements: [`DROP TABLE \`${dropTable}\``], allowDrop: true },
+  })
+  check('exec DROP 单表在 allowDrop 下放行', dropOk.status === 200 && dropOk.json.code === 0, dropOk.text.slice(0, 160))
+  const dropGone = await call(`${ENGINE}/sql/query`, { engineToken: SECRET, body: { endpoint, sql: `SELECT COUNT(*) AS c FROM ${dropTable}` } })
+  check('DROP 后表确实不存在（查询报错）', dropGone.status === 502 && dropGone.json.code === 50002, dropGone.text.slice(0, 140))
 
   console.log('== admin → engine 全链路：回报鉴权 + 指标 preview 真执行 ==')
   const reportNoToken = await call(`${BASE}/engine/report`, { body: { instanceId: 'inst-x', status: 'running' } })

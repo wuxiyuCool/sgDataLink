@@ -89,11 +89,75 @@ const main = async () => {
   const mapped = typeMap.map((t) => o.columnType(t)).join(',')
   check(
     'MySQL 风格类型 → Oracle 类型映射',
-    mapped === 'VARCHAR2(2),DATE,NUMBER(24,6),NUMBER(19),NUMBER(10),CLOB,TIMESTAMP,NUMBER(10)',
+    mapped === 'VARCHAR2(2 CHAR),DATE,NUMBER(24,6),NUMBER(19),NUMBER(10),CLOB,TIMESTAMP,NUMBER(10,0)',
     mapped
   )
   const long = await throwsWith(async () => o.columnType('VARCHAR(5000)'), '4000')
   check('超宽列给出可读拒绝而不是 ORA 报错', long.ok, long.msg)
+
+  console.log('== 字段类型目录与归一（界面录入 → 规范 dataType）==')
+  const compose = dialect.composeColumnType
+  check('手打 varchar 补默认长度（无长度两库都建不出表）', compose('varchar') === 'VARCHAR(64)', compose('varchar'))
+  check('空类型兜底 VARCHAR(64)', compose('') === 'VARCHAR(64)')
+  check('目录外类型兜底成字符串而不是抛错', compose('BOOLEAN') === 'VARCHAR(64)', compose('BOOLEAN'))
+  check(
+    '源库原生写法归一到 MySQL 风格',
+    compose('VARCHAR2(58)') === 'VARCHAR(58)' &&
+      compose('NUMBER') === 'DECIMAL(18,4)' &&
+      compose('timestamp(6)') === 'TIMESTAMP' &&
+      compose('CLOB') === 'TEXT',
+    [compose('VARCHAR2(58)'), compose('NUMBER'), compose('timestamp(6)'), compose('CLOB')].join(',')
+  )
+  check('NUMBER(10) 按整数处理（不擅自补 4 位小数）', compose('NUMBER(10)') === 'DECIMAL(10,0)', compose('NUMBER(10)'))
+  check('DECIMAL(24,6) 原样保留', compose('DECIMAL(24,6)') === 'DECIMAL(24,6)')
+  const overMysql = await throwsWith(async () => compose('VARCHAR(70000)', 'mysql'), '65535')
+  check('mysql 超宽列拒绝并报上限', overMysql.ok, overMysql.msg)
+  const overPrec = await throwsWith(async () => compose('DECIMAL(40,2)', 'oracle'), '38')
+  check('oracle NUMBER 精度上限 38 有提示', overPrec.ok, overPrec.msg)
+  const catM = dialect.columnFamilyCatalog('mysql')
+  const catO = dialect.columnFamilyCatalog('oracle')
+  const famOf = (list, fam) => list.find((item) => item.family === fam)
+  check(
+    '目录按方言给真实类型名',
+    famOf(catM, 'VARCHAR').rendered === 'VARCHAR(64)' &&
+      famOf(catO, 'VARCHAR').rendered === 'VARCHAR2(64 CHAR)' &&
+      famOf(catO, 'TEXT').rendered === 'CLOB' &&
+      famOf(catO, 'INT').rendered === 'NUMBER(10)' &&
+      famOf(catO, 'DATETIME').rendered === 'TIMESTAMP',
+    catO.map((c) => c.rendered).join(',')
+  )
+  check(
+    '长度上限随方言变化（字符串 mysql 65535 / oracle 4000）',
+    famOf(catM, 'VARCHAR').maxLength === 65535 && famOf(catO, 'VARCHAR').maxLength === 4000
+  )
+  check(
+    '只有字符串/定点数族需要填长度/小数位',
+    famOf(catO, 'DATE').hasLength === false && famOf(catM, 'DECIMAL').hasScale === true
+  )
+  const normalized = modelService.assertColumns(
+    [
+      { columnName: 'a', dataType: 'varchar', role: 'dimension' },
+      { columnName: 'b', dataType: 'NUMBER(12)', role: 'measure' },
+    ],
+    'oracle'
+  )
+  check(
+    '模型保存时列类型统一归一',
+    normalized[0].dataType === 'VARCHAR(64)' && normalized[1].dataType === 'DECIMAL(12,0)',
+    JSON.stringify(normalized.map((c) => c.dataType))
+  )
+  const ddlLoose = modelService.buildDdl(
+    { code: 'zzgl' },
+    'DWS',
+    'zzgl_dws_probe',
+    [{ columnName: 'shop_sign', dataType: 'varchar', role: 'dimension', bizName: '牌号' }],
+    'oracle'
+  )
+  check(
+    'DDL 里不再出现无长度类型名',
+    ddlLoose.includes('SHOP_SIGN VARCHAR2(64 CHAR) NOT NULL') && !/VARCHAR\s+NOT NULL/.test(ddlLoose),
+    ddlLoose
+  )
 
   console.log('== 函数归一与跨库告警 ==')
   check(
@@ -122,7 +186,7 @@ const main = async () => {
   check('oracle CREATE 不带 ENGINE/CHARSET', !/ENGINE=|CHARSET|COLLATE/i.test(oCreate), oCreate)
   check('oracle CREATE 不用 IF NOT EXISTS（靠数据字典探测幂等）', !/IF NOT EXISTS/i.test(oCreate))
   check('oracle CREATE 表名大写', oCreate.startsWith('CREATE TABLE TEST_1_GK ('), oCreate)
-  check('oracle 列类型走 VARCHAR2/NUMBER/TIMESTAMP', /VARCHAR2\(2\)/.test(oCreate) && /NUMBER\(24,6\)/.test(oCreate) && /ETL_TIME TIMESTAMP/.test(oCreate), oCreate)
+  check('oracle 列类型走 VARCHAR2(n CHAR)/NUMBER/TIMESTAMP', /VARCHAR2\(2 CHAR\)/.test(oCreate) && /NUMBER\(24,6\)/.test(oCreate) && /ETL_TIME TIMESTAMP/.test(oCreate), oCreate)
   check('oracle TRUNCATE 无反引号', oTruncate === 'TRUNCATE TABLE TEST_1_GK', oTruncate)
   check('oracle INSERT 列表大写无引号', oInsert.includes('INSERT INTO TEST_1_GK (PRODUCE_LINE, PRODUCE_DT, GK1, GK2, ETL_TIME)'), oInsert)
   check('oracle 时间窗用 TO_DATE（此前裸串会 ORA-01861）', /BETWEEN TO_DATE\('2026-04-12','YYYY-MM-DD'\) AND TO_DATE\('2026-10-09','YYYY-MM-DD'\)/.test(oInsert), oInsert)
@@ -185,6 +249,22 @@ const main = async () => {
     await taskService.buildStatements(taskFixture('overwrite'), buildPlanFixture())
   }, 'mysql / oracle')
   check('postgresql 目标给出可读拒绝', pg.ok, pg.msg)
+
+  console.log('== 维度取值探查 SQL（契约 1.14，仍只能出自方言层）==')
+  const mySql = dialect.dialectOf('mysql')
+  const oraSql = dialect.dialectOf('oracle')
+  const dimCount = mySql.dimCountSql({ table: 'dm_order_src', column: 'region' })
+  check('mysql 基数预检走 COUNT(DISTINCT)', dimCount === 'SELECT COUNT(DISTINCT `region`) AS dim_count FROM dm_order_src', dimCount)
+  const dimProfile = mySql.dimProfileSql({ table: 'dm_order_src', column: 'region', limit: 50 })
+  check('mysql 取值 topN 用 LIMIT 且过滤 NULL', /LIMIT 50$/.test(dimProfile) && /IS NOT NULL/.test(dimProfile) && /GROUP BY/.test(dimProfile), dimProfile)
+  const oraProfile = oraSql.dimProfileSql({ table: 'gmc.test', column: 'produce_line', limit: 50 })
+  check('oracle 取值用 ROWNUM 嵌套（不用 LIMIT/FETCH FIRST）', /^\SELECT \* FROM \(/.test(oraProfile) && /ROWNUM <= 50/.test(oraProfile) && !/LIMIT/.test(oraProfile) && !/FETCH FIRST/.test(oraProfile), oraProfile)
+  check('oracle 标识符与表名大写', oraProfile.includes('PRODUCE_LINE') && oraProfile.includes('GMC.TEST'), oraProfile)
+  check('oracle 基数预检同样大写无引号', oraSql.dimCountSql({ table: 'gmc.test', column: 'x' }).includes('COUNT(DISTINCT X)'), oraSql.dimCountSql({ table: 'gmc.test', column: 'x' }))
+  const injection = await throwsWith(() => mySql.dimProfileSql({ table: 't; DROP TABLE u', column: 'a', limit: 5 }), '标识符白名单')
+  check('表名含分号/空格被标识符白名单拒绝', injection.ok, injection.msg)
+  const badColumn = await throwsWith(() => mySql.dimCountSql({ table: 't', column: 'a` b' }), '标识符白名单')
+  check('列名非法字符被拒（探查不得拼任意标识符）', badColumn.ok, badColumn.msg)
 
   console.log(`\ntest-metric-dialect: ${pass} pass, ${fail} fail`)
   process.exit(fail ? 1 : 0)

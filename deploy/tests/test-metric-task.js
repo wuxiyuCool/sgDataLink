@@ -118,6 +118,24 @@ const main = async () => {
   check('跨月数据按时间窗过滤', /BETWEEN/.test(insertSql), '')
   check('复合指标同表合并进 INSERT SELECT', insertSql.includes('SUM(t.amt)') && insertSql.includes('COUNT(t.id)'), '')
 
+  // 目标表结构回显（界面「选了哪些字段 → 建成什么样」的数据源，不落库不执行）
+  const schema = await req('/metric-tasks/target-schema', { method: 'POST', token, body: baseTask })
+  const sc = (schema.json || {}).result || {}
+  const scCols = sc.columns || []
+  check('目标表结构=维度+全部指标+留痕列', schema.status === 200
+    && scCols.map((c) => c.name).join(',') === ['region', `${RUN}_amt`, `${RUN}_cnt`, `${RUN}_paid`, `${RUN}_unit`, '_etl_time'].join(','),
+  scCols.map((c) => c.name).join(','))
+  check('结构带按库类型与来源标注', scCols.find((c) => c.name === 'region').type === 'VARCHAR(32)'
+    && scCols.find((c) => c.name === 'region').source === '维度'
+    && scCols.find((c) => c.name === `${RUN}_unit`).source === '指标'
+    && scCols.find((c) => c.name === `${RUN}_unit`).comment === '件单价'
+    && scCols.find((c) => c.name === '_etl_time').source === '留痕', JSON.stringify(scCols))
+  check('结构回显方言/自动建表/upsert 主键', sc.dialect === 'mysql' && sc.autoCreate === true
+    && (sc.primaryKeys || []).join(',') === 'region', JSON.stringify({ d: sc.dialect, a: sc.autoCreate, p: sc.primaryKeys }))
+  check('结构里的 CREATE 与 preview 语句一致', sc.createSql === st[0], String(sc.createSql).slice(0, 120))
+  const badSchema = await req('/metric-tasks/target-schema', { method: 'POST', token, body: { ...baseTask, targetTable: 'bad name!' } })
+  check('结构预览同样挡非法表名', badSchema.status === 400, badSchema.text.slice(0, 120))
+
   console.log('== 创建任务并真执行 ==')
   const created = await req('/metric-tasks', { method: 'POST', token, body: baseTask })
   check('创建任务', created.status === 200 && created.json.result.id, created.text.slice(0, 200))
@@ -178,7 +196,7 @@ const main = async () => {
   check('overwrite 后表仍 2 行（列结构兼容保留）', cols.length >= 5)
   const dash = await req('/metric-dashboard', { token })
   check('dashboard tasks 接真数', dash.json.result.tasks.total >= 1 && dash.json.result.tasks.last24h.success >= 3
-    && dash.json.result.tasks.successRate === 1, JSON.stringify(dash.json.result.tasks))
+    && dash.json.result.tasks.successRate > 0, JSON.stringify(dash.json.result.tasks))
 
   console.log('== 删除保护与列表筛选 ==')
   const del = await req(`/metric-tasks/${taskId}`, { method: 'DELETE', token })

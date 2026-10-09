@@ -96,6 +96,87 @@ const main = async () => {
   }
   const modelId = model.id;
 
+  // ===== 建模生命周期演示（契约 1.13）：同一页里凑齐 草稿 / 已建表 / 引用表 三种表状态 =====
+  const mkDdlModel = async ({ name, tableName, remark }) => {
+    const list = await req(token, `/metric-models?keyword=${encodeURIComponent(tableName)}`);
+    const hit = (list.json.result.items || []).find((m) => m.tableName === tableName);
+    if (hit) return hit;
+    const created = await req(token, '/metric-models', {
+      method: 'POST',
+      body: {
+        name,
+        datasourceId: mysqlDs.id,
+        domainId: domain.id,
+        layer: 'ADS',
+        createType: 'ddl',
+        tableName,
+        remark,
+        columns: [
+          { columnName: 'stat_date', bizName: '统计日', dataType: 'DATE', role: 'time' },
+          { columnName: 'region', bizName: '地区', dataType: 'VARCHAR(32)', role: 'dimension' },
+          { columnName: 'pay_amt', bizName: '实收额', dataType: 'DECIMAL(18,2)', role: 'measure', aggDefault: 'sum' },
+        ],
+      },
+    });
+    if (created.status !== 200) throw new Error(`创建界面建表模型 ${tableName} 失败: ${JSON.stringify(created.json)}`);
+    return created.json.result;
+  };
+  await mkDdlModel({
+    name: '渠道日报(草稿)',
+    tableName: 'dm_demo_draft',
+    remark: '生命周期演示①：界面建表保存即草稿——可反复改字段，不能生成表，也不能被指标/任务引用（拿它建指标会看到「请先启用」）',
+  });
+  const builtModel = await mkDdlModel({
+    name: '渠道日报(已建表)',
+    tableName: 'dm_demo_ads',
+    remark: '生命周期演示②：启用 → 生成表，DDL 由方言层真执行；删除这条模型时才会出现「同时删除物理表」勾选',
+  });
+  if (builtModel.status !== 'online') {
+    await req(token, `/metric-models/${builtModel.id}`, { method: 'PUT', body: { status: 'online' } });
+  }
+  const builtNow = await req(token, `/metric-models/${builtModel.id}`, {});
+  if ((builtNow.json.result || {}).tableStatus !== 'created') {
+    // 建表要真引擎在线；不可用时草稿/启用态照样可看，只是这张表留待下次 seed
+    const res = await req(token, `/metric-models/${builtModel.id}/create-table`, { method: 'POST' });
+    const r = res.json.result || {};
+    console.log(res.status === 200 && r.tableStatus === 'created'
+      ? `dm_demo_ads 生成表成功（executed=${r.executed}）`
+      : `dm_demo_ads 生成表未完成：${r.tableMsg || res.text.slice(0, 160)}`);
+  }
+
+  // 维度取值档案演示（契约 1.14）：给常驻演示模型探一次真实取值，并登记 status 的业务名
+  // ——「已支付的订单额」这类问法能否命中，靠的就是 PAID=已支付 这份对应关系
+  const dimProbe = await req(token, `/metric-models/${modelId}/profile-dimensions`, { method: 'POST', body: {} });
+  if (dimProbe.status === 200) {
+    const probed = (dimProbe.json.result.columns || []).map((c) => `${c.columnName}:${c.highCardinality ? '高基数跳过' : (c.values || []).length + '个值'}`);
+    console.log(`订单明细 维度取值已探查（${dimProbe.json.result.profiledAt}）：${probed.join('、')}`);
+    const statusCol = (dimProbe.json.result.columns || []).find((c) => c.columnName === 'status');
+    if (statusCol && (statusCol.values || []).length) {
+      const labels = { PAID: '已支付', CANCEL: '已取消' };
+      const labeled = await req(token, `/metric-models/${modelId}/dimension-values`, {
+        method: 'PUT',
+        body: { columnName: 'status', values: statusCol.values.map((v) => ({ value: v.value, label: labels[v.value] || v.label || '' })) },
+      });
+      console.log(labeled.status === 200 ? 'status 码值业务名已登记：PAID=已支付、CANCEL=已取消' : `status 业务名登记失败：${labeled.text.slice(0, 120)}`);
+    }
+  } else {
+    console.log(`维度取值探查未完成（需要引擎在线 + DB_DRIVER=mysql）：${dimProbe.text.slice(0, 140)}`);
+  }
+
+  // 码值问法的 few-shot 示例：让小模型照着「值名出现在问题里 → 必须写列过滤」的样子生成 M2SQL，
+  // 平台侧还会再做一次值校正（已支付 → PAID），两者叠加才稳定命中
+  const demoExample = {
+    question: '昨天的已支付订单额是多少',
+    m2sql: `SELECT \`订单额\` FROM \`交易演示\` WHERE \`数据日期\` BETWEEN '${DAY(1)}' AND '${DAY(1)}' AND \`status\` = 'PAID'`,
+    enabled: true,
+  };
+  const examples = await req(token, '/metric-examples?page=1&size=100');
+  const hasExample = ((examples.json.result || {}).items || []).some((e) => e.question === demoExample.question);
+  if (!hasExample) {
+    const createdExample = await req(token, '/metric-examples', { method: 'POST', body: demoExample });
+    console.log(createdExample.status === 200 ? '码值 few-shot 示例已建：昨天的已支付订单额 → status=PAID' : `示例创建失败：${createdExample.text.slice(0, 120)}`);
+  }
+
   const mkMetric = async (body) => {
     const list = await req(token, `/metrics?keyword=${encodeURIComponent(body.code)}`);
     const existing = (list.json.result.items || []).find((m) => m.code === body.code);
