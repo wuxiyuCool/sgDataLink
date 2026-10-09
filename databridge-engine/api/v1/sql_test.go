@@ -45,22 +45,30 @@ func TestSQLQueryValidate(t *testing.T) {
 
 func TestSQLExecValidate(t *testing.T) {
 	cases := []struct {
-		name    string
+		name       string
 		statements []string
-		wantErr string
+		allowDrop  bool
+		wantErr    string
 	}{
-		{"建表+清空+插入允许", []string{"CREATE TABLE IF NOT EXISTS t (id INT)", "TRUNCATE TABLE t", "INSERT INTO t (id) SELECT 1"}, ""},
-		{"ALTER ADD COLUMN 允许", []string{"ALTER TABLE t ADD COLUMN c1 VARCHAR(8)"}, ""},
-		{"ALTER DROP 拒绝", []string{"ALTER TABLE t DROP COLUMN c1"}, "白名单"},
-		{"DELETE 拒绝", []string{"DELETE FROM t"}, "白名单"},
-		{"UPDATE 拒绝", []string{"UPDATE t SET a=1"}, "白名单"},
-		{"DROP TABLE 拒绝", []string{"DROP TABLE t"}, "白名单"},
-		{"分号拼接拒绝", []string{"SELECT 1; SELECT 2"}, "多语句"},
-		{"空语句拒绝", []string{"  "}, "不能为空"},
+		{"建表+清空+插入允许", []string{"CREATE TABLE IF NOT EXISTS t (id INT)", "TRUNCATE TABLE t", "INSERT INTO t (id) SELECT 1"}, false, ""},
+		{"ALTER ADD COLUMN 允许", []string{"ALTER TABLE t ADD COLUMN c1 VARCHAR(8)"}, false, ""},
+		{"ALTER DROP 拒绝", []string{"ALTER TABLE t DROP COLUMN c1"}, false, "白名单"},
+		{"DELETE 拒绝", []string{"DELETE FROM t"}, false, "白名单"},
+		{"UPDATE 拒绝", []string{"UPDATE t SET a=1"}, false, "白名单"},
+		{"DROP 未开 allowDrop 拒绝", []string{"DROP TABLE t"}, false, "allowDrop"},
+		{"DROP TABLE 单表允许（v1.13）", []string{"DROP TABLE t"}, true, ""},
+		{"DROP TABLE IF EXISTS 反引号允许", []string{"DROP TABLE IF EXISTS `mdl_dwd_demo`"}, true, ""},
+		{"DROP TABLE 多表拒绝", []string{"DROP TABLE a, b"}, true, "白名单"},
+		{"DROP TABLE CASCADE 尾巴拒绝", []string{"DROP TABLE t CASCADE CONSTRAINTS"}, true, "白名单"},
+		{"DROP TABLE PURGE 拒绝", []string{"DROP TABLE t PURGE"}, true, "白名单"},
+		{"DROP TABLE 无表名拒绝", []string{"DROP TABLE"}, true, "白名单"},
+		{"DROP USER 拒绝", []string{"DROP USER scott"}, true, "白名单"},
+		{"分号拼接拒绝", []string{"SELECT 1; SELECT 2"}, false, "多语句"},
+		{"空语句拒绝", []string{"  "}, false, "不能为空"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			req := &SQLExecRequest{InstanceID: "mtr-1", Endpoint: mysqlEndpoint(), Statements: c.statements}
+			req := &SQLExecRequest{InstanceID: "mtr-1", Endpoint: mysqlEndpoint(), Statements: c.statements, AllowDrop: c.allowDrop}
 			err := req.Validate()
 			if c.wantErr == "" {
 				if err != nil {

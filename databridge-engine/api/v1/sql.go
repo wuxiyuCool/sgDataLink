@@ -3,6 +3,7 @@ package v1
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -37,6 +38,9 @@ type SQLExecRequest struct {
 	Endpoint   EndpointDTO `json:"endpoint" binding:"required"`
 	Statements []string    `json:"statements" binding:"required,min=1,max=50"`
 	ReportURL  string      `json:"reportUrl" binding:"omitempty,url"`
+	// AllowDrop 显式开闸：DROP TABLE 只允许「建模删除平台自建表」这一条链路带 true 下发。
+	// 引擎无状态、拿不到调用方意图，所以把破坏性动词的开关做成请求体字段而不是靠语句猜。
+	AllowDrop bool `json:"allowDrop"`
 }
 
 // SQLExecResult 单条语句的执行结果（同步模式）。
@@ -102,7 +106,11 @@ func (r *SQLQueryRequest) Validate() error {
 }
 
 // Validate exec 守卫：每条语句首关键字 ∈ {CREATE TABLE, TRUNCATE TABLE, INSERT INTO,
-// ALTER TABLE(仅 ADD 列)}；DROP/DELETE/UPDATE/GRANT 等一律拒绝。
+// ALTER TABLE(仅 ADD 列), DROP TABLE(仅单表)}；DELETE/UPDATE/GRANT 等一律拒绝。
+//
+// DROP TABLE 是 v1.13 为「建模删除平台建的表」开的口子，收得比其它动词更紧：
+// 只认 `DROP TABLE [IF EXISTS] <单个表名>`，多表逗号、CASCADE/PURGE、任何尾巴字符都不放行
+// （分号多语句已在 normalizeSQL 挡掉）。表名合法性仍由 Node 侧标识符白名单保证。
 func (r *SQLExecRequest) Validate() error {
 	if err := validateSQLConnEndpoint(r.Endpoint); err != nil {
 		return err
@@ -119,14 +127,21 @@ func (r *SQLExecRequest) Validate() error {
 			strings.HasPrefix(head, "TRUNCATE TABLE"),
 			strings.HasPrefix(head, "INSERT INTO"):
 		case strings.HasPrefix(head, "ALTER TABLE") && strings.Contains(head, " ADD "):
+		case dropTablePattern.MatchString(text):
+			if !r.AllowDrop {
+				return fmt.Errorf("statements[%d]: DROP TABLE 需要请求体显式 allowDrop=true（仅建模删除平台自建表时下发）", i)
+			}
 		default:
-			return fmt.Errorf("statements[%d]: 首关键字不在白名单 {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD}，当前为 %q", i, firstWords(head, 3))
+			return fmt.Errorf("statements[%d]: 首关键字不在白名单 {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD, DROP TABLE}，当前为 %q", i, firstWords(head, 3))
 		}
 		cleaned = append(cleaned, text)
 	}
 	r.Statements = cleaned
 	return nil
 }
+
+// dropTablePattern 单表 DROP（可带 IF EXISTS），表名允许 mysql 反引号 / oracle 双引号与 schema 前缀。
+var dropTablePattern = regexp.MustCompile(`(?i)^DROP\s+TABLE\s+(IF\s+EXISTS\s+)?[A-Za-z_` + "`" + `"][A-Za-z0-9_$` + "`" + `".]*$`)
 
 // validateSQLConnEndpoint SQL 接口的端点最小必填集（与真实同步不同：不要求 table）。
 func validateSQLConnEndpoint(ep EndpointDTO) error {
