@@ -210,22 +210,23 @@ const parseM2Sql = (tokenSql, refs) => {
 
 const hasDate = (range) => Boolean(range && (range.start || range.end));
 
-const assembleSelect = (plan, limit) => {
+/**
+ * 问数落地的物理 SQL：别名引用、日期字面量、行数限制、源表大小写一律问方言层。
+ * 这里曾硬编码 MySQL 方言（反引号 + 裸日期 + LIMIT），Oracle 数据源上必然 ORA-00933/ORA-01861。
+ */
+const assembleSelect = (plan, limit, dl) => {
   const selectItems = [
-    ...plan.dims.map((d) => `${d.sql} AS \`${d.target}\``),
-    ...plan.metrics.map((m) => `${m.sql} AS \`${m.target}\``),
+    ...plan.dims.map((d) => `${dl.normalize(d.sql)} AS ${dl.ident(d.target)}`),
+    ...plan.metrics.map((m) => `${dl.normalize(m.sql)} AS ${dl.ident(m.target)}`),
   ];
-  const whereParts = [...plan.filters.map((f) => `(${f})`)];
-  if (plan.dateRange && plan.timeColumn) {
-    const { start, end } = plan.dateRange;
-    if (start && end) whereParts.push(`t.${plan.timeColumn} BETWEEN '${start}' AND '${end}'`);
-    else if (start) whereParts.push(`t.${plan.timeColumn} >= '${start}'`);
-    else if (end) whereParts.push(`t.${plan.timeColumn} <= '${end}'`);
-  }
-  const groupBy = plan.dims.length ? ` GROUP BY ${plan.dims.map((d) => d.sql).join(', ')}` : '';
-  return `SELECT ${selectItems.join(', ')} FROM ${plan.fromTable} t${
+  const whereParts = [...plan.filters.map((f) => `(${dl.normalize(f)})`)];
+  const timePart = dl.timeFilter(plan.timeColumn, plan.dateRange);
+  if (timePart) whereParts.push(timePart);
+  const groupBy = plan.dims.length ? ` GROUP BY ${plan.dims.map((d) => dl.normalize(d.sql)).join(', ')}` : '';
+  const body = `SELECT ${selectItems.join(', ')} FROM ${dl.sourceTable(plan.fromTable)} t${
     whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''
-  }${groupBy} LIMIT ${limit}`;
+  }${groupBy}`;
+  return dl.limit(body, limit);
 };
 
 const writeLog = async (entry) => {
@@ -450,7 +451,9 @@ const ask = async ({ question, sessionId, dateRange: forcedRange, source }, user
       warnings,
     });
   }
-  const sql = assembleSelect(plan, 1000);
+  const dl = await metricCompilerService.dialectOfDatasource(plan.datasourceId);
+  const sql = assembleSelect(plan, 1000, dl);
+
   const executed = await metricExecService.runSql(plan.datasourceId, sql, { limit: 1000 });
   const columns = executed.columns || [];
   const rows = executed.rows || [];

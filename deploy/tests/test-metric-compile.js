@@ -203,15 +203,15 @@ const main = async () => {
   const scNorm = await mk({ code: `${RUN}_sc_nvl_norm`, name: 'NVL归一', defineType: 'METRIC', domainId: dom.json.result.id, expr: `NVL(\${${RUN}_order_amt}, 0) + IFNULL(\${${RUN}_paid_amt}, 0)`, status: 'online' }, 'NVL+IFNULL 复合（存原样）')
   const normSql = await metricCompiler.compileMetric(scNorm.id, { dateRange: { start: '2026-10-01', end: '2026-10-31' } })
   check('NVL/IFNULL 编译归一为 COALESCE', /COALESCE\(/.test(normSql.sql) && !/NVL|IFNULL/.test(normSql.sql), normSql.sql)
-  // 方言专有函数：放行但给跨库告警（DECODE 在白名单内）
+  // 方言专有函数：放行但给跨库告警，且告警方向按「指标所在数据源」判定（方言层 §6.4）
   const warnProbe = await req('/metrics/validate', {
     method: 'POST', token,
     body: { code: `${RUN}_warn_probe`, name: '告警探针', domainId: dom.json.result.id, defineType: 'METRIC', expr: `DECODE(\${${RUN}_order_amt}, 1, 0)` },
   })
   check(
-    'DECODE 通过校验但带跨库告警',
+    'DECODE 通过校验并被告警「在当前 mysql 数据源执行会报错」',
     warnProbe.status === 200 && warnProbe.json.result.valid === true
-      && warnProbe.json.result.warnings.some((w) => /Oracle 专有函数 DECODE/.test(w)),
+      && warnProbe.json.result.warnings.some((w) => /DECODE/.test(w) && /mysql 数据源上执行会报错/.test(w)),
     JSON.stringify(warnProbe.json.result)
   )
   const warnFilter = await req('/metrics/validate', {
@@ -222,10 +222,11 @@ const main = async () => {
     },
   })
   check(
-    'filterSql 含 MySQL 专有函数也带告警',
-    warnFilter.json.result.warnings.some((w) => /MySQL 专有函数 DATE_FORMAT/.test(w)),
+    'filterSql 含 MySQL 专有函数被告警「迁到 oracle 会报错」',
+    warnFilter.json.result.warnings.some((w) => /DATE_FORMAT/.test(w) && /迁到 oracle 数据源会报错/.test(w)),
     JSON.stringify(warnFilter.json.result.warnings)
   )
+
 
   console.log('== Oracle 方言编译（不连真库，进程内 compileMetric）==')
   const oraDs = await req('/datasources', {
@@ -247,7 +248,7 @@ const main = async () => {
   const oraMetric = await mk({ code: `${RUN}_ora_wt`, name: '钢捆重量', defineType: 'MEASURE', domainId: dom.json.result.id, defineParams: { modelId: oraModel.json.result.id, measureColumn: 'MATERIAL_WEIGHT', agg: 'sum', timeColumn: 'PRODUCE_DT' }, status: 'online' }, 'oracle ATOMIC 建指标')
   const oraSql = await metricCompiler.compileMetric(oraMetric.id, { dateRange: { start: '2026-10-01', end: '2026-10-10' } })
   check('oracle dialect 标注', oraSql.dialect === 'oracle', oraSql.dialect)
-  check('Oracle 行数用 FETCH FIRST 非 LIMIT', /FETCH FIRST \d+ ROWS ONLY/.test(oraSql.sql) && !/LIMIT/.test(oraSql.sql), oraSql.sql)
+  check('Oracle 行数用 ROWNUM 嵌套非 LIMIT', /WHERE ROWNUM <= \d+$/.test(oraSql.sql) && !/LIMIT/.test(oraSql.sql), oraSql.sql)
   check('Oracle 日期包 TO_DATE', /TO_DATE\('2026-10-01','YYYY-MM-DD'\)/.test(oraSql.sql) && /TO_DATE\('2026-10-10','YYYY-MM-DD'\)/.test(oraSql.sql), oraSql.sql)
   // 对照：mysql 模型仍用 LIMIT + 裸字符串
   const mySql = await metricCompiler.compileMetric(orderAmt.id, { dateRange: { start: '2026-10-01', end: '2026-10-10' } })

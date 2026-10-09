@@ -667,7 +667,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 用户表 `databridge_user`（mysql 模式自动建表；空表启动自动播种 `admin`，初始密码见服务端启动日志，`mustChangePassword=true`）。密码 **bcryptjs(cost 10) 哈希存储**，任何接口/日志/错误消息不回显明文或哈希。
 
-**会话**：`POST /auth/login` 成功返回 JWT access token（`Authorization: Bearer <token>`，有效期 `JWT_ACCESS_EXPIRATION_MINUTES`，默认 30 分钟）。业务码：40103 用户名或密码错误（**不区分二者，防账号枚举**）、40104 账号已禁用。登录接口挂 `authLimiter`（15 分钟窗口失败 20 次限流）。
+**会话**：`POST /auth/login` 成功返回 JWT access token（`Authorization: Bearer <token>`，有效期 `JWT_ACCESS_EXPIRATION_MINUTES`，代码默认 30 分钟，`.env`/`.env.example`/k8s ConfigMap 取 **480**）。**一期没有 refresh 接口**，`exp` 在签发瞬间钉死、不随操作滑动，到点首个请求返回 401 由前端清 token 跳登录页（`deploy/RELEASE.md`「登录态」一节给存量环境的 patch 命令）。业务码：40103 用户名或密码错误（**不区分二者，防账号枚举**）、40104 账号已禁用。登录接口挂 `authLimiter`（15 分钟窗口失败 20 次限流）。
 
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
@@ -707,7 +707,25 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 - `code` 全库唯一、`^[a-z][a-z0-9_]{2,63}$`、创建后不可改——是复合公式 `${code}` 引用的锚点。
 - `dataFormat` ∈ `DECIMAL`（默认）| `PERCENT` | `THOUSANDTH`，仅用于展示格式；留空按 DECIMAL 存储。
 - COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF/NVL/IFNULL/DECODE/TRUNC/GREATEST/LEAST/MOD/SUBSTR/SUBSTRING/LENGTH/CONCAT/TO_NUMBER，跨 MySQL/Oracle 通用；公式字符集不含引号故字符串常量不适用），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
-- **跨库方言三层处理**：① 语法探针（node-sql-parser）对 mysql/oracle 函数**宽容互认**（实测两方言都能解析 NVL/TO_CHAR/TO_DATE/DECODE/TRUNC/REGEXP_LIKE/`||`），故探针不按方言分支；② 编译期把 `NVL(`/`IFNULL(` **归一为 `COALESCE(`**（两库通用；不归一则 MySQL 执行期报 `FUNCTION xxx.NVL does not exist`），行数与日期按数据源方言出产物（Oracle `FETCH FIRST n ROWS ONLY` + `TO_DATE(...)`，MySQL `LIMIT n` + 字符串日期）；③ 无法等价改写的方言专有函数（Oracle DECODE/NVL2/TO_CHAR/TO_DATE/TO_NUMBER/TRUNC/REGEXP_LIKE/SYSDATE/ROWNUM，MySQL DATE_FORMAT/STR_TO_DATE/GROUP_CONCAT/SUBSTRING_INDEX）在 `POST /metrics/validate` 与保存响应里回 **warnings**（不阻断保存），提示换库执行会报错。
+- **跨库方言：三层处理 + 单一方言层**（`node-express-boilerplate/src/utils/dialect.js`，V10 起）。所有 mysql/oracle 的 SQL 文本差异只从这里出，编译器（`metricCompiler`）、物化任务（`metrictask`）、模型 DDL 预览（`metricmodel`）、数据预览（`metricExec`）、问数落地（`metricChat`）**五个生成点统一接入**，不再各写 `ds.type === 'oracle'` 分支（此前每漏一处就产出一条必失败的语句）：① 语法探针（node-sql-parser）对 mysql/oracle 函数**宽容互认**（实测两方言都能解析 NVL/TO_CHAR/TO_DATE/DECODE/TRUNC/REGEXP_LIKE/`||`），故探针不按方言分支；② 编译期按目标方言**归一改写**：`NVL(`/`IFNULL(` → `COALESCE(`（两库通用），Oracle 目标 additionally `DATE_FORMAT(x,'%Y-%m')` → `TO_CHAR(x,'YYYY-MM')`（掩码表 `%Y %m %d %H %i %s %y %M %D`，含未覆盖 `%码` 时不改写只告警）；③ 无法等价改写的专有写法（Oracle DECODE/NVL2/TO_CHAR/TO_DATE/TO_NUMBER/NUMTODSINTERVAL/REGEXP_LIKE/TRUNC/SYSDATE/ROWNUM，MySQL DATE_FORMAT/STR_TO_DATE/GROUP_CONCAT/SUBSTRING_INDEX/FIND_IN_SET/IF）在 `POST /metrics/validate` 与保存响应里回 **warnings**（不阻断保存）。
+
+  方言产物对照（回归见 `deploy/tests/test-metric-dialect.js`，离线不连库）：
+
+  | 生成点 | MySQL | Oracle |
+  |---|---|---|
+  | 标识符/别名 | 反引号 `` `gk1` `` | 大写无引号 `GK1`（非引号标识符必须字母开头） |
+  | 日期字面量 | `'2026-04-12'` | `TO_DATE('2026-04-12','YYYY-MM-DD')`（裸串比较会 ORA-01861） |
+  | 行数限制 | `LIMIT n` | `SELECT * FROM (…) dbr_page WHERE ROWNUM <= n`（与引擎侧 dbio 一致；`FETCH FIRST` 需 12c+，11g 直接语法错，故不用） |
+  | 当前时间 | `NOW()` | `SYSDATE` |
+  | ETL 留痕列 | `_etl_time` DATETIME | `ETL_TIME` TIMESTAMP（下划线开头会 ORA-00911，故跨库列名不同，属已知差异） |
+  | 列类型 | 原样（NUMERIC→DECIMAL） | `VARCHAR→VARCHAR2`、`INT→NUMBER(10)`、`BIGINT→NUMBER(19)`、`DECIMAL(p,s)→NUMBER(p,s)`、`TEXT→CLOB`、`DATETIME→TIMESTAMP`；>4000 宽直接 40001 拒 |
+  | 建表 | `CREATE TABLE IF NOT EXISTS … ENGINE=InnoDB … utf8mb4` | `CREATE TABLE T (…)`；无 IF NOT EXISTS → 执行前用 `SELECT COUNT(*) FROM user_tables WHERE table_name='T'` 探测，已存在则跳过建表（等价幂等） |
+  | 清空 | `` TRUNCATE TABLE `t` `` | `TRUNCATE TABLE T` |
+  | 列注释 | 内联 `COMMENT '…'` | 拆成 `COMMENT ON TABLE/COLUMN` 语句 |
+  | upsert | `ON DUPLICATE KEY UPDATE` | **一期拒绝**（需 MERGE INTO，未实现），保存期即 40001 提示改用 overwrite/append |
+  | 空串语义 | `''` 是空串 | `''` 等价 NULL → `cleanRules` 的 fill 值为空串时保存期 40001，要求填实际占位（如 `-`） |
+  | 未接入类型 | — | `postgresql` 等按方言层不支持 → 40001（不再静默按 MySQL 生成） |
+
 
 **路由**：
 

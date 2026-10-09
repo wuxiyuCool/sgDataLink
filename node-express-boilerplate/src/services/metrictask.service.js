@@ -4,6 +4,7 @@
  * 执行走 engine /sql/exec（同步），要求源/目标同数据源（单连接内 INSERT..SELECT，红线 7 同源约束）。
  */
 const { paramInvalid, notFound, runningForbidden } = require('../utils/bizError');
+const dialect = require('../utils/dialect');
 const config = require('../config/config');
 const logger = require('../config/logger');
 const metricTaskRepository = require('../repositories/metrictask.repository');
@@ -49,15 +50,12 @@ const assertTimePreset = (preset) => {
   throw paramInvalid('timePreset.mode ∈ BETWEEN|RECENT');
 };
 
+const UNIT_DAYS = { MONTH: 30, WEEK: 7, DAY: 1 };
+
 const resolveDateRange = (preset, now = new Date()) => {
   if (!preset) return null;
   if (preset.mode === 'BETWEEN') return { start: preset.start, end: preset.end };
-  const days =
-    preset.unit === 'MONTH'
-      ? 30 * Number(preset.period)
-      : preset.unit === 'WEEK'
-      ? 7 * Number(preset.period)
-      : Number(preset.period);
+  const days = (UNIT_DAYS[preset.unit] || 1) * Number(preset.period);
   const end = now.toISOString().slice(0, 10);
   const start = new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10);
   return { start, end };
@@ -84,6 +82,12 @@ const validateTaskShape = async (data) => {
   if (!metricIds.length) throw paramInvalid('metricIds 至少 1 个');
   const writeMode = data.writeMode || 'overwrite';
   if (!WRITE_MODES.includes(writeMode)) throw paramInvalid(`writeMode ∈ ${WRITE_MODES.join('|')}`);
+  // 目标库方言决定清洗规则与写入模式是否可表达（方言层 §6.4）：Oracle 空串等价 NULL、无 ON DUPLICATE KEY UPDATE
+  const targetDs = data.targetDatasourceId ? await datasourceRepository.getById(data.targetDatasourceId) : null;
+  const dl = dialect.dialectOfSource(targetDs || 'mysql');
+  if (writeMode === 'upsert' && !dl.supports.upsertOnDuplicate) {
+    throw paramInvalid(`${dl.type} 目标表一期不支持 upsert（需 MERGE INTO，未实现），请改用 overwrite 或 append`);
+  }
   const rules = Array.isArray(data.cleanRules) ? data.cleanRules : [];
   rules.forEach((rule, index) => {
     if (!CLEAN_TYPES.includes(rule.type)) throw paramInvalid(`cleanRules[${index}].type ∈ ${CLEAN_TYPES.join('|')}`);
@@ -91,6 +95,13 @@ const validateTaskShape = async (data) => {
     if (rule.type === 'filter' && !rule.sql) throw paramInvalid(`cleanRules[${index}].sql 必填`);
     if ((rule.type === 'fill' || rule.type === 'rename') && !rule.column)
       throw paramInvalid(`cleanRules[${index}].column 必填`);
+    if (
+      rule.type === 'fill' &&
+      dl.supports.emptyStringIsNull &&
+      (rule.value === undefined || rule.value === null || rule.value === '')
+    ) {
+      throw paramInvalid(`cleanRules[${index}]: ${dl.type} 中空串等价 NULL，填充值不能为空，请改为实际占位（如 '-'）`);
+    }
   });
   assertTimePreset(data.timePreset);
   if (data.scheduleCron && !cronMatcher.isSupportedCron(data.scheduleCron)) {
@@ -170,68 +181,47 @@ const buildPlan = async (task, now = new Date()) => {
   };
 };
 
-/** 生成执行语句序列（CREATE 目标表 → overwrite 时 TRUNCATE → INSERT..SELECT[ON DUP]） */
+/**
+ * 生成执行语句序列（CREATE 目标表 → overwrite 时 TRUNCATE → INSERT..SELECT[ON DUP]）。
+ * 所有方言差异（标识符引用、类型、日期字面量、IF NOT EXISTS、upsert 语法）一律问 dialect 层。
+ */
 const buildStatements = async (task, plan) => {
-  const oracle = (await datasourceRepository.getById(task.targetDatasourceId)).type === 'oracle';
-  if (oracle && task.writeMode === 'upsert') throw paramInvalid('upsert 仅支持 MySQL（ON DUPLICATE KEY UPDATE）');
+  const dl = dialect.dialectOfSource(await datasourceRepository.getById(task.targetDatasourceId));
+  if (task.writeMode === 'upsert' && !dl.supports.upsertOnDuplicate) dl.upsertTail([]); // 统一由方言层给拒因
   const { dims, metrics } = plan;
-  const cols = [...dims.map((d) => d.target), ...metrics.map((m) => m.target), '_etl_time'];
-  const selectTail = oracle
-    ? dims
-        .map((d) => `${d.sql} AS ${d.target}`)
-        .concat(
-          metrics.map((m) => `${m.sql} AS ${m.target}`),
-          ['SYSDATE']
-        )
-        .join(', ')
-    : dims
-        .map((d) => `${d.sql} AS \`${d.target}\``)
-        .concat(
-          metrics.map((m) => `${m.sql} AS \`${m.target}\``),
-          ['NOW()']
-        )
-        .join(', ');
-  const whereParts = [...plan.filters.map((f) => `(${f})`)];
-  if (plan.dateRange && plan.timeColumn) {
-    whereParts.push(`t.${plan.timeColumn} BETWEEN '${plan.dateRange.start}' AND '${plan.dateRange.end}'`);
-  }
-  const groupBy = dims.length ? ` GROUP BY ${dims.map((d) => d.sql).join(', ')}` : '';
-  const selectSql = `SELECT ${selectTail} FROM ${plan.fromTable} t${
+  const cols = [...dims.map((d) => d.target), ...metrics.map((m) => m.target), dl.etlColumn];
+  const selectTail = dims
+    .map((d) => `${dl.normalize(d.sql)} AS ${dl.ident(d.target)}`)
+    .concat(
+      metrics.map((m) => `${dl.normalize(m.sql)} AS ${dl.ident(m.target)}`),
+      [dl.nowExpr]
+    )
+    .join(', ');
+  const whereParts = [...plan.filters.map((f) => `(${dl.normalize(f)})`)];
+  const timePart = dl.timeFilter(plan.timeColumn, plan.dateRange);
+  if (timePart) whereParts.push(timePart);
+  const groupBy = dims.length ? ` GROUP BY ${dims.map((d) => dl.normalize(d.sql)).join(', ')}` : '';
+  const selectSql = `SELECT ${selectTail} FROM ${dl.sourceTable(plan.fromTable)} t${
     whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''
   }${groupBy}`;
 
   const statements = [];
   if (!task.targetModelId) {
-    // 自动目标表：维度列 + 指标列 + _etl_time；upsert 需要维度主键
-    const colDefs = [
-      ...dims.map((d) => `\`${d.target}\` ${d.type} NOT NULL`),
-      ...metrics.map((m) => `\`${m.target}\` ${m.type} NOT NULL DEFAULT 0`),
-      '`_etl_time` DATETIME NULL',
+    // 自动目标表：维度列 + 指标列 + ETL 时间列；upsert 需要维度主键
+    const defs = [
+      ...dims.map((d) => `${dl.ident(d.target)} ${dl.columnType(d.type)} NOT NULL`),
+      ...metrics.map((m) => `${dl.ident(m.target)} ${dl.columnType(m.type)} DEFAULT 0 NOT NULL`),
+      `${dl.ident(dl.etlColumn)} ${dl.columnType('DATETIME')}`,
     ];
     if (task.writeMode === 'upsert') {
       if (!dims.length) throw paramInvalid('upsert 模式必须配置至少一个维度列作为主键');
-      colDefs.push(`PRIMARY KEY (${dims.map((d) => `\`${d.target}\``).join(', ')})`);
+      defs.push(`PRIMARY KEY (${dims.map((d) => dl.ident(d.target)).join(', ')})`);
     }
-    statements.push(
-      `CREATE TABLE IF NOT EXISTS \`${task.targetTable}\` (${colDefs.join(
-        ', '
-      )}) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-    );
+    statements.push(dl.createTable({ table: task.targetTable, defs }));
   }
-  if (task.writeMode === 'overwrite') statements.push(`TRUNCATE TABLE \`${task.targetTable}\``);
-  const colList = oracle ? cols.map((c) => c.toUpperCase()).join(', ') : cols.map((c) => `\`${c}\``).join(', ');
-  let insert = `INSERT INTO ${
-    oracle ? task.targetTable.toUpperCase() : `\`${task.targetTable}\``
-  } (${colList}) ${selectSql}`;
-  if (task.writeMode === 'upsert') {
-    insert += ` ON DUPLICATE KEY UPDATE ${metrics
-      .map((m) =>
-        oracle
-          ? `${m.target.toUpperCase()} = VALUES(${m.target.toUpperCase()})`
-          : `\`${m.target}\` = VALUES(\`${m.target}\`)`
-      )
-      .join(', ')}, _etl_time = NOW()`;
-  }
+  if (task.writeMode === 'overwrite') statements.push(dl.clearTarget(task.targetTable));
+  let insert = `INSERT INTO ${dl.table(task.targetTable)} (${cols.map((c) => dl.ident(c)).join(', ')}) ${selectSql}`;
+  if (task.writeMode === 'upsert') insert += dl.upsertTail(metrics.map((m) => m.target));
   statements.push(insert);
   return statements;
 };
@@ -328,6 +318,13 @@ const runTask = async (id, trigger = 'manual') => {
   const plan = await buildPlan(live, now);
   const statements = await buildStatements(live, plan);
   const ds = await datasourceRepository.getById(live.targetDatasourceId);
+  // 方言层没有 IF NOT EXISTS 的库（Oracle 12cR2 前）：先探数据字典，表已存在则跳过建表语句（幂等）
+  let execStatements = statements;
+  const probeSql = dialect.dialectOfSource(ds).tableExistsProbe(live.targetTable);
+  if (probeSql && execStatements.length && /^CREATE TABLE/i.test(execStatements[0])) {
+    const probe = await metricExecService.runSql(live.targetDatasourceId, probeSql);
+    if (Number(((probe.rows || [])[0] || [])[0]) > 0) execStatements = execStatements.slice(1);
+  }
   const run = await metricTaskRunRepository.create({
     taskId: live.id,
     trigger,
@@ -339,7 +336,7 @@ const runTask = async (id, trigger = 'manual') => {
 
   const startedAt = Date.now();
   try {
-    const data = await metricExecService.runExec(ds, statements, {
+    const data = await metricExecService.runExec(ds, execStatements, {
       instanceId: run.id,
       timeoutMs: Math.max(config.engine.sqlTimeoutMs, 600000),
     });

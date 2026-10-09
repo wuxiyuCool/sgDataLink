@@ -4,7 +4,7 @@
  * 场景 C：跨数据库语法识别（POST /metrics/validate 干跑）——MySQL/Oracle 函数、非法语法
  *         各按预期 valid 断言，同时统计时延（校验热路径 = node-sql-parser 探针 + 白名单）
  * 场景 D：编译 + 真库执行（POST /metrics/:id/preview）——MySQL 指标与 Oracle 指标并发，
- *         验证两种方言产物（LIMIT vs FETCH FIRST/TO_DATE）在真实库上的吞吐
+ *         验证两种方言产物（LIMIT vs ROWNUM 嵌套/TO_DATE）在真实库上的吞吐
  * 前置：admin 以 .env（DB_DRIVER=mysql）跑在 3001；引擎 8080 在线；真库里已有指标资产（否则 ask 全 clarify）
  * 跑法（cwd=node-express-boilerplate）：
  *   set -a; source .env; set +a

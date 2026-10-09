@@ -129,6 +129,21 @@
       </div>
       <Button size="small" type="dashed" block @click="addRule">+ 添加规则</Button>
 
+      <Alert
+        v-if="targetDsType === 'oracle'"
+        type="info"
+        show-icon
+        style="margin: 4px 0 12px"
+        message="Oracle 目标方言：建表/日期(TO_DATE)/行数(ROWNUM)/留痕列(ETL_TIME) 自动按 Oracle 生成；不支持 upsert；「空值填充」不能填空字符串（Oracle 空串等价 NULL），请填实际占位如 -"
+      />
+      <Alert
+        v-else-if="targetDsType === 'mysql'"
+        type="info"
+        show-icon
+        style="margin: 4px 0 12px"
+        message="MySQL 目标方言：自动 CREATE TABLE IF NOT EXISTS + utf8mb4，upsert 可用，日期用字符串字面量"
+      />
+
       <Divider orientation="left" style="margin-top: 12px">目标与调度</Divider>
       <Row :gutter="16">
         <Col :span="12">
@@ -146,16 +161,10 @@
         </Col>
         <Col :span="8">
           <FormItem label="写入模式">
-            <Select
-              v-model:value="form.writeMode"
-              :options="[
-                { label: '覆盖 overwrite', value: 'overwrite' },
-                { label: '追加 append', value: 'append' },
-                { label: '幂等 upsert（仅 MySQL）', value: 'upsert' },
-              ]"
-            />
+            <Select v-model:value="form.writeMode" :options="writeModeOptions" />
           </FormItem>
         </Col>
+
         <Col :span="8">
           <FormItem v-if="form.writeMode === 'upsert'" label="upsert 主键列">
             <Select v-model:value="form.upsertKeys" :options="dimensionOptions" mode="multiple" />
@@ -201,6 +210,7 @@
   import { computed, reactive, ref } from 'vue'
 
   import {
+    Alert,
     Button,
     Col,
     DatePicker,
@@ -212,6 +222,8 @@
     Select,
     Space,
   } from 'ant-design-vue'
+
+  import { getDatasourceApi } from '/@/api/databridge/datasource'
 
   import {
     createMetricTaskApi,
@@ -301,10 +313,41 @@
     }
   }
 
+  /** 目标数据源方言：oracle 目标不支持 upsert、空串等价 NULL，界面按此收敛可选项 */
+  const targetDsType = ref('')
+
+  const writeModeOptions = computed(() => [
+    { label: '覆盖 overwrite', value: 'overwrite' },
+    { label: '追加 append', value: 'append' },
+    {
+      label:
+        targetDsType.value === 'oracle'
+          ? '幂等 upsert（Oracle 暂不支持）'
+          : '幂等 upsert（仅 MySQL）',
+      value: 'upsert',
+      disabled: targetDsType.value === 'oracle',
+    },
+  ])
+
+  async function loadTargetDsType(datasourceId?: string) {
+    targetDsType.value = ''
+    if (!datasourceId) return
+    try {
+      const ds = await getDatasourceApi(datasourceId)
+      targetDsType.value = (ds as any)?.type || ''
+      if (targetDsType.value === 'oracle' && form.writeMode === 'upsert')
+        form.writeMode = 'overwrite'
+    } catch (error) {
+      // 类型拉不到只影响可选性提示，保存时后端仍会按方言拒绝
+      targetDsType.value = ''
+    }
+  }
+
   async function handleSourceChange(modelId: string) {
     dimensionOptions.value = []
     sourceDs.value = null
     form.targetDatasourceId = undefined
+    targetDsType.value = ''
     if (!modelId) return
     try {
       const detail = await getMetricModelApi(modelId)
@@ -319,6 +362,7 @@
         name: (detail as any).datasourceName || detail?.datasourceId || '',
       }
       form.targetDatasourceId = detail?.datasourceId
+      await loadTargetDsType(detail?.datasourceId)
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '源模型详情加载失败'))
     }
@@ -362,7 +406,21 @@
     }
   }
 
+  /** 必填项本地校验（保存与 Preview 共用）：返回第一条缺失提示，全齐返回空串 */
+  function requiredError(): string {
+    if (!form.name.trim()) return '请填写任务名称'
+    if (!form.sourceModelId) return '请选择源模型'
+    if (!form.metricIds.length) return '请至少勾选一个指标'
+    if (!form.targetTable.trim()) return '请填写目标表（不存在时任务执行会自动 CREATE）'
+    return ''
+  }
+
   async function handlePreview() {
+    const missing = requiredError()
+    if (missing) {
+      createMessage.warning(missing)
+      return
+    }
     previewLoading.value = true
     try {
       const result = await previewMetricTaskApi(buildPayload())
@@ -435,13 +493,9 @@
   })
 
   async function handleSubmit() {
-    if (
-      !form.name.trim() ||
-      !form.sourceModelId ||
-      !form.metricIds.length ||
-      !form.targetTable.trim()
-    ) {
-      createMessage.warning('名称/源模型/指标/目标表必填')
+    const missing = requiredError()
+    if (missing) {
+      createMessage.warning(missing)
       return
     }
     submitting.value = true

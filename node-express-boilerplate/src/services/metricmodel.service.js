@@ -4,6 +4,7 @@
  */
 const crypto = require('crypto');
 const { paramInvalid, notFound, metricTableConflict, metricReferenced } = require('../utils/bizError');
+const dialect = require('../utils/dialect');
 const metricModelRepository = require('../repositories/metricmodel.repository');
 const metricRepository = require('../repositories/metric.repository');
 const metricDomainRepository = require('../repositories/metricdomain.repository');
@@ -84,27 +85,37 @@ const assertTableFree = async ({ datasourceId, tableName, excludeId }) => {
   if (hit) throw metricTableConflict(`数据源 ${datasourceId} 下表 ${tableName} 已被模型「${hit.name}(${hit.id})」登记`);
 };
 
-/** 由列定义生成目标库 CREATE TABLE（域前缀+分层+名称），仅回显/留档，不执行 */
-const buildDdl = (domain, layer, tableName, columns) => {
-  const typeOf = (column) => {
-    const type = String(column.dataType || '').toUpperCase();
-    if (/^(TINYINT|SMALLINT|INT|INTEGER|BIGINT|DATE|DATETIME|TIMESTAMP|TEXT)/.test(type)) return type;
-    if (type.startsWith('DECIMAL') || type.startsWith('NUMBER'))
-      return `DECIMAL${type.replace(/^(DECIMAL|NUMBER)/, '') || '(18,4)'}`;
-    if (/^(VARCHAR|CHAR)/.test(type))
-      return type.startsWith('VARCHAR') ? type : `VARCHAR(${(type.match(/\d+/) || [64])[0]})`;
-    return 'VARCHAR(255)';
-  };
+/**
+ * 界面建表（createType=ddl）的 DDL 文本，按目标数据源方言生成（方言层 §6.4）。
+ * 只用于留档与前端回显，不自动执行；Oracle 没有内联 COMMENT，注释拆成 COMMENT ON 语句。
+ * @param {Object} [source] 数据源对象或类型字符串，缺省按 mysql
+ */
+const buildDdl = (domain, layer, tableName, columns, source) => {
+  const dl = dialect.dialectOfSource(source || 'mysql');
+  const esc = (text) => String(text).replace(/'/g, "''");
   const lines = columns.map((column) => {
-    const comment =
-      column.bizName || column.remark ? ` COMMENT '${String(column.bizName || column.remark).replace(/'/g, "''")}'` : '';
-    return `  \`${column.columnName}\` ${typeOf(column)} NOT NULL${comment}`;
+    const comment = column.bizName || column.remark ? String(column.bizName || column.remark) : '';
+    const inline = dl.type === 'mysql' && comment ? ` COMMENT '${esc(comment)}'` : '';
+    return `  ${dl.ident(column.columnName)} ${dl.columnType(column.dataType)} NOT NULL${inline}`;
   });
-  const keys = columns.filter((column) => column.isKey).map((column) => `\`${column.columnName}\``);
+  const keys = columns.filter((column) => column.isKey).map((column) => dl.ident(column.columnName));
   if (keys.length) lines.push(`  PRIMARY KEY (${keys.join(', ')})`);
-  return `CREATE TABLE IF NOT EXISTS \`${tableName}\` (\n${lines.join(
-    ',\n'
-  )}\n) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT '${layer} | domain=${domain.code}'`;
+  const tableComment = `${layer} | domain=${domain.code}`;
+  if (dl.type === 'mysql') {
+    return `${dl.createTable({ table: tableName, defs: lines })} COMMENT '${esc(tableComment)}'`;
+  }
+  const comments = [
+    `COMMENT ON TABLE ${dl.table(tableName)} IS '${esc(tableComment)}'`,
+    ...columns
+      .filter((column) => column.bizName || column.remark)
+      .map(
+        (column) =>
+          `COMMENT ON COLUMN ${dl.table(tableName)}.${dl.ident(column.columnName)} IS '${esc(
+            String(column.bizName || column.remark)
+          )}'`
+      ),
+  ];
+  return `${dl.createTable({ table: tableName, defs: lines })};\n${comments.join(';\n')}`;
 };
 
 /** 组合物理表名：{域前缀}_{layer小写}_{name 清洗}；中文名清洗为空时用名称哈希兜底（确定性、可重复） */
@@ -179,7 +190,7 @@ const createModel = async (data, operator = '') => {
     layer: data.layer,
     tableName,
     createType,
-    tableDdl: createType === 'ddl' ? buildDdl(domain, data.layer, tableName, columns) : null,
+    tableDdl: createType === 'ddl' ? buildDdl(domain, data.layer, tableName, columns, ds) : null,
     timeColumn: data.timeColumn || (columns.find((c) => c.role === 'time') || {}).columnName || '',
     status: data.status || 'online',
     remark: String(data.remark || ''),
@@ -223,17 +234,23 @@ const deleteModel = async (id) => {
   return { id, deleted: true };
 };
 
-/** POST /metric-models/preview-ddl：域+分层+列定义 → 表名与 CREATE TABLE 回显（不落库、不执行） */
-const previewDdl = async ({ domainId, layer, name, tableName, columns }) => {
+/** POST /metric-models/preview-ddl：域+分层+列定义（+目标数据源，决定方言）→ 表名与 CREATE TABLE 回显（不落库、不执行） */
+const previewDdl = async ({ domainId, layer, name, tableName, columns, datasourceId }) => {
   const domain = await getDomainOrFail(domainId);
   if (!LAYERS.includes(layer)) throw paramInvalid(`layer ∈ ${LAYERS.join('|')}`);
   const finalTable = tableName ? String(tableName) : composeTableName(domain, layer, name);
   if (!IDENT_PATTERN.test(finalTable)) throw paramInvalid(`tableName 非法: ${finalTable}`);
   const cols = assertColumns(Array.isArray(columns) ? columns : []);
   if (!cols.length) throw paramInvalid('preview-ddl 需要至少一列');
+  const source = datasourceId ? await getDatasourceOrFail(datasourceId) : 'mysql';
   const models = active(await metricModelRepository.list());
   const conflict = models.some((model) => String(model.tableName).toLowerCase() === finalTable.toLowerCase());
-  return { tableName: finalTable, conflict, ddl: buildDdl(domain, layer, finalTable, cols) };
+  return {
+    tableName: finalTable,
+    conflict,
+    dialect: dialect.dialectOfSource(source).type,
+    ddl: buildDdl(domain, layer, finalTable, cols, source),
+  };
 };
 
 module.exports = {

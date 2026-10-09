@@ -12,21 +12,17 @@
  *  - COMPOSITE 跨模型：标量（无维度）+ 标量子查询拼接；Oracle 补 FROM DUAL；带维度直接拒绝
  */
 const { paramInvalid } = require('../utils/bizError');
+const dialect = require('../utils/dialect');
 const metricService = require('./metric.service');
 const metricRepository = require('../repositories/metric.repository');
 const metricDepRepository = require('../repositories/metricdep.repository');
 const metricModelRepository = require('../repositories/metricmodel.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
 
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const AGG_CALL = /^(SUM|COUNT|AVG|MAX|MIN)\((DISTINCT )?(.+)\)$/i;
 
-/**
- * 跨库函数归一：语法探针（node-sql-parser）对方言函数宽容互认，故 Oracle 的 NVL、
- * MySQL 的 IFNULL 能通过校验却会在对方库执行期报「FUNCTION does not exist」。
- * 编译期统一改写成两库都支持的 ANSI COALESCE，用户写法保持不变。
- */
-const normalizeDialectFns = (expr) => String(expr || '').replace(/\b(NVL|IFNULL)\s*\(/gi, 'COALESCE(');
+/** 与目标库无关的归一（NVL/IFNULL→COALESCE）先做掉；方言专属改写等拿到目标方言后再做 */
+const normalizePortable = (expr) => dialect.normalizeExpr('', expr);
 
 /** 聚合表达式套过滤：SUM(t.a) + f → SUM(CASE WHEN f THEN t.a END)；无法安全包裹时原样返回 */
 const wrapAggWithFilter = (aggExpr, filterSql) => {
@@ -37,34 +33,11 @@ const wrapAggWithFilter = (aggExpr, filterSql) => {
   return `${fn}(${distinct || ''}CASE WHEN ${filterSql} THEN ${arg.trim()} END)`;
 };
 
-const assertDate = (label, value) => {
-  if (!DATE_PATTERN.test(String(value || ''))) throw paramInvalid(`${label} 需为 YYYY-MM-DD`);
-};
-
-/** 时间过滤（BETWEEN/>=/<=）；列统一加 t. 前缀；oracle=true 时日期包 TO_DATE */
-const timeFilter = (timeColumn, dateRange, oracle = false) => {
-  if (!dateRange || (!dateRange.start && !dateRange.end)) return null;
-  if (!timeColumn) throw paramInvalid('模型未配置时间列，无法按时间范围编译（可在模型上设置 timeColumn）');
-  const col = `t.${timeColumn}`;
-  // Oracle 日期列不能与裸字符串比较（ORA-01861），须包 TO_DATE；MySQL 用字符串字面量即可
-  const lit = (v) => (oracle ? `TO_DATE('${v}','YYYY-MM-DD')` : `'${v}'`);
-  if (dateRange.start && dateRange.end) {
-    assertDate('dateRange.start', dateRange.start);
-    assertDate('dateRange.end', dateRange.end);
-    return `${col} BETWEEN ${lit(dateRange.start)} AND ${lit(dateRange.end)}`;
-  }
-  if (dateRange.start) {
-    assertDate('dateRange.start', dateRange.start);
-    return `${col} >= ${lit(dateRange.start)}`;
-  }
-  assertDate('dateRange.end', dateRange.end);
-  return `${col} <= ${lit(dateRange.end)}`;
-};
-
-const isOracle = async (datasourceId) => {
-  if (!datasourceId) return false;
+const dialectOfDatasource = async (datasourceId) => {
+  if (!datasourceId) return dialect.mysql;
   const ds = await datasourceRepository.getById(datasourceId);
-  return Boolean(ds && ds.type === 'oracle');
+  if (!ds) return dialect.mysql;
+  return dialect.dialectOfSource(ds);
 };
 
 const resolveModel = async (metric) => {
@@ -153,7 +126,7 @@ const expandCompositeExpr = async (metric, visited) => {
   if (missing.length) throw paramInvalid(`公式引用的指标不在依赖表: ${missing.join(',')}`);
 
   const scope = emptyScope();
-  let expr = normalizeDialectFns(metric.expr);
+  let expr = normalizePortable(metric.expr);
   // refs 逐个替换且每步读库，必须顺序执行
   // eslint-disable-next-line no-restricted-syntax
   for (const code of refs) {
@@ -193,7 +166,7 @@ const expandScalarExpr = async (metric, dateRange, visited) => {
   const byCode = new Map(children.map((child) => [child.code, child]));
   const refs = metricService.parseRefs(metric.expr);
   let datasourceId = null;
-  let expr = normalizeDialectFns(metric.expr);
+  let expr = normalizePortable(metric.expr);
   // eslint-disable-next-line no-restricted-syntax
   for (const code of refs) {
     const child = byCode.get(code);
@@ -204,31 +177,30 @@ const expandScalarExpr = async (metric, dateRange, visited) => {
       const inner = await expandScalarExpr(child, dateRange, nextVisited);
       datasourceId = datasourceId || inner.datasourceId;
       // eslint-disable-next-line no-await-in-loop
-      const dual = (await isOracle(datasourceId)) ? ' FROM DUAL' : '';
-      frag = `(SELECT ${inner.expr} AS metric_value${dual})`;
+      const dl = await dialectOfDatasource(datasourceId);
+      frag = `(SELECT ${inner.expr} AS metric_value${dl.dual})`;
     } else {
       // eslint-disable-next-line no-await-in-loop
       const leaf = await resolveLeaf(child.id, new Set());
       if (!leaf) throw paramInvalid(`指标 ${code} 无法折叠为聚合叶子`);
       datasourceId = datasourceId || leaf.datasourceId;
       // eslint-disable-next-line no-await-in-loop
-      const tf = timeFilter(leaf.timeColumn, dateRange, await isOracle(leaf.datasourceId));
-      frag = `(SELECT ${leaf.aggExpr} FROM ${leaf.table} t${tf ? ` WHERE ${tf}` : ''})`;
+      const dl = await dialectOfDatasource(leaf.datasourceId);
+      const tf = dl.timeFilter(leaf.timeColumn, dateRange);
+      frag = `(SELECT ${dl.normalize(leaf.aggExpr)} FROM ${dl.sourceTable(leaf.table)} t${tf ? ` WHERE ${tf}` : ''})`;
     }
     expr = expr.replace(`\${${code}}`, frag);
   }
   return { expr, datasourceId };
 };
 
-const buildSelect = ({ selectDims, expr, code, table, whereParts, limit, oracle }) => {
-  // Oracle 无 LIMIT：12c+ 用 FETCH FIRST n ROWS ONLY（须置于 ORDER BY 之后）
-  const limitClause = oracle ? ` FETCH FIRST ${limit} ROWS ONLY` : ` LIMIT ${limit}`;
-  return (
-    `SELECT ${[...selectDims, `${expr} AS ${code}`].join(', ')} FROM ${table} t` +
+const buildSelect = ({ selectDims, expr, code, table, whereParts, limit, dl }) => {
+  const body =
+    `SELECT ${[...selectDims, `${expr} AS ${code}`].join(', ')} FROM ${dl.sourceTable(table)} t` +
     `${whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''}` +
     `${selectDims.length ? ` GROUP BY ${selectDims.join(', ')}` : ''}` +
-    `${selectDims.length ? ` ORDER BY ${selectDims.join(', ')}` : ''}${limitClause}`
-  );
+    `${selectDims.length ? ` ORDER BY ${selectDims.join(', ')}` : ''}`;
+  return dl.limit(body, limit);
 };
 
 /**
@@ -243,21 +215,20 @@ const compileMetric = async (metricId, options = {}) => {
   if (metric.type === 'ATOMIC' || metric.type === 'DERIVED') {
     const leaf = await resolveLeaf(metric.id, new Set());
     assertDimensions(dimensions, leaf.columns, leaf.allowedDimensions);
-    const ds = await datasourceRepository.getById(leaf.datasourceId);
-    const oracle = Boolean(ds && ds.type === 'oracle');
+    const dl = await dialectOfDatasource(leaf.datasourceId);
     const sql = buildSelect({
       selectDims: dimensions.map((dim) => `t.${dim}`),
-      expr: leaf.aggExpr,
+      expr: dl.normalize(leaf.aggExpr),
       code: metric.code,
       table: leaf.table,
-      whereParts: [timeFilter(leaf.timeColumn, dateRange, oracle)].filter(Boolean),
+      whereParts: [dl.timeFilter(leaf.timeColumn, dateRange)].filter(Boolean),
       limit: safeLimit,
-      oracle,
+      dl,
     });
     return {
       sql,
       datasourceId: leaf.datasourceId,
-      dialect: ds ? ds.type : 'mysql',
+      dialect: dl.type,
       modelId: leaf.modelId,
       merged: true,
     };
@@ -272,21 +243,20 @@ const compileMetric = async (metricId, options = {}) => {
     for (const dimScope of merged.scope.dimensionScopes) {
       assertDimensions(dimensions, model.columns, dimScope);
     }
-    const ds = await datasourceRepository.getById(merged.scope.datasourceId);
-    const oracle = Boolean(ds && ds.type === 'oracle');
+    const dl = await dialectOfDatasource(merged.scope.datasourceId);
     const sql = buildSelect({
       selectDims: dimensions.map((dim) => `t.${dim}`),
-      expr: merged.expr,
+      expr: dl.normalize(merged.expr),
       code: metric.code,
       table: model.tableName,
-      whereParts: [timeFilter(merged.scope.timeColumn, dateRange, oracle)].filter(Boolean),
+      whereParts: [dl.timeFilter(merged.scope.timeColumn, dateRange)].filter(Boolean),
       limit: safeLimit,
-      oracle,
+      dl,
     });
     return {
       sql,
       datasourceId: merged.scope.datasourceId,
-      dialect: ds ? ds.type : 'mysql',
+      dialect: dl.type,
       modelId: merged.scope.modelId,
       merged: true,
     };
@@ -297,12 +267,11 @@ const compileMetric = async (metricId, options = {}) => {
     throw paramInvalid('跨表复合指标一期仅支持标量查询（不带维度）；同表口径参见 METRIC-DEV §6.3 规则4');
   }
   const scalar = await expandScalarExpr(metric, dateRange, new Set());
-  const dual = (await isOracle(scalar.datasourceId)) ? ' FROM DUAL' : '';
-  const ds = await datasourceRepository.getById(scalar.datasourceId);
+  const dl = await dialectOfDatasource(scalar.datasourceId);
   return {
-    sql: `SELECT ${scalar.expr} AS ${metric.code}${dual}`,
+    sql: `SELECT ${dl.normalize(scalar.expr)} AS ${metric.code}${dl.dual}`,
     datasourceId: scalar.datasourceId,
-    dialect: ds ? ds.type : 'mysql',
+    dialect: dl.type,
     modelId: null,
     merged: false,
   };
@@ -334,9 +303,10 @@ const compileMetricExpr = async (metricId) => {
 };
 
 module.exports = {
-  DATE_PATTERN,
+  DATE_PATTERN: dialect.DATE_PATTERN,
   wrapAggWithFilter,
-  timeFilter,
+  normalizePortable,
+  dialectOfDatasource,
   resolveLeaf,
   compileMetric,
   compileMetricExpr,

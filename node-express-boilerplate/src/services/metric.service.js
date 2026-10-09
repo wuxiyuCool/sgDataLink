@@ -9,6 +9,8 @@ const metricRepository = require('../repositories/metric.repository');
 const metricDepRepository = require('../repositories/metricdep.repository');
 const metricVersionRepository = require('../repositories/metricversion.repository');
 const metricModelRepository = require('../repositories/metricmodel.repository');
+const datasourceRepository = require('../repositories/datasource.repository');
+const dialect = require('../utils/dialect');
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]{2,63}$/;
 const REF_PATTERN = /\$\{([a-z][a-z0-9_]{2,63})\}/g;
@@ -42,38 +44,28 @@ const TREE_MAX_DEPTH = 8;
 const active = (items) => items.filter((item) => !item.delFlag);
 
 /**
- * 跨库方言告警：语法探针（node-sql-parser）对 mysql/oracle 函数宽容互认，
- * 因此「写得进、跑不了」的函数只能在保存期提示。NVL/IFNULL 已由编译器归一为
- * COALESCE（两库通用），不在此列；下列函数无等价改写，需用户按目标库自查。
+ * 指标涉及的唯一数据源 → 方言（跨源或无源时回落 mysql，只为出提示用）。
+ * 语法探针（node-sql-parser）对 mysql/oracle 函数宽容互认，「写得进、跑不了」的写法
+ * 只能在保存期按目标方言提示，具体规则表在 utils/dialect。
  */
-const DIALECT_ONLY_FNS = {
-  DECODE: 'Oracle',
-  NVL2: 'Oracle',
-  TO_CHAR: 'Oracle',
-  TO_DATE: 'Oracle',
-  TO_NUMBER: 'Oracle',
-  TRUNC: 'Oracle',
-  REGEXP_LIKE: 'Oracle',
-  DATE_FORMAT: 'MySQL',
-  STR_TO_DATE: 'MySQL',
-  GROUP_CONCAT: 'MySQL',
-  SUBSTRING_INDEX: 'MySQL',
-};
-// 静态正则（避免动态构造 RegExp）：带括号的函数名 + 无括号的 SYSDATE/ROWNUM 分别匹配
-const DIALECT_FN_CALL_RE =
-  /\b(DECODE|NVL2|TO_CHAR|TO_DATE|TO_NUMBER|TRUNC|REGEXP_LIKE|DATE_FORMAT|STR_TO_DATE|GROUP_CONCAT|SUBSTRING_INDEX)\s*\(/g;
-const DIALECT_BARE_RE = /\b(SYSDATE|ROWNUM)\b/g;
-const dialectFnWarnings = (label, text) => {
-  const upper = String(text || '').toUpperCase();
-  const hits = [];
-  [...upper.matchAll(DIALECT_FN_CALL_RE)].forEach((m) => hits.push(m[1]));
-  [...upper.matchAll(DIALECT_BARE_RE)].forEach((m) => hits.push(m[1]));
-  return [...new Set(hits)].map(
-    (fn) =>
-      `${label}含 ${
-        DIALECT_ONLY_FNS[fn] || 'Oracle'
-      } 专有函数 ${fn}，换库执行会报「函数/标识符不存在」；跨库请优先用 COALESCE/CASE WHEN`
-  );
+const resolveMetricDialect = async ({ defineParams, resolved, models }) => {
+  const datasourceIds = new Set();
+  const modelOf = (metric) => models.find((m) => m.id === (metric.modelId || (metric.defineParams || {}).modelId));
+  const selfModel = models.find((m) => m.id === defineParams.modelId);
+  if (selfModel) datasourceIds.add(selfModel.datasourceId);
+  resolved.forEach((metric) => {
+    const model = modelOf(metric);
+    if (model) datasourceIds.add(model.datasourceId);
+  });
+  if (datasourceIds.size !== 1) return dialect.mysql;
+  const ds = await datasourceRepository.getById([...datasourceIds][0]);
+  if (!ds) return dialect.mysql;
+  try {
+    return dialect.dialectOfSource(ds);
+  } catch (err) {
+    // 数据源是 postgresql 等未接入方言：不阻断校验，按默认出提示
+    return dialect.mysql;
+  }
 };
 
 /** 语法探针：把表达式放进 SELECT 里解析，报错即语法非法 */
@@ -320,8 +312,9 @@ const validateMetric = async (data, selfId = null) => {
     }
   }
 
-  warnings.push(...dialectFnWarnings('公式', data.expr));
-  warnings.push(...dialectFnWarnings('过滤条件', defineParams.filterSql));
+  const dl = await resolveMetricDialect({ defineParams, resolved, models });
+  warnings.push(...dl.warnings('公式', data.expr));
+  warnings.push(...dl.warnings('过滤条件', defineParams.filterSql));
 
   return { errors, warnings, type, refs };
 };

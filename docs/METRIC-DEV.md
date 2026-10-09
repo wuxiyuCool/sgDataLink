@@ -600,6 +600,24 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 
 **V9 后压测与示例库（2026-10-09）**：① **跨库语法识别核查**——实测 node-sql-parser 探针对 mysql/oracle 方言函数**宽容互认**（两方言都能解析 NVL/TO_CHAR/TO_DATE/DECODE/TRUNC/REGEXP_LIKE/`||`），故探针无需按方言分支；但由此暴露真 bug：示例指标 `ex_nvl_safe` 校验通过、**MySQL 执行期报 `FUNCTION datalink.NVL does not exist`**。修复＝编译期把 `NVL(`/`IFNULL(` 归一为两库通用的 `COALESCE(`（`normalizeDialectFns`，metricCompiler 两处 expr 读取点），并对无法等价改写的方言专有函数（Oracle DECODE/NVL2/TO_CHAR/TO_DATE/TO_NUMBER/TRUNC/REGEXP_LIKE/SYSDATE/ROWNUM、MySQL DATE_FORMAT/STR_TO_DATE/GROUP_CONCAT/SUBSTRING_INDEX）在 validate/保存响应回 **warnings**（不阻断保存）。复合公式标量白名单从 7 个扩到 19 个。② **bench-metric.js 新增场景 C/D**：C＝11 类公式打 `POST /metrics/validate` 干跑并按预期 valid 断言（257 TPS @conc50，**正确性 100%**）；D＝三指标 preview 真库执行（MySQL 原子 122 TPS / p50 157ms，MySQL 复合 63 TPS，**Oracle gk1 34 TPS / p50 564ms**，零错误）。③ **示例指标库 `ex_*` 15 条**固化进 `seed-metric-demo.js`：7 原子（sum/count/avg/max 四种聚合 + FIELD 手写表达式 + 两个 filterSql 案例）、2 派生（继承基底+过滤 / +timePreset）、6 复合（四则 / 比率 / NULLIF 防除零 / CASE 分档 / NVL 跨方言 / GREATEST），dataFormat 覆盖 THOUSANDTH/DECIMAL/PERCENT，**每条 caliber 字段即一句配置说明书**；15/15 preview 真跑通过，`docs/METRIC-DEMO.md` 有对照表、指标页指南卡给出 `ex_` 检索入口。④ 修正 gk1 列名笔误（exted_col7→EXTEND_COL7），Oracle 真实返回 238545。回归：compile 51→60 全绿，base40/model39/sql19/task29/chat19/chat-api19 无回归。
 
+**V10 方言层收敛（2026-10-09）**：用户报「测试老是出现不同数据库语法问题」+ 生产 Oracle 物化任务失败（`连接 10.45.66.32:1521/zzgldb 失败: dial tcp` 15s 超时，与 `dbio.ConnectTimeout=15s` 吻合 → 那一条是**集群到 66 网段的网络问题，不是 SQL 问题**；但同一条任务的 SQL 明细里暴露了第二类问题）。盘点发现方言判断散在 4 个文件里各写 `ds.type === 'oracle'`，且**有 5 个 SQL 生成点**，其中两处完全漏改：
+
+| 生成点 | 收敛前状态 |
+|---|---|
+| `metricCompiler` 试跑/预览 | 已按方言出 TO_DATE/行数限制（V9 批3 修的） |
+| `metrictask.buildStatements` 物化 | 建表/TRUNCATE **只有 MySQL 写法**（反引号+ENGINE+utf8mb4+DATETIME），时间窗**恒用裸字符串** |
+| `metricmodel.buildDdl` 界面建表 | **完全 MySQL-only**，Oracle 源上预览即错 |
+| `metricExec.previewModel` | 有 ROWNUM 分支，但手写 |
+| `metricChat.assembleSelect` 问数落地 | **完全 MySQL-only**（反引号别名 + 裸日期 + LIMIT）→ Oracle 源上问数必炸 |
+
+落地：新建 `src/utils/dialect.js` 作为 mysql/oracle 文本差异的唯一来源（标识符/表名、日期字面量、行数限制、now 表达式、ETL 留痕列名、MySQL 风格类型→Oracle 类型 + VARCHAR2 4000 上限拦截、CREATE TABLE、数据字典幂等探测、TRUNCATE、upsert 支持位、列注释拆 COMMENT ON、`FROM DUAL`、函数归一与跨库告警表、`supports.emptyStringIsNull`），五个生成点全部改为向它取片段，`ds.type === 'oracle'` 布尔分支清空。
+
+行为变更（都属修 bug，需要知道）：① Oracle 行数限制由 `FETCH FIRST n ROWS ONLY` 改 **ROWNUM 嵌套**（12c+ 才支持 FETCH FIRST，与引擎侧 `dbio` 的 oracle 分页口径对齐，11g/12c 通用）；② Oracle 目标 ETL 留痕列 `_etl_time` → **`ETL_TIME`**（Oracle 非引号标识符必须字母开头，下划线开头会 ORA-00911，**跨库列名从此不同，属已知差异**）；③ Oracle 目标 `IF NOT EXISTS` 缺失 → 执行前 `SELECT COUNT(*) FROM user_tables` 探测，存在即跳过建表（幂等等价）；④ Oracle upsert 从执行期拒提前到**保存期 40001**；⑤ Oracle 目标 `cleanRules` 的 fill 空串在**保存期 40001**（Oracle 空串等价 NULL，填 `''` 会静默变成没填）；⑥ Oracle 目标自动把 `DATE_FORMAT(x,'%Y-%m')` 翻译成 `TO_CHAR(x,'YYYY-MM')`，掩码含未覆盖 `%码` 时不改写只告警；⑦ `postgresql` 等未接入方言从「静默按 MySQL 生成」改为显式 40001。告警规则表补 `TO_NUMBER/NUMTODSINTERVAL/IF/FIND_IN_SET`。
+
+回归：新增**离线**套件 `deploy/tests/test-metric-dialect.js`（`datasource.repository` 用 require.cache 桩替换，不连库、不起服务，任何机器可跑）**47 条断言全绿**，覆盖双方言 DDL/时间窗/行数/类型映射/幂等探测/upsert/空串 fill/函数归一与告警/模型 DDL 预览/未接入方言拒绝；`test-metric-compile` 的 Oracle 断言同步改 ROWNUM 口径。前端 `TaskModal` 选到 Oracle 源时禁用 upsert 并显示方言提示条，`guides.ts` 三页指南卡补方言说明；`docs/API.md` 1.12 增「方言产物对照表」。⚠️ 依赖真实库的 HTTP 套件（compile/task/model/sql/chat）本轮**未跑**：联调管理员 `mtlint01` 口令已被改（40103），在共享元库上建/改账号需要先授权。
+
+
+
 ## 12. 红线汇总（AI 实施时必须遵守）
 
 1. `docs/API.md` 是唯一契约真源：先写契约再实现，三端同步改。
@@ -610,3 +628,4 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 6. 每次改动跑 `deploy/tests` 回归并更新文档（用户长期要求）；回归脚本收进仓库，不放临时目录。
 7. 复合指标跨数据源计算一期禁止（编译期校验 refs 的 datasource 一致性）。
 8. engine `/sql/*` 及回报通道必须启用 `ENGINE_SHARED_SECRET`（生产/本地生产测试态禁止空配置上线；见 §8.2 鉴权）。
+9. **SQL 文本的方言差异只能来自 `src/utils/dialect.js`**：任何生成 SQL 的代码（编译/物化/建表预览/数据预览/问数落地）禁止再写 `ds.type === 'oracle'` 之类的本地分支，需要新差异就往方言层加字段/方法，并同步 `deploy/tests/test-metric-dialect.js`（离线，不连库）与 `docs/API.md` 的方言对照表。

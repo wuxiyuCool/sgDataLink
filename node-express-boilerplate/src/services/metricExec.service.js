@@ -4,6 +4,7 @@
  */
 const config = require('../config/config');
 const { datasourceExecFailed, paramInvalid } = require('../utils/bizError');
+const dialect = require('../utils/dialect');
 const engineClient = require('../utils/engineClient');
 const datasourceRepository = require('../repositories/datasource.repository');
 const metricCompilerService = require('./metricCompiler.service');
@@ -59,9 +60,8 @@ const previewModel = async (model, { size = 20 } = {}) => {
   const table = String(model.tableName || '').replace(/[^A-Za-z0-9_.]/g, '');
   if (!table) throw paramInvalid('模型表名非法');
   const limit = Math.min(Math.max(parseInt(size, 10) || 20, 1), 1000);
-  const oracle = (await datasourceRepository.getById(model.datasourceId)).type === 'oracle';
-  const sql = oracle ? `SELECT * FROM ${table} WHERE ROWNUM <= ${limit}` : `SELECT * FROM \`${table}\` LIMIT ${limit}`;
-  return runSql(model.datasourceId, sql, { limit });
+  const dl = dialect.dialectOfSource(await datasourceRepository.getById(model.datasourceId));
+  return runSql(model.datasourceId, dl.limit(`SELECT * FROM ${dl.table(table)}`, limit), { limit });
 };
 
 /** 白名单语句序列执行（M4 物化）：走 engine /sql/exec 同步模式 */
