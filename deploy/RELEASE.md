@@ -126,6 +126,29 @@ kubectl -n databridge rollout status deploy/databridge-engine
 kubectl -n databridge rollout status deploy/databridge-web
 ```
 
-**上线后验证**：浏览器 Ctrl+F5 → 指标中心 7 页可进、首页统计有真数、问数能答、
+**上线后**：浏览器 Ctrl+F5 → 指标中心 7 页可进、首页统计有真数、问数能答、
 任务能物化；生产 admin 需配 `ENGINE_SHARED_SECRET`（engine 与 admin 同值），
 本地过渡态空密钥禁止上线。回滚：`kubectl set image` 回上一 tag（如 v8）。
+
+### ⚠️ v9 必做：配置引擎共享密钥（此前 k8s 清单未注入）
+
+`ENGINE_SHARED_SECRET` 两侧**只从环境变量读**（engine 不读 `config/*.yml`），
+v9 起已写进 `deploy/k8s/admin.yaml` + `engine.yaml` 的 env，值取自同一个 Secret。
+首次部署（或该 Secret 里还没有这个 key）执行：
+
+```bash
+# 生成一个随机密钥并写入既有 Secret（已存在 MYSQL_PASSWORD 的 Secret 上追加）
+KEY="$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 24)"
+kubectl -n databridge patch secret databridge-db-secret \
+  --type merge -p "{\"stringData\":{\"ENGINE_SHARED_SECRET\":\"$KEY\"}}"
+
+# 让两侧重新读取 env（admin 与 engine 都要重启，值必须一致）
+kubectl -n databridge rollout restart deploy/databridge-admin
+kubectl -n databridge rollout restart deploy/databridge-engine
+
+# 验证：engine 启动日志不应再出现「ENGINE_SHARED_SECRET 未配置：无鉴权过渡态」WARN
+kubectl -n databridge logs deploy/databridge-engine | grep -i "ENGINE_SHARED_SECRET\|WARN"
+```
+
+漏配的后果：engine 空密钥=放行（功能可用但接口无鉴权）；两侧值不一致=admin 调
+engine 全部 401/code 40101，指标试跑/物化任务/问数都会失败。

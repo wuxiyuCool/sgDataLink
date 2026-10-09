@@ -43,6 +43,12 @@ spec:
                 secretKeyRef:
                   name: databridge-db-secret
                   key: MYSQL_PASSWORD
+            # 契约 v1.12 引擎共享密钥：必须与 engine 侧同值，否则调用被 401/40101 拒
+            - name: ENGINE_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: databridge-db-secret
+                  key: ENGINE_SHARED_SECRET
           envFrom:
             - configMapRef:
                 name: databridge-config

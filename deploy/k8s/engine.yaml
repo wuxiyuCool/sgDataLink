@@ -34,6 +34,13 @@ spec:
               value: http://databridge-admin:3001/api/v1/engine
             - name: MOCK_TICK_MS
               value: "1000"
+            # 契约 v1.12 引擎共享密钥：与 admin 侧同名同值（X-Engine-Token 校验）
+            # 留空则引擎放行并打启动 WARN —— 生产禁止空值上线
+            - name: ENGINE_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: databridge-db-secret
+                  key: ENGINE_SHARED_SECRET
           readinessProbe:
             httpGet:
               path: /health
