@@ -82,14 +82,18 @@
             />
           </FormItem>
         </Col>
-        <Col :span="12">
+        <Col v-if="isUpdate" :span="12">
           <FormItem label="状态" name="status">
-            <Select
-              v-model:value="formState.status"
-              :options="[
-                { label: '启用', value: 'online' },
-                { label: '停用', value: 'offline' },
-              ]"
+            <Select v-model:value="formState.status" :options="MODEL_STATUS_OPTIONS" />
+          </FormItem>
+        </Col>
+        <Col v-else :span="12">
+          <FormItem label="状态">
+            <Input
+              :value="
+                formState.createType === 'ddl' ? '新建为草稿（启用后可生成表）' : '引用表：直接可用'
+              "
+              disabled
             />
           </FormItem>
         </Col>
@@ -102,13 +106,16 @@
 
       <template v-if="formState.createType === 'ddl'">
         <Divider orientation="left"
-          >字段定义（保存即生成建表 DDL，物理表由清洗汇总任务首次执行时创建）</Divider
+          >字段定义（保存只生成草稿与 DDL；列表页「启用」后点「生成表」才在目标库真建表）</Divider
         >
-        <ColumnsEditor v-model="columnsState" allow-struct />
+        <ColumnsEditor v-model="columnsState" allow-struct :dialect-type="dialectType" />
         <div class="mt-2">
           <Button size="small" :loading="ddlLoading" @click="handlePreviewDdl"
             >生成 DDL 预览</Button
           >
+          <span v-if="ddlDialect" class="ml-2 text-xs opacity-70">
+            已按 {{ ddlDialect === 'oracle' ? 'Oracle' : 'MySQL' }} 方言生成
+          </span>
         </div>
         <pre v-if="ddlText" class="ddl-block">{{ ddlText }}</pre>
       </template>
@@ -118,6 +125,13 @@
         type="info"
         show-icon
         message="引用模式：保存时自动拉取真实表结构并识别维度/时间/度量角色，之后可在「字段」里维护业务名。"
+      />
+      <Alert
+        v-if="formState.createType === 'ddl' && !isUpdate"
+        class="mt-2"
+        type="info"
+        show-icon
+        message="界面建表三步走：① 这里填字段并保存（草稿，可反复改）→ ② 列表页点「启用」→ ③ 点「生成表」在目标库真建表。草稿不能被指标/任务引用，也不会误建表。"
       />
     </Form>
   </BasicModal>
@@ -144,7 +158,7 @@
   import { useMessage } from '/@/hooks/web/useMessage'
 
   import TableSelect from '../../databridge/components/TableSelect.vue'
-  import { LAYER_OPTIONS } from '../data'
+  import { LAYER_OPTIONS, MODEL_STATUS_OPTIONS } from '../data'
   import ColumnsEditor from './ColumnsEditor.vue'
 
   const FormItem = Form.Item
@@ -157,8 +171,11 @@
   const submitting = ref(false)
   const domainOptions = ref<any[]>([])
   const dsOptions = ref<{ label: string; value: string }[]>([])
+  /** 数据源 id → 类型：决定字段类型目录与 DDL 用哪家方言 */
+  const dsTypes = ref<Record<string, string>>({})
   const columnsState = ref<MetricModelColumn[]>([])
   const ddlText = ref('')
+  const ddlDialect = ref('')
   const ddlLoading = ref(false)
 
   const CREATE_TYPE_OPTIONS = [
@@ -178,6 +195,10 @@
     status: 'online',
     remark: '',
   })
+
+  const dialectType = computed(() =>
+    dsTypes.value[formState.datasourceId || ''] === 'oracle' ? 'oracle' : 'mysql',
+  )
 
   const getRules = computed(() => ({
     name: [{ required: true, message: '请输入模型名称' }],
@@ -229,10 +250,15 @@
     if (!dsOptions.value.length) {
       try {
         const page = await getDatasourceListApi({ page: 1, size: 200 })
-        dsOptions.value = (page?.items || []).map((ds: any) => ({
+        const items = page?.items || []
+        dsOptions.value = items.map((ds: any) => ({
           label: `${ds.name}（${ds.type}）`,
           value: ds.id,
         }))
+        dsTypes.value = items.reduce(
+          (acc: Record<string, string>, ds: any) => ({ ...acc, [ds.id]: ds.type }),
+          {},
+        )
       } catch {
         dsOptions.value = []
       }
@@ -242,6 +268,7 @@
   const [registerModal, { setModalProps, closeModal }] = useModalInner(async (data) => {
     setModalProps({ confirmLoading: false })
     ddlText.value = ''
+    ddlDialect.value = ''
     await ensureOptions()
     isUpdate.value = !!data?.isUpdate
     const record: MetricModel | undefined = data?.record
@@ -270,7 +297,10 @@
         : record.columns
         ? [...record.columns]
         : []
-      if (record.createType === 'ddl' && record.tableDdl) ddlText.value = record.tableDdl
+      if (record.createType === 'ddl' && record.tableDdl) {
+        ddlText.value = record.tableDdl
+        ddlDialect.value = dsTypes.value[record.datasourceId] === 'oracle' ? 'oracle' : 'mysql'
+      }
     } else {
       formState.id = ''
       formState.name = ''
@@ -292,11 +322,14 @@
       const result = await previewModelDdlApi({
         domainId: formState.domainId,
         layer: formState.layer,
-        name: formState.name,
+        // 有显式表名就以它为准；留空时把模型名称当表名主体，由后端拼成「域前缀_分层_名称」
+        name: formState.tableName ? undefined : formState.name,
         tableName: formState.tableName || undefined,
         columns: columnsState.value,
+        datasourceId: formState.datasourceId,
       })
       ddlText.value = result?.ddl || '(无内容)'
+      ddlDialect.value = result?.dialect || ''
       if (result?.conflict)
         createMessage.warning(`表名 ${result.tableName} 与其他模型冲突，保存会被拒绝（40904）`)
     } catch (error) {
@@ -309,27 +342,36 @@
   async function handleSubmit() {
     submitting.value = true
     try {
-      const payload: Partial<MetricModel> = {
+      const base = {
         name: formState.name.trim(),
-        domainId: formState.domainId,
         layer: formState.layer,
-        datasourceId: formState.datasourceId,
         tableName: formState.tableName || undefined,
         timeColumn: formState.timeColumn || undefined,
-        status: formState.status,
         remark: formState.remark,
       }
       let result: any
       if (isUpdate.value && formState.id) {
-        result = await updateMetricModelApi(formState.id, payload)
+        // 域与数据源创建后不可迁移（PUT 白名单不收这两个字段）；界面建表允许继续改字段
+        result = await updateMetricModelApi(formState.id, {
+          ...base,
+          status: formState.status,
+          columns: formState.createType === 'ddl' ? columnsState.value : undefined,
+        })
         createMessage.success('模型已更新')
       } else {
+        // 新建不传 status：界面建表由后端落 draft（走「启用 → 生成表」），引用表落 online
         result = await createMetricModelApi({
-          ...payload,
+          ...base,
+          domainId: formState.domainId,
+          datasourceId: formState.datasourceId,
           createType: formState.createType as 'reference' | 'ddl',
           columns: formState.createType === 'ddl' ? columnsState.value : undefined,
         })
-        createMessage.success('模型已创建')
+        createMessage.success(
+          formState.createType === 'ddl'
+            ? '草稿已保存：列表页「启用」后点「生成表」建物理表'
+            : '模型已创建',
+        )
         if (result?.warnings?.length) createMessage.warning(result.warnings.join('；'))
       }
       closeModal()

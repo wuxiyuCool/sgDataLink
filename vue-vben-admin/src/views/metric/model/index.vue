@@ -1,7 +1,7 @@
 <template>
   <PageWrapper
     title="指标中心 · 数据建模"
-    content="把物理表登记为模型（reference 引用现有表 / ddl 界面建表），维护字段业务名与角色（维度/时间/度量），指标从度量字段定义"
+    content="建模即建表：界面建表(ddl) 走 草稿 → 启用 → 生成表；引用表(reference) 只登记源库已有表，平台不建也不删。字段的角色（维度/时间/度量）决定指标可用性"
   >
     <GuideCard :guide="PAGE_GUIDES.model" />
     <Card :bordered="false" class="mb-3">
@@ -23,6 +23,15 @@
             allow-clear
             placeholder="全部分层"
             style="width: 150px"
+          />
+        </FormItem>
+        <FormItem label="状态" name="status">
+          <Select
+            v-model:value="query.status"
+            :options="MODEL_STATUS_OPTIONS"
+            allow-clear
+            placeholder="全部状态"
+            style="width: 130px"
           />
         </FormItem>
         <FormItem label="关键字" name="keyword">
@@ -57,7 +66,7 @@
         :pagination="getPagination"
         row-key="id"
         size="middle"
-        :scroll="{ x: 1100 }"
+        :scroll="{ x: 1260 }"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -68,12 +77,29 @@
             <Tag>{{ record.createType === 'ddl' ? '界面建表' : '引用表' }}</Tag>
           </template>
           <template v-else-if="column.key === 'status'">
-            <Tag :color="record.status === 'online' ? 'success' : 'default'">
-              {{ record.status === 'online' ? '启用' : '停用' }}
+            <Tag :color="MODEL_STATUS_TAG_COLORS[record.status || 'draft']">
+              {{ MODEL_STATUS_LABELS[record.status || 'draft'] }}
             </Tag>
           </template>
+          <template v-else-if="column.key === 'tableStatus'">
+            <Tooltip>
+              <template #title>
+                <span v-if="record.createType !== 'ddl'">引用表：由源系统维护，平台不建也不删</span>
+                <span v-else-if="record.tableStatus === 'created'">
+                  平台已在目标库创建 {{ record.tableName }}（{{ formatTime(record.tableAt) }}）
+                </span>
+                <span v-else-if="record.tableStatus === 'failed'">
+                  上次建表失败：{{ record.tableMsg || '未记录原因' }}
+                </span>
+                <span v-else>启用后点「生成表」才会在目标库真建这张表</span>
+              </template>
+              <Tag :color="TABLE_STATUS_TAG_COLORS[record.tableStatus || 'none']">
+                {{ TABLE_STATUS_LABELS[record.tableStatus || 'none'] }}
+              </Tag>
+            </Tooltip>
+          </template>
           <template v-else-if="column.key === 'action'">
-            <Space :size="0">
+            <Space :size="0" wrap>
               <Button type="link" size="small" @click="handleColumns(record)">字段</Button>
               <Button
                 type="link"
@@ -83,13 +109,33 @@
               >
                 预览数据
               </Button>
-              <Button type="link" size="small" @click="handleEdit(record)">编辑</Button>
-              <Popconfirm
-                title="确认删除该模型？域内被引用时后端会拒绝"
-                @confirm="handleDelete(record)"
+              <Button
+                v-if="record.status !== 'online'"
+                type="link"
+                size="small"
+                @click="handleToggleStatus(record, 'online')"
               >
-                <Button type="link" size="small" danger>删除</Button>
+                启用
+              </Button>
+              <Popconfirm
+                v-else
+                title="停用后指标与任务不能再引用该模型，已建的物表不受影响"
+                @confirm="handleToggleStatus(record, 'offline')"
+              >
+                <Button type="link" size="small">停用</Button>
               </Popconfirm>
+              <Tooltip :title="createTableTip(record)">
+                <Button
+                  type="link"
+                  size="small"
+                  :disabled="!canCreateTable(record)"
+                  @click="handleCreateTable(record)"
+                >
+                  生成表
+                </Button>
+              </Tooltip>
+              <Button type="link" size="small" @click="handleEdit(record)">编辑</Button>
+              <Button type="link" size="small" danger @click="handleDelete(record)">删除</Button>
             </Space>
           </template>
         </template>
@@ -98,6 +144,8 @@
 
     <ModelModal @register="registerModelModal" @success="reload" />
     <ColumnsModal @register="registerColumnsModal" @success="reload" />
+    <CreateTableModel @register="registerCreateTableModal" @success="reload" />
+    <ModelDeleteModal @register="registerDeleteModal" @success="reload" />
 
     <BasicModal
       v-bind="$attrs"
@@ -153,14 +201,15 @@
     Space,
     Table,
     Tag,
+    Tooltip,
     TreeSelect,
   } from 'ant-design-vue'
 
   import { getMetricDomainTreeApi, type MetricDomain } from '/@/api/databridge/metric'
   import {
-    deleteMetricModelApi,
     getMetricModelsApi,
     previewModelDataApi,
+    updateMetricModelApi,
     type MetricModel,
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
@@ -171,9 +220,20 @@
   import GuideCard from '../components/GuideCard.vue'
   import { useMessage } from '/@/hooks/web/useMessage'
 
-  import { LAYER_OPTIONS, LAYER_TAG_COLORS } from '../data'
+  import {
+    LAYER_OPTIONS,
+    LAYER_TAG_COLORS,
+    MODEL_STATUS_LABELS,
+    MODEL_STATUS_OPTIONS,
+    MODEL_STATUS_TAG_COLORS,
+    TABLE_STATUS_LABELS,
+    TABLE_STATUS_TAG_COLORS,
+    formatTime,
+  } from '../data'
   import { usePagedFetch } from '../../databridge/hooks/usePagedFetch'
   import ColumnsModal from './ColumnsModal.vue'
+  import CreateTableModel from './CreateTableModel.vue'
+  import ModelDeleteModal from './ModelDeleteModal.vue'
   import ModelModal from './ModelModal.vue'
 
   const FormItem = Form.Item
@@ -181,11 +241,14 @@
   const { createMessage } = useMessage()
   const [registerModelModal, { openModal: openModelModal }] = useModal()
   const [registerColumnsModal, { openModal: openColumnsModal }] = useModal()
+  const [registerCreateTableModal, { openModal: openCreateTableModal }] = useModal()
+  const [registerDeleteModal, { openModal: openDeleteModal }] = useModal()
   const [registerPreviewModal, { openModal: openPreviewModal }] = useModal()
 
   const query = reactive({
     domainId: undefined as string | undefined,
     layer: undefined as string | undefined,
+    status: undefined as string | undefined,
     keyword: undefined as string | undefined,
   })
 
@@ -201,8 +264,9 @@
     { title: '分层', key: 'layer', width: 90 },
     { title: '创建方式', key: 'createType', width: 100 },
     { title: '时间列', dataIndex: 'timeColumn', key: 'timeColumn', width: 140 },
-    { title: '状态', key: 'status', width: 90 },
-    { title: '操作', key: 'action', width: 260, fixed: 'right' as const },
+    { title: '状态', key: 'status', width: 100 },
+    { title: '表状态', key: 'tableStatus', width: 110 },
+    { title: '操作', key: 'action', width: 320, fixed: 'right' as const },
   ]
 
   const {
@@ -220,6 +284,7 @@
         size: params.size,
         domainId: query.domainId,
         layer: query.layer,
+        status: query.status,
         keyword: query.keyword,
       }),
     query,
@@ -249,6 +314,7 @@
   function handleReset() {
     query.domainId = undefined
     query.layer = undefined
+    query.status = undefined
     query.keyword = undefined
     resetFetch()
   }
@@ -265,13 +331,41 @@
     openColumnsModal(true, { modelId: record.id, modelName: record.name })
   }
 
-  async function handleDelete(record: MetricModel) {
+  function handleDelete(record: MetricModel) {
+    openDeleteModal(true, { modelId: record.id })
+  }
+
+  /** 只有「界面建表」的模型由平台负责建表；引用表本就存在于源库 */
+  function canCreateTable(record: MetricModel) {
+    return record.createType === 'ddl' && record.status === 'online'
+  }
+
+  function createTableTip(record: MetricModel) {
+    if (record.createType !== 'ddl') return '引用表存在于源库，平台不建也不删'
+    if (record.status !== 'online') return '草稿/停用模型不能生成表，请先点「启用」'
+    return record.tableStatus === 'created'
+      ? '已建表，再次点击幂等同步状态'
+      : '在目标库执行建表 DDL'
+  }
+
+  function handleCreateTable(record: MetricModel) {
+    if (!canCreateTable(record)) return
+    openCreateTableModal(true, { modelId: record.id })
+  }
+
+  async function handleToggleStatus(record: MetricModel, status: 'online' | 'offline') {
     try {
-      await deleteMetricModelApi(record.id)
-      createMessage.success(`已删除模型【${record.name}】`)
+      await updateMetricModelApi(record.id, { status })
+      createMessage.success(
+        status === 'online'
+          ? `已启用【${record.name}】${
+              record.createType === 'ddl' ? '，现在可以点「生成表」建物理表' : ''
+            }`
+          : `已停用【${record.name}】`,
+      )
       reload()
     } catch (error) {
-      createMessage.error(getApiErrorMessage(error, '删除失败'))
+      createMessage.error(getApiErrorMessage(error, '状态更新失败'))
     }
   }
 

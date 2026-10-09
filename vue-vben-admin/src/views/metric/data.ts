@@ -16,6 +16,40 @@ export const LAYER_TAG_COLORS: Record<string, string> = {
   ADS: 'green',
 }
 
+/** 建模状态机（契约 1.13）：draft 草稿不可被引用，online 才可生成表/建指标 */
+export const MODEL_STATUS_OPTIONS = [
+  { label: '草稿', value: 'draft' },
+  { label: '已启用', value: 'online' },
+  { label: '已停用', value: 'offline' },
+]
+
+export const MODEL_STATUS_LABELS: Record<string, string> = {
+  draft: '草稿',
+  online: '已启用',
+  offline: '已停用',
+}
+
+export const MODEL_STATUS_TAG_COLORS: Record<string, string> = {
+  draft: 'default',
+  online: 'success',
+  offline: 'warning',
+}
+
+/** 物理表留痕：reference 恒为 exists（表本就存在源库，平台不建不删） */
+export const TABLE_STATUS_LABELS: Record<string, string> = {
+  none: '未建表',
+  created: '已建表',
+  exists: '引用表',
+  failed: '建表失败',
+}
+
+export const TABLE_STATUS_TAG_COLORS: Record<string, string> = {
+  none: 'default',
+  created: 'success',
+  exists: 'blue',
+  failed: 'error',
+}
+
 export const METRIC_TYPE_OPTIONS = [
   { label: '原子指标', value: 'ATOMIC' },
   { label: '派生指标', value: 'DERIVED' },

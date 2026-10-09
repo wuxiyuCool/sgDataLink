@@ -4,7 +4,7 @@ import { LAYOUT } from '/@/router/constant'
 
 /**
  * 指标中心菜单（契约 1.12，开发文档 docs/METRIC-DEV.md）。
- * M6a：首页概览/指标域/数据建模/指标管理/智能问数；M5a：系统配置（admin）；任务管理在 M6b。
+ * M6a：首页概览/指标域/数据建模/指标广场/智能问数；M5a：系统配置（admin）；任务管理在 M6b。
  */
 const metric: AppRouteModule = {
   path: '/metric',
@@ -49,7 +49,7 @@ const metric: AppRouteModule = {
       name: 'MetricList',
       component: () => import('/@/views/metric/metric/index.vue'),
       meta: {
-        title: '指标管理',
+        title: '指标广场',
         icon: 'ion:calc-outline',
       },
     },

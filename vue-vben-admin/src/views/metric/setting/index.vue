@@ -97,6 +97,31 @@
             留空 = 保持不变；不单独配置时复用上方对话模型的 API Key。
           </div>
         </FormItem>
+        <FormItem label="候选值进问数 Prompt（维度取值/码值，默认关闭）" name="dimValuePrompt">
+          <Switch
+            v-model:checked="form.dimValuePrompt"
+            checked-children="开"
+            un-checked-children="关"
+          />
+          <div class="mt-1 text-gray-400" style="font-size: 12px">
+            打开后，建模页探查到的维度取值（如
+            <code>01=华东</code
+            >）会作为「可用维度」的一部分发给大模型，用来把「只看华东」翻译成库里的真实值。
+            <b>取值就是真实业务数据</b>，会随 prompt 出站，请按环境显式确认后再开；关闭时仅停用
+            prompt， 已登记码值的「值校正」在服务端本地生效、不外发数据。
+          </div>
+        </FormItem>
+        <FormItem v-if="form.dimValuePrompt" name="dimValueTopN">
+          <template #label>
+            <LabelWithSource
+              label="每列进 Prompt 的取值条数"
+              item-key="chat.dimValueTopN"
+              :items="items"
+              placeholder="默认 20，上限 200"
+            />
+          </template>
+          <Input v-model:value="form.dimValueTopN" placeholder="20" allow-clear />
+        </FormItem>
         <FormItem>
           <Space>
             <Button type="primary" html-type="submit" :loading="saving">保存</Button>
@@ -171,6 +196,8 @@
     embedModel: '',
     embedBaseUrl: '',
     embedApiKey: '',
+    dimValuePrompt: false,
+    dimValueTopN: '',
   })
 
   const apiKeyPlaceholder = computed(() => {
@@ -201,6 +228,9 @@
       form.embedBaseUrl = itemValue('llm.embed.baseUrl') || ''
       form.embedEnabled =
         itemValue('llm.embed.enabled') === '1' || itemValue('llm.embed.enabled') === 'true'
+      form.dimValuePrompt =
+        itemValue('chat.dimValuePrompt') === '1' || itemValue('chat.dimValuePrompt') === 'true'
+      form.dimValueTopN = itemValue('chat.dimValueTopN') || ''
     } catch (error) {
       createMessage.error(getApiErrorMessage(error, '读取配置失败'))
     } finally {
@@ -218,9 +248,12 @@
     if (form.embedBaseUrl.trim()) llm.embed.baseUrl = form.embedBaseUrl.trim()
     if (form.embedApiKey.trim()) llm.embed.apiKey = form.embedApiKey.trim()
     if (form.embedModel.trim()) llm.embedModel = form.embedModel.trim()
+    // 契约 1.14：开关是显式布尔（关也要下发），条数留空=不改
+    const chat: MetricSettingsPayloadChat = { dimValuePrompt: form.dimValuePrompt ? '1' : '0' }
+    if (form.dimValueTopN.trim()) chat.dimValueTopN = form.dimValueTopN.trim()
     saving.value = true
     try {
-      const result = await updateMetricSettingsApi({ settings: { llm } })
+      const result = await updateMetricSettingsApi({ settings: { llm, chat } })
       createMessage.success(`已保存 ${result.updated.length} 项配置`)
       form.apiKey = ''
       form.embedApiKey = ''
@@ -234,6 +267,10 @@
 
   type MetricSettingsPayloadLlm = NonNullable<
     Parameters<typeof updateMetricSettingsApi>[0]['settings']['llm']
+  >
+
+  type MetricSettingsPayloadChat = NonNullable<
+    Parameters<typeof updateMetricSettingsApi>[0]['settings']['chat']
   >
 
   onMounted(fetchSettings)

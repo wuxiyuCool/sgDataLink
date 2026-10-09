@@ -42,7 +42,7 @@
           </FormItem>
         </Col>
         <Col :span="12">
-          <FormItem label="分组维度（源模型维度列）">
+          <FormItem label="分组维度（勾选即目标表字段，也是聚合粒度）">
             <Select
               v-model:value="form.dimensionColumnIds"
               :options="dimensionOptions"
@@ -193,6 +193,45 @@
         </Col>
       </Row>
 
+      <Divider orientation="left">目标表结构（按所选维度与指标自动生成）</Divider>
+      <div class="schema-meta">
+        <Tag :color="targetSchema ? 'blue' : 'default'">
+          {{
+            targetSchema
+              ? targetSchema.dialect === 'oracle'
+                ? 'Oracle 方言'
+                : 'MySQL 方言'
+              : '方言未定'
+          }}
+        </Tag>
+        <Tag v-if="targetSchema && targetSchema.autoCreate" color="green">
+          执行时自动 CREATE TABLE
+        </Tag>
+        <Tag v-else-if="targetSchema" color="orange">写入已存在的目标表</Tag>
+        <span v-if="targetSchema && targetSchema.primaryKeys.length">
+          主键（upsert 冲突键）：{{ targetSchema.primaryKeys.join('、') }}
+        </span>
+        <span v-if="schemaLoading" class="opacity-60">结构生成中…</span>
+      </div>
+      <Alert
+        v-if="schemaError"
+        type="warning"
+        show-icon
+        :message="schemaError"
+        style="margin-bottom: 8px"
+      />
+      <Table
+        :columns="schemaColumns"
+        :data-source="targetSchema ? targetSchema.columns : []"
+        :pagination="false"
+        size="small"
+        row-key="name"
+        :locale="{ emptyText: '选好源模型 / 指标 / 目标表名后，这里自动列出将要建出的字段' }"
+      />
+      <pre v-if="targetSchema && targetSchema.createSql" class="sql-block mt-2">{{
+        targetSchema.createSql
+      }}</pre>
+
       <div class="mt-2">
         <Button :loading="previewLoading" @click="handlePreview">保存前 Preview 语句</Button>
         <span v-if="!isUpdate" style="margin-left: 8px; color: #999; font-size: 12px"
@@ -207,7 +246,7 @@
 </template>
 
 <script lang="ts" setup>
-  import { computed, reactive, ref } from 'vue'
+  import { computed, reactive, ref, watch } from 'vue'
 
   import {
     Alert,
@@ -221,6 +260,8 @@
     Row,
     Select,
     Space,
+    Table,
+    Tag,
   } from 'ant-design-vue'
 
   import { getDatasourceApi } from '/@/api/databridge/datasource'
@@ -231,9 +272,11 @@
     getMetricModelApi,
     getMetricsApi,
     previewMetricTaskApi,
+    previewMetricTaskSchemaApi,
     updateMetricTaskApi,
     type MetricTask,
     type MetricTaskCleanRule,
+    type MetricTaskTargetSchema,
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
   import { BasicModal, useModalInner } from '/@/components/Modal'
@@ -415,6 +458,45 @@
     return ''
   }
 
+  /** 目标表结构（后端按 buildPlan + 方言层算，含类型与建表语句），跟着选择实时刷新 */
+  const targetSchema = ref<MetricTaskTargetSchema | null>(null)
+  const schemaError = ref('')
+  const schemaLoading = ref(false)
+  let schemaTimer: ReturnType<typeof setTimeout> | null = null
+
+  const schemaColumns = [
+    { title: '字段', dataIndex: 'name', key: 'name', width: 170 },
+    { title: '类型（按目标库）', dataIndex: 'type', key: 'type', width: 150 },
+    { title: '来源', dataIndex: 'source', key: 'source', width: 70 },
+    { title: '说明', dataIndex: 'comment', key: 'comment' },
+  ]
+
+  async function refreshTargetSchema() {
+    if (requiredError()) {
+      targetSchema.value = null
+      schemaError.value = ''
+      return
+    }
+    schemaLoading.value = true
+    try {
+      targetSchema.value = await previewMetricTaskSchemaApi(buildPayload())
+      schemaError.value = ''
+    } catch (error) {
+      targetSchema.value = null
+      schemaError.value = getApiErrorMessage(error, '目标表结构生成失败')
+    } finally {
+      schemaLoading.value = false
+    }
+  }
+
+  watch(
+    () => JSON.stringify(buildPayload()),
+    () => {
+      if (schemaTimer) clearTimeout(schemaTimer)
+      schemaTimer = setTimeout(refreshTargetSchema, 500)
+    },
+  )
+
   async function handlePreview() {
     const missing = requiredError()
     if (missing) {
@@ -437,6 +519,8 @@
   const [registerModal, { setModalProps, closeModal }] = useModalInner(async (data) => {
     setModalProps({ confirmLoading: false })
     previewStatements.value = []
+    targetSchema.value = null
+    schemaError.value = ''
     await Promise.all([loadModels(), loadMetrics()])
     isUpdate.value = !!data?.isUpdate
     const record: MetricTask | undefined = data?.record
@@ -524,6 +608,15 @@
     gap: 8px;
     align-items: center;
     margin-bottom: 8px;
+  }
+
+  .schema-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: rgb(0 0 0 / 55%);
   }
 
   .sql-block {
