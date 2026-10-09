@@ -56,6 +56,14 @@ const envVarsSchema = Joi.object()
     // 且 /engine 回报通道强制校验；空 = 无鉴权过渡态（启动 WARN）
     ENGINE_SHARED_SECRET: Joi.string().default('').allow('').description('shared secret for engine calls and reports'),
     ENGINE_SQL_TIMEOUT_MS: Joi.number().default(35000).description('timeout of engine generic sql endpoints (query/exec)'),
+    // 出站代理（内网经 squid 访问外网 LLM API）：Node 全局 fetch 不读这些变量，
+    // 由 src/utils/proxyAgent.js 实现 CONNECT 隧道 + Basic 认证后生效
+    HTTPS_PROXY: Joi.string()
+      .default('')
+      .allow('')
+      .description('proxy for https targets, e.g. http://user:pass@10.45.34.223:3128'),
+    HTTP_PROXY: Joi.string().default('').allow('').description('proxy for http targets'),
+    NO_PROXY: Joi.string().default('').allow('').description('comma-separated host suffixes that bypass the proxy'),
     SMTP_HOST: Joi.string().description('server that will send the emails'),
     SMTP_PORT: Joi.number().description('port to connect to the email server'),
     SMTP_USERNAME: Joi.string().description('username for email server'),

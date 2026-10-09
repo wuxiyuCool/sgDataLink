@@ -152,3 +152,50 @@ kubectl -n databridge logs deploy/databridge-engine | grep -i "ENGINE_SHARED_SEC
 
 漏配的后果：engine 空密钥=放行（功能可用但接口无鉴权）；两侧值不一致=admin 调
 engine 全部 401/code 40101，指标试跑/物化任务/问数都会失败。
+
+### ⚠️ v9 必做（内网无直连出口时）：配置 LLM 出站代理
+
+**根因**：Node 18 的全局 `fetch`（undici）**不读 `HTTPS_PROXY`**，所以只配环境变量没用——
+v9 起 LLM 客户端改走 `src/utils/proxyAgent.js`（CONNECT 隧道 + `Proxy-Authorization` Basic，
+http 目标走绝对 URI，`NO_PROXY` 命中直连），代理变量才真正生效。
+
+`deploy/k8s/admin.yaml` 已引用 Secret 的 `HTTPS_PROXY`（optional，留空即直连），
+`configmap.yaml` 已给 `NO_PROXY` 白名单（集群内服务 + 内网库/节点，避免被代理带走）。
+master-01 上**不要 apply -f**（清单 image 是占位 mock，会把镜像改回去），用 patch：
+
+```bash
+# 1) 写入代理地址（含 squid 账号口令；口令需已在 squid 侧加白）
+kubectl -n databridge patch secret databridge-db-secret --type merge \
+  -p '{"stringData":{"HTTPS_PROXY":"http://weknora:weknora@10.45.34.223:3128"}}'
+
+# 2) 给 admin 追加 env（engine 不出外网，不需要）
+kubectl -n databridge patch deploy databridge-admin --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"HTTPS_PROXY","valueFrom":{"secretKeyRef":{"name":"databridge-db-secret","key":"HTTPS_PROXY"},"optional":true}}}]'
+
+# 3) 确认 NO_PROXY 已下发（否则 admin→engine、admin→MySQL 会被代理带走而失败）
+kubectl -n databridge get configmap databridge-config -o jsonpath='{.data.NO_PROXY}'; echo
+
+kubectl -n databridge rollout status deploy/databridge-admin
+```
+
+**验证是否真的走了代理**：
+
+```bash
+# 问数一发（成功=代理链路通；失败看错误文案定位）
+curl -s -X POST http://10.45.34.165:32614/api/v1/metric-chat/ask \
+  -H 'content-type: application/json' -H "authorization: Bearer <token>" \
+  -d '{"question":"昨天的订单额是多少"}'
+kubectl -n databridge logs deploy/databridge-admin --tail=50 | grep -i "LLM"
+```
+
+错误文案判读（都来自 `llmClient`，很好定位）：
+
+| 日志/响应 | 含义 | 处理 |
+|---|---|---|
+| `LLM 服务不可达: 代理 CONNECT 被拒 407（代理需要认证…）` | squid 要认证但没带对口令 | 检查 Secret 里 `HTTPS_PROXY` 的 `user:pass` |
+| `LLM 服务不可达: 代理连接超时（…3128 不可达？）` | Pod 到 squid 网络不通 | 确认 squid 端口/节点防火墙；squid 仅生产网可达 |
+| `LLM 服务不可达: getaddrinfo ENOTFOUND` | 没走代理、在直连解析外网域名 | env 没生效 → `kubectl exec` 进容器 `env \| grep PROXY` |
+| `LLM 返回 401/403` | 代理通了，是 LLM apiKey 问题 | 系统配置页重填 API Key |
+| 问数正常返回 | 链路全通 | — |
+
+> 本地/有直连出口的环境把 `HTTPS_PROXY` 留空即可，`proxyAgent` 自动走直连，行为与改造前一致
+> （已由 `deploy/tests/test-llm-proxy.js` 14 项 + 问数回归验证）。

@@ -5,10 +5,13 @@
  *
  * 注意：deepseek-flash 等推理模型把 token 花在 reasoning_content 上，
  * max_tokens 必须给足预算（默认 2048），答案只读 message.content。
+ *
+ * 出站走 utils/proxyAgent 而不是全局 fetch：Node 18 的 fetch(undici) 不读
+ * HTTPS_PROXY，内网容器经 squid 出口访问外网 LLM API 时会直连超时。
  */
-/* global fetch */
 const config = require('../config/config');
 const { bizError } = require('../utils/bizError');
+const { requestJson } = require('../utils/proxyAgent');
 const metricSettingService = require('./metricsetting.service');
 
 const llmError = (message) => bizError(50000, message);
@@ -25,12 +28,12 @@ const chatCompletion = async (messages, opts = {}) => {
   }
   const base = String(conf.baseUrl).replace(/\/+$/, '');
   const target = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), conf.timeoutMs || 30000);
+  const timeoutMs = conf.timeoutMs || 30000;
   let response;
   try {
-    response = await fetch(target, {
+    response = await requestJson(target, {
       method: 'POST',
+      timeoutMs,
       headers: { authorization: `Bearer ${conf.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: conf.model,
@@ -38,24 +41,20 @@ const chatCompletion = async (messages, opts = {}) => {
         temperature: opts.temperature === undefined ? 0.1 : opts.temperature,
         max_tokens: opts.maxTokens || 2048,
       }),
-      signal: controller.signal,
     });
   } catch (err) {
-    const reason = err && err.name === 'AbortError' ? `超时(${conf.timeoutMs}ms)` : err.message;
-    throw llmError(`LLM 服务不可达: ${reason}（${base}）`);
-  } finally {
-    clearTimeout(timer);
+    throw llmError(`LLM 服务不可达: ${err.message}（${base}）`);
   }
-  const text = await response.text().catch(() => '');
+  const { status: httpStatus, text } = response;
   let body = {};
   try {
     body = text ? JSON.parse(text) : {};
   } catch (err) {
     /* 非 JSON 错误页 */
   }
-  if (!response.ok) {
-    const detail = body.error && body.error.message ? body.error.message : text.slice(0, 200);
-    throw llmError(`LLM 返回 ${response.status}: ${detail}`);
+  if (httpStatus < 200 || httpStatus >= 300) {
+    const detail = body.error && body.error.message ? body.error.message : String(text || '').slice(0, 200);
+    throw llmError(`LLM 返回 ${httpStatus}: ${detail}`);
   }
   const choice = (body.choices || [])[0] || {};
   return {
