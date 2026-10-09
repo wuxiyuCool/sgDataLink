@@ -18,9 +18,10 @@ ENV npm_config_registry=https://registry.npmmirror.com
 
 # 先只拷依赖清单，利用层缓存。
 # --ignore-scripts：跳过 prepare(husky) 等脚本；本项目运行时依赖全是纯 JS，无 native 编译。
+# --network-timeout：内网到 registry 抖动时快速报错，不再无限停在 Fetching packages
 COPY package.json yarn.lock ./
 
-RUN yarn install --production --non-interactive --frozen-lockfile --ignore-scripts \
+RUN yarn install --production --non-interactive --frozen-lockfile --ignore-scripts --network-timeout 120000 \
   && yarn cache clean
 
 # 再拷源码（.dockerignore 已排除 node_modules / tests / .env）

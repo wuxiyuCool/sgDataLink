@@ -16,6 +16,11 @@
 #
 # 可覆盖：REGISTRY / PROJECT / ONLY=admin,engine,web / SKIP_BUILD=1(push 模式跳过构建)
 #         OUT_DIR(save 输出目录) / SRC_DIR(load 输入目录)
+#         DOCKER_BUILD_OPTS —— 透传给 docker build 的额外参数。内网构建卡在
+#           yarn/go 拉包（多为容器 DNS 不通）时加：DOCKER_BUILD_OPTS="--network=host"
+#           需走 squid 出口代理时加：
+#           DOCKER_BUILD_OPTS="--build-arg HTTP_PROXY=http://10.45.34.223:3128 --build-arg HTTPS_PROXY=http://10.45.34.223:3128"
+#           （HTTP_PROXY/HTTPS_PROXY 是 docker 预定义 build arg，Dockerfile 无需声明 ARG）
 # 内网 Harbor 免密机器无需账号变量；需要认证才设 HARBOR_USER/HARBOR_PASS
 set -euo pipefail
 
@@ -52,10 +57,10 @@ build_image() {  # $1=服务名 $2=本地tag后缀；web 支持 PREBUILT_WEB=1 �
     [[ -f vue-vben-admin/prebuilt-dist/index.html ]] || {
       echo "!! 缺 vue-vben-admin/prebuilt-dist/index.html：请先本地 bash deploy/build-web-dist.sh 并提交 tar 包，或手动 scp dist" >&2; exit 1; }
     echo "==> 构建 web（预构建 dist 模式，跳过 pnpm install）"
-    docker build -f vue-vben-admin/Dockerfile.prebuilt -t "databridge/web:$2" vue-vben-admin
+    docker build ${DOCKER_BUILD_OPTS:-} -f vue-vben-admin/Dockerfile.prebuilt -t "databridge/web:$2" vue-vben-admin
   else
     echo "==> 构建 $1 ($(ctx_dir "$1"))"
-    docker build -t "databridge/$1:$2" "$(ctx_dir "$1")"
+    docker build ${DOCKER_BUILD_OPTS:-} -t "databridge/$1:$2" "$(ctx_dir "$1")"
   fi
 }
 
