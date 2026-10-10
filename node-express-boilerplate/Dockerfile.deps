@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# admin 依赖基座镜像 —— 只装 node_modules，不含业务源码。
+#
+# 为什么要有它：内网构建机（master-01）没有直连外网，yarn install 每次都要穿 squid 代理，
+# 一旦代理抖动或 docker 层缓存被 prune，打包就卡在 "Fetching packages... Retrying"。
+# 基座镜像按 yarn.lock 内容哈希打 tag（见 deploy/admin-deps-tag.sh）：
+#   依赖没变 → tag 不变 → Harbor 里那份一直复用，业务镜像构建全程零网络；
+#   依赖变了 → 哈希变 → 重新构建并推一次基座（唯一需要外网的动作）。
+#
+# 构建/推送：bash deploy/build-admin-deps.sh（脚本会先查 Harbor，已有该 tag 就跳过）
+# ---------------------------------------------------------------------------
+FROM node:18-alpine
+
+ENV NODE_ENV=production \
+    npm_config_registry=https://registry.npmmirror.com
+
+WORKDIR /usr/src/node-app
+
+# 只拷依赖清单：源码变动不该让基座层失效
+COPY package.json yarn.lock ./
+
+# --ignore-scripts：跳过 prepare(husky) 等脚本，运行时依赖全是纯 JS，无 native 编译
+RUN yarn install --production --non-interactive --frozen-lockfile --ignore-scripts --network-timeout 120000 \
+  && yarn cache clean
