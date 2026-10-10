@@ -108,6 +108,7 @@
     Descriptions,
     Empty,
     Row,
+    Space,
     Spin,
     Statistic,
     Table,

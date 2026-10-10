@@ -6,7 +6,7 @@
     <GuideCard :guide="PAGE_GUIDES.metric" />
 
     <Card :bordered="false" class="mb-3">
-      <Form layout="inline" @finish="handleSearch">
+      <Form :model="query" layout="inline" @finish="handleSearch">
         <FormItem label="域" name="domainId">
           <TreeSelect
             v-model:value="query.domainId"
@@ -61,6 +61,10 @@
           </Radio.Button>
         </Radio.Group>
         <div class="plaza-toolbar__right">
+          <span v-if="viewMode === 'plaza'" class="plaza-toolbar__hint">
+            <Icon icon="ant-design:info-circle-outlined" class="mr-1" />
+            勾选卡片右上角的方框可把指标组成时间宽表
+          </span>
           <Button @click="handleCreate">
             <Icon icon="ant-design:edit-outlined" class="mr-1" />
             手工新建
@@ -71,6 +75,14 @@
           </Button>
         </div>
       </div>
+
+      <Alert
+        v-if="viewMode === 'plaza' && !wideSelected.length"
+        class="mb-3"
+        type="info"
+        show-icon
+        message="想跨模型拼一张按时间对齐的汇总表？勾选卡片右上角方框（可跨模型，但必须在同一个数据源下），选好后屏幕下方会出现「建宽表任务」条。"
+      />
 
       <Alert
         v-if="viewMode === 'plaza' && plaza.truncated"
@@ -106,6 +118,7 @@
                   <Card
                     size="small"
                     class="metric-card"
+                    :class="{ 'metric-card--wide': isWideSelected(item.id) }"
                     :hoverable="true"
                     @click="handleDetail(item)"
                   >
@@ -113,6 +126,14 @@
                       <span class="metric-card__name">{{ item.name }}</span>
                     </template>
                     <template #extra>
+                      <Tooltip :title="wideTip(item)">
+                        <Checkbox
+                          :checked="isWideSelected(item.id)"
+                          :disabled="!canPickWide(item)"
+                          @click.stop
+                          @change="toggleWide(item)"
+                        />
+                      </Tooltip>
                       <Tag :color="METRIC_TYPE_TAG_COLORS[item.type]">
                         {{ METRIC_TYPE_LABELS[item.type] || item.type }}
                       </Tag>
@@ -218,6 +239,50 @@
       </Spin>
     </Card>
 
+    <!-- 宽表已选条：勾完就地拼任务（跨模型可以、跨数据源不行，当场拦住不让保存到后端才报错） -->
+    <div v-if="viewMode === 'plaza' && wideSelected.length" class="wide-bar">
+      <div class="wide-bar__sum">
+        <Icon icon="ant-design:fund-outlined" class="wide-bar__sum-icon" />
+        <span class="wide-bar__count">已选 {{ wideSelected.length }} 个指标</span>
+        <span class="wide-bar__meta">
+          {{ wideModelNames.length }} 个模型{{
+            wideModelNames.length > 1 ? '（将各自出一个子查询）' : ''
+          }}
+        </span>
+      </div>
+      <div class="wide-bar__chips">
+        <Tag
+          v-for="item in wideVisibleChips"
+          :key="item.id"
+          class="wide-chip"
+          :bordered="false"
+          closable
+          @close="removeWide(item.id)"
+        >
+          {{ item.name }}
+        </Tag>
+        <Tooltip v-if="wideHiddenChips > 0" :title="wideHiddenNames.join('、')">
+          <Tag class="wide-chip wide-chip--more" :bordered="false">+{{ wideHiddenChips }}</Tag>
+        </Tooltip>
+      </div>
+      <div class="wide-bar__act">
+        <Tag v-if="wideDsCount > 1" color="error" :bordered="false">
+          涉及 {{ wideDsCount }} 个数据源，宽表要求同源
+        </Tag>
+        <template v-else>
+          <span class="wide-bar__label">目标粒度</span>
+          <Select
+            v-model:value="wideGrain"
+            :options="GRAIN_OPTIONS"
+            size="small"
+            style="width: 92px"
+          />
+          <Button type="primary" size="small" @click="handleWideTask"> 建宽表任务 </Button>
+        </template>
+        <Button type="link" size="small" @click="clearWide">清空</Button>
+      </div>
+    </div>
+
     <MetricModal @register="registerFormModal" @success="reloadAll" />
     <MetricDetailModal @register="registerDetailModal" @success="reloadAll" />
     <BatchMetricModal @register="registerBatchModal" @success="reloadAll" />
@@ -226,11 +291,13 @@
 
 <script lang="ts" setup>
   import { computed, onMounted, reactive, ref } from 'vue'
+  import { useRouter } from 'vue-router'
 
   import {
     Alert,
     Button,
     Card,
+    Checkbox,
     Empty,
     Form,
     Input,
@@ -289,9 +356,75 @@
   ]
 
   const { createMessage } = useMessage()
+  const router = useRouter()
   const [registerFormModal, { openModal: openFormModal }] = useModal()
   const [registerDetailModal, { openModal: openDetailModal }] = useModal()
   const [registerBatchModal, { openModal: openBatchModal }] = useModal()
+
+  /** 宽表候选（广场卡片勾出来的指标）：带到任务页预填 align=time 的宽表任务 */
+  const GRAIN_OPTIONS = [
+    { label: '日', value: 'day' },
+    { label: '周', value: 'week' },
+    { label: '月', value: 'month' },
+    { label: '季', value: 'quarter' },
+    { label: '年', value: 'year' },
+  ]
+  const wideSelected = ref<MetricPlazaCard[]>([])
+  const wideGrain = ref('month')
+
+  /** 没有取数模型的指标（跨模型复合）进不了物化任务，勾选框直接不给点 */
+  function wideTip(item: MetricPlazaCard) {
+    if (!item.modelName) return '跨模型复合指标没有单一取数模型，不能进物化任务'
+    return isWideSelected(item.id) ? '从宽表候选中移除' : '加入时间宽表候选（可跨模型，需同数据源）'
+  }
+
+  function canPickWide(item: MetricPlazaCard) {
+    return Boolean(item.modelName)
+  }
+
+  function isWideSelected(id: string) {
+    return wideSelected.value.some((item) => item.id === id)
+  }
+
+  function toggleWide(item: MetricPlazaCard) {
+    if (!canPickWide(item)) return
+    wideSelected.value = isWideSelected(item.id)
+      ? wideSelected.value.filter((card) => card.id !== item.id)
+      : [...wideSelected.value, item]
+  }
+
+  function removeWide(id: string) {
+    wideSelected.value = wideSelected.value.filter((item) => item.id !== id)
+  }
+
+  function clearWide() {
+    wideSelected.value = []
+  }
+
+  const wideModelNames = computed(() => [
+    ...new Set(wideSelected.value.map((item) => item.modelName || item.code)),
+  ])
+  const wideDsCount = computed(
+    () => new Set(wideSelected.value.map((item) => item.datasourceId || '')).size,
+  )
+  const CHIP_LIMIT = 6
+  const wideVisibleChips = computed(() => wideSelected.value.slice(0, CHIP_LIMIT))
+  const wideHiddenChips = computed(() => Math.max(wideSelected.value.length - CHIP_LIMIT, 0))
+  const wideHiddenNames = computed(() =>
+    wideSelected.value.slice(CHIP_LIMIT).map((item) => item.name),
+  )
+
+  function handleWideTask() {
+    if (wideDsCount.value > 1) return
+    router.push({
+      name: 'MetricTasks',
+      query: {
+        align: 'time',
+        grain: wideGrain.value,
+        metrics: wideSelected.value.map((item) => item.id).join(','),
+      },
+    })
+  }
 
   const viewMode = ref<'plaza' | 'table'>('plaza')
   const query = reactive({
@@ -461,6 +594,79 @@
       display: flex;
       align-items: center;
     }
+
+    &__hint {
+      margin-right: 12px;
+      font-size: 12px;
+      color: @text-color-secondary;
+    }
+  }
+
+  /* 宽表已选条：勾完才出现，贴在视口底部，不用滚回工具条 */
+  .wide-bar {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    left: 24px;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 16px;
+    background: @component-background;
+    border: 1px solid @primary-color-hover;
+    border-radius: 8px;
+    box-shadow: 0 -6px 16px rgb(0 0 0 / 8%), 0 -3px 6px -4px rgb(0 0 0 / 12%);
+
+    &__sum {
+      display: flex;
+      flex-shrink: 0;
+      gap: 8px;
+      align-items: center;
+    }
+
+    &__sum-icon {
+      font-size: 16px;
+      color: @primary-color;
+    }
+
+    &__count {
+      font-weight: 600;
+    }
+
+    &__meta {
+      font-size: 12px;
+      color: @text-color-secondary;
+    }
+
+    &__chips {
+      display: flex;
+      flex: 1;
+      min-width: 120px;
+      max-height: 56px;
+      overflow: auto;
+    }
+
+    &__act {
+      display: flex;
+      flex-shrink: 0;
+      gap: 8px;
+      align-items: center;
+    }
+
+    &__label {
+      font-size: 12px;
+      color: @text-color-secondary;
+    }
+  }
+
+  .wide-chip {
+    margin-right: 4px;
+
+    &--more {
+      cursor: default;
+    }
   }
 
   .plaza-empty {
@@ -495,6 +701,12 @@
   .metric-card {
     width: 100%;
     cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+
+    &--wide {
+      border-color: @primary-color;
+      box-shadow: 0 0 0 1px @primary-color;
+    }
 
     :deep(.ant-card-head) {
       min-height: 40px;

@@ -127,6 +127,11 @@ export interface MetricModel {
   tableMsg?: string
   tableAt?: string | null
   remark?: string
+  /**
+   * 分层树的归组节点（契约 1.16）：必须指向与 layer 同层的未删分类；
+   * 空串＝该层「未分类」桶（旧库补列出的 NULL 后端读时归一成 ''，界面拿不到 undefined）
+   */
+  categoryId?: string
   columns?: MetricModelColumn[]
   warnings?: string[]
 }
@@ -136,6 +141,8 @@ export interface MetricModelPageParams {
   layer?: string
   datasourceId?: string
   status?: string
+  /** 'none'＝该范围内的未分类；其它值＝具体 mcat- id（契约 1.16） */
+  categoryId?: string
   keyword?: string
   page?: number
   size?: number
@@ -239,6 +246,104 @@ export function previewModelDataApi(id: string) {
     rows: any[][] | null
     error?: string
   }>({ url: `/metric-models/${id}/preview` })
+}
+
+// ==================== 建模分层树 · 分类（契约 1.16 / V11 四期） ====================
+
+/** 分层枚举：树根由后端 LAYERS 常量虚拟化生成，不落库、不可增删改名 */
+export type MetricModelCategoryLayer = 'ODS' | 'DIM' | 'DWD' | 'DWS' | 'ADS'
+
+/** 树上的分类节点：模型单归属一个分类，计数因此不会重影 */
+export interface MetricModelCategory {
+  id: string
+  name: string
+  layer: string
+  /** 分类口径说明：树节点副标题与 tooltip 用它（≤512） */
+  description?: string
+  sort?: number
+  /** 该分类下的建模数（全量未删除口径，不随右侧筛选变化） */
+  modelCount?: number
+  createdAt?: string
+}
+
+/** 分层根节点：label 是后端给的中文名（界面不再本地兜底，避免两处漂移） */
+export interface MetricModelCategoryLayerNode {
+  layer: string
+  label: string
+  modelCount: number
+  /** 该层 category_id 为空的模型数：界面渲染成「未分类」虚拟子节点 */
+  uncategorized: number
+  children: MetricModelCategory[]
+}
+
+export interface MetricModelCategoryTree {
+  /** 未删除分类节点总数（不是模型数） */
+  total: number
+  layers: MetricModelCategoryLayerNode[]
+}
+
+export interface MetricModelCategoryPayload {
+  name: string
+  layer: MetricModelCategoryLayer | string
+  description?: string
+  sort?: number
+}
+
+/** PUT 只收这三项：带 layer 键一律 40001（层级是树上的挂载位置，创建后不可改） */
+export interface MetricModelCategoryUpdatePayload {
+  name?: string
+  description?: string
+  sort?: number
+}
+
+export interface MetricModelCategoryDeleteResult {
+  id: string
+  deleted: boolean
+  /** 被退回「未分类」的建模数量，删除确认与结果提示直接报这个数 */
+  movedModels: number
+}
+
+export interface MetricModelCategoryAssignItem {
+  id: string
+  ok: boolean
+  message?: string
+}
+
+export interface MetricModelCategoryAssignResult {
+  results: MetricModelCategoryAssignItem[]
+  assigned: number
+  failed: number
+}
+
+/** 分类数据只有这一个来源：平铺列表一律从 layers[].children 取 */
+export function getMetricModelCategoryTreeApi() {
+  return databridgeHttp.get<MetricModelCategoryTree>({ url: '/metric-model-categories/tree' })
+}
+
+export function createMetricModelCategoryApi(data: MetricModelCategoryPayload) {
+  return databridgeHttp.post<MetricModelCategory>({ url: '/metric-model-categories', data })
+}
+
+export function updateMetricModelCategoryApi(id: string, data: MetricModelCategoryUpdatePayload) {
+  return databridgeHttp.put<MetricModelCategory>({
+    url: `/metric-model-categories/${id}`,
+    data,
+  })
+}
+
+/** 软删分类 + 名下建模自动退回未分类：只动元数据，不删建模、不碰物理表 */
+export function deleteMetricModelCategoryApi(id: string) {
+  return databridgeHttp.delete<MetricModelCategoryDeleteResult>({
+    url: `/metric-model-categories/${id}`,
+  })
+}
+
+/** 批量归类：categoryId 空串＝移出回未分类；跨层逐条点名，HTTP 恒 200 */
+export function assignMetricModelCategoryApi(data: { categoryId: string; modelIds: string[] }) {
+  return databridgeHttp.post<MetricModelCategoryAssignResult>({
+    url: '/metric-model-categories/assign',
+    data,
+  })
 }
 
 // ==================== 维度取值档案 / 码值字典（契约 1.14） ====================
@@ -382,6 +487,9 @@ export interface MetricPlazaCard {
   owner: string
   modelId: string
   modelName: string
+  /** 取数模型所在数据源（广场勾选拼宽表时用来拦「跨数据源」） */
+  datasourceId?: string
+  datasourceName?: string
   domainId: string
   domainPath: string[]
   referencedBy: number
@@ -651,6 +759,10 @@ export interface MetricTask {
   targetDatasourceId: string
   targetModelId?: string
   targetTable: string
+  /** 对齐模式（契约 1.15）：model=全部指标同挂源模型；time=跨同源模型按时间粒度拼宽表 */
+  align?: 'model' | 'time'
+  /** align=time 必填：目标宽表粒度，只能向粗对齐 */
+  timeGrain?: string
   writeMode: 'overwrite' | 'append' | 'upsert'
   upsertKeys?: string[]
   scheduleCron?: string
@@ -730,18 +842,54 @@ export function previewMetricTaskApi(data: Partial<MetricTask>) {
 export interface MetricTaskTargetColumn {
   name: string
   type: string
-  /** 维度 | 指标 | 留痕 */
+  /** 维度 | 指标 | 时间 | 留痕 */
   source: string
   comment: string
+}
+
+/** 时间宽表里一个源模型的子查询分组（契约 1.15） */
+export interface MetricTaskPlanGroup {
+  modelId: string
+  modelName: string
+  fromTable: string
+  timeColumn: string
+  metrics: { target: string; sql: string; type: string }[]
+}
+
+/** 目标建模表缺的列（界面据此给「去建模页补列」直达） */
+export interface MetricTaskMissingColumn {
+  name: string
+  /** 维度 | 指标 */
+  kind: string
+  /** 建议类型（MySQL 风格规范串，可直接填进建模页） */
+  suggestType: string
+}
+
+export interface MetricTaskMismatchColumn {
+  name: string
+  kind: string
+  /** 宽表需要的类型 */
+  expected: string
+  /** 目标模型上实际的类型 */
+  actual: string
 }
 
 export interface MetricTaskTargetSchema {
   dialect: string
   table: string
-  /** true=执行时自动 CREATE；false=写入已有目标模型对应的表 */
+  /** true=执行时自动 CREATE（存量任务）；false=写入已选目标建模表 */
   autoCreate: boolean
+  /** model=同模型聚合；time=时间宽表 */
+  align?: 'model' | 'time'
+  timeGrain?: string | null
+  groups?: MetricTaskPlanGroup[]
   writeMode: string
   primaryKeys: string[]
+  targetModel?: { id: string; name: string; tableStatus: string } | null
+  /** 目标建模表结构是否够用（false 时看 missingColumns/mismatchColumns） */
+  matched?: boolean
+  missingColumns?: MetricTaskMissingColumn[]
+  mismatchColumns?: MetricTaskMismatchColumn[]
   columns: MetricTaskTargetColumn[]
   createSql: string | null
   insertSql: string | null

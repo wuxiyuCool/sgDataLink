@@ -5,7 +5,7 @@
   >
     <GuideCard :guide="PAGE_GUIDES.task" />
     <Card :bordered="false" class="mb-3">
-      <Form layout="inline" @finish="handleSearch">
+      <Form :model="query" layout="inline" @finish="handleSearch">
         <FormItem label="关键字" name="keyword">
           <Input
             v-model:value="query.keyword"
@@ -64,7 +64,7 @@
         :pagination="getPagination"
         row-key="id"
         size="middle"
-        :scroll="{ x: 1150 }"
+        :scroll="{ x: 1260 }"
         @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -77,6 +77,12 @@
             <Tag :color="LAST_STATUS_COLORS[record.lastStatus || 'idle'] || 'default'">
               {{ LAST_STATUS_LABELS[record.lastStatus || 'idle'] }}
             </Tag>
+          </template>
+          <template v-else-if="column.key === 'align'">
+            <Tag v-if="record.align === 'time'" color="purple" :bordered="false">
+              时间宽表·{{ record.timeGrain || '?' }}
+            </Tag>
+            <Tag v-else :bordered="false">同模型</Tag>
           </template>
           <template v-else-if="column.key === 'lastRunAt'">{{
             formatTime(record.lastRunAt)
@@ -167,7 +173,8 @@
 </template>
 
 <script lang="ts" setup>
-  import { onMounted, reactive, ref } from 'vue'
+  import { nextTick, onActivated, onMounted, reactive, ref } from 'vue'
+  import { useRoute, useRouter } from 'vue-router'
 
   import {
     Button,
@@ -206,6 +213,8 @@
   const CollapsePanel = Collapse.Panel
 
   const { createMessage } = useMessage()
+  const route = useRoute()
+  const router = useRouter()
   const [registerTaskModal, { openModal: openTaskModal }] = useModal()
 
   const LAST_STATUS_LABELS: Record<string, string> = {
@@ -230,6 +239,7 @@
   const columns = [
     { title: '任务名称', dataIndex: 'name', key: 'name', width: 180 },
     { title: '目标表', dataIndex: 'targetTable', key: 'targetTable', width: 200 },
+    { title: '对齐', key: 'align', width: 110 },
     { title: '写模式', dataIndex: 'writeMode', key: 'writeMode', width: 90 },
     { title: 'Cron', dataIndex: 'scheduleCron', key: 'scheduleCron', width: 130 },
     { title: '状态', key: 'status', width: 80 },
@@ -346,7 +356,32 @@
     currentSql.value = record.sqlText || '(无)'
   }
 
-  onMounted(search)
+  /**
+   * 指标广场「勾的指标建宽表」跳过来：直接开弹窗并预填跨模型指标。
+   * 本页在 keep-alive 多标签下二次进入不会再走 onMounted，所以 onActivated 也要挂一次。
+   * nextTick 是必需的：vben 的 useModal 在子组件注册完成前调用 openModal 会被静默丢弃。
+   */
+  async function applyWidePrefill() {
+    const metrics = String(route.query.metrics || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (!metrics.length) return
+    const prefill = {
+      metricIds: metrics,
+      align: route.query.align === 'time' ? ('time' as const) : ('model' as const),
+      timeGrain: String(route.query.grain || '') || undefined,
+    }
+    router.replace({ name: 'MetricTasks' })
+    await nextTick()
+    openTaskModal(true, { isUpdate: false, prefill })
+  }
+
+  onMounted(() => {
+    search()
+    applyWidePrefill()
+  })
+  onActivated(applyWidePrefill)
 </script>
 
 <style lang="less" scoped>

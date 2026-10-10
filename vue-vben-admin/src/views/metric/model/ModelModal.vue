@@ -33,6 +33,18 @@
           </FormItem>
         </Col>
         <Col :span="12">
+          <FormItem label="分类（可留空）" name="categoryId">
+            <Select v-model:value="formState.categoryId" :options="categoryOptions">
+              <template #suffixIcon>
+                <Icon icon="ant-design:tags-outlined" :size="14" />
+              </template>
+            </Select>
+            <div class="field-tip">
+              {{ categoryTip }}
+            </div>
+          </FormItem>
+        </Col>
+        <Col :span="12">
           <FormItem label="创建方式" name="createType">
             <Select
               v-model:value="formState.createType"
@@ -138,22 +150,25 @@
 </template>
 
 <script lang="ts" setup>
-  import { computed, reactive, ref } from 'vue'
+  import { computed, reactive, ref, watch } from 'vue'
 
-  import { Alert, Divider, Form, Input, Row, Col, Select, TreeSelect } from 'ant-design-vue'
+  import { Alert, Button, Divider, Form, Input, Row, Col, Select, TreeSelect } from 'ant-design-vue'
 
   import { getDatasourceListApi } from '/@/api/databridge/datasource'
   import {
     createMetricModelApi,
     getMetricDomainTreeApi,
     getMetricModelApi,
+    getMetricModelCategoryTreeApi,
     previewModelDdlApi,
     updateMetricModelApi,
     type MetricDomain,
     type MetricModel,
+    type MetricModelCategory,
     type MetricModelColumn,
   } from '/@/api/databridge/metric'
   import { getApiErrorMessage } from '/@/api/databridge/http'
+  import { Icon } from '/@/components/Icon'
   import { BasicModal, useModalInner } from '/@/components/Modal'
   import { useMessage } from '/@/hooks/web/useMessage'
 
@@ -194,7 +209,43 @@
     timeColumn: undefined as string | undefined,
     status: 'online',
     remark: '',
+    /** 空串＝不归类（该层的「未分类」桶）；只能选与 layer 同层的分类，跨层后端 40001 */
+    categoryId: '',
   })
+
+  /** 分层 → 该层分类列表（来自分层树接口的 children，不另开平铺列表） */
+  const categoriesByLayer = ref<Record<string, MetricModelCategory[]>>({})
+
+  const categoryOptions = computed(() => [
+    { label: '不归类（留在该层的未分类桶）', value: '' },
+    ...(categoriesByLayer.value[formState.layer] || []).map((item) => ({
+      label: item.name,
+      value: item.id,
+    })),
+  ])
+
+  const categoryTip = computed(() => {
+    const count = (categoriesByLayer.value[formState.layer] || []).length
+    if (!count)
+      return '这一层还没有分类：可在左侧分层树上点该层的「＋」建一个，或先留空（未归类）。'
+    return `分类只能选当前分层下的 ${count} 个；换了分层，原分类会自动清空，需要重选。`
+  })
+
+  // 分层是分类的挂载前提：换层后原分类必属别的层，提交会被拒（40001），所以在界面就先清空
+  watch(
+    () => formState.layer,
+    (layer, prevLayer) => {
+      if (!prevLayer || layer === prevLayer || !formState.categoryId) return
+      const stillValid = (categoriesByLayer.value[layer] || []).some(
+        (item) => item.id === formState.categoryId,
+      )
+      if (stillValid) return
+      formState.categoryId = ''
+      createMessage.warning(
+        `分层已改为 ${layer}，原分类不属于这一层，已清空分类——请在「分类」里重选，或保持不归类`,
+      )
+    },
+  )
 
   const dialectType = computed(() =>
     dsTypes.value[formState.datasourceId || ''] === 'oracle' ? 'oracle' : 'mysql',
@@ -263,6 +314,17 @@
         dsOptions.value = []
       }
     }
+    // 分类每次开弹窗重取：新建/改名/删除都能立刻在这里选到（分类的唯一来源是分层树）
+    try {
+      const tree = await getMetricModelCategoryTreeApi()
+      const map: Record<string, MetricModelCategory[]> = {}
+      ;(tree?.layers || []).forEach((node) => {
+        map[node.layer] = node.children || []
+      })
+      categoriesByLayer.value = map
+    } catch {
+      categoriesByLayer.value = {}
+    }
   }
 
   const [registerModal, { setModalProps, closeModal }] = useModalInner(async (data) => {
@@ -276,7 +338,9 @@
       formState.id = record.id
       formState.name = record.name
       formState.domainId = record.domainId
+      formState.categoryId = ''
       formState.layer = record.layer
+      formState.categoryId = record.categoryId || ''
       formState.createType = record.createType
       formState.datasourceId = record.datasourceId
       formState.tableName = record.tableName
@@ -289,6 +353,7 @@
         detailColumns.value = detail?.columns || []
         formState.timeColumn = detail?.timeColumn || formState.timeColumn
         formState.remark = detail?.remark ?? formState.remark
+        formState.categoryId = detail?.categoryId ?? formState.categoryId
       } catch {
         detailColumns.value = record.columns ? [...record.columns] : []
       }
@@ -305,7 +370,8 @@
       formState.id = ''
       formState.name = ''
       formState.domainId = undefined
-      formState.layer = 'DWD'
+      formState.categoryId = ''
+      formState.layer = data?.layer || 'DWD'
       formState.createType = 'reference'
       formState.datasourceId = undefined
       formState.tableName = ''
@@ -345,6 +411,8 @@
       const base = {
         name: formState.name.trim(),
         layer: formState.layer,
+        // 恒下发（空串＝主动回该层未分类）：改了 layer 又留空才不会被后端 40001 拦住
+        categoryId: formState.categoryId || '',
         tableName: formState.tableName || undefined,
         timeColumn: formState.timeColumn || undefined,
         remark: formState.remark,
@@ -388,10 +456,17 @@
   .ddl-block {
     margin-top: 8px;
     padding: 8px 12px;
-    background: #f6f8fa;
+    background: @background-color-light;
     border-radius: 4px;
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+
+  .field-tip {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 18px;
+    color: @text-color-secondary;
   }
 </style>
