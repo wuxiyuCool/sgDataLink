@@ -218,7 +218,20 @@ const loadUserForToken = async (id) => {
   return user;
 };
 
-const listUsers = (query = {}) => userRepository.page({ ...query, sort: query.sort || 'createdAt:desc' });
+/**
+ * 仓储的 page() 只认 `filters`（等值条件）+ 平铺的 `keyword/page/size/sort`，
+ * 所以 role/status 必须收进 filters 再传——直接 spread 平铺会被静默丢掉（列表筛不出角色/状态）。
+ */
+const listUsers = (query = {}) => {
+  const { keyword, role, status, page, size, sort } = query;
+  return userRepository.page({
+    keyword,
+    page,
+    size,
+    filters: { role, status },
+    sort: sort || 'createdAt:desc',
+  });
+};
 
 const assertUsernameFree = async (username) => {
   if (await userRepository.getByUsername(username)) {

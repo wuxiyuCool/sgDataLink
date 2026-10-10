@@ -102,7 +102,7 @@
             show-icon
             message="每次登录（成功与失败）都会记录：用户名/IP/结果/失败原因，滚动保留最近 1 万条；日志不含任何口令信息"
           />
-          <Form layout="inline" class="mb-3 gap-y-2" @finish="handleLogSearch">
+          <Form :model="logQuery" layout="inline" class="mb-3 gap-y-2" @finish="handleLogSearch">
             <FormItem label="关键字" name="logKeyword">
               <Input v-model:value="logQuery.keyword" allow-clear placeholder="用户名或 IP" style="width: 170px" />
             </FormItem>
@@ -162,7 +162,12 @@
             show-icon
             message="GET /data-apis/swagger.json 每次访问（登录态 JWT 或文档 Key）都会记录，成败均含；key 只存掩码（前 6 位+***），完整 key 绝不落库；滚动保留最近 1 万条（契约 1.9.5）"
           />
-          <Form layout="inline" class="mb-3 gap-y-2" @finish="handleDocLogSearch">
+          <Form
+            :model="docLogQuery"
+            layout="inline"
+            class="mb-3 gap-y-2"
+            @finish="handleDocLogSearch"
+          >
             <FormItem label="关键字" name="docKeyword">
               <Input v-model:value="docLogQuery.keyword" allow-clear placeholder="用户名或 IP" style="width: 170px" />
             </FormItem>

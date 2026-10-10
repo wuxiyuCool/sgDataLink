@@ -4,46 +4,41 @@
     content="Data API 自动生成的 OpenAPI 3.0 文档（查看需登录，草稿仅管理员可见）：按数据源筛选、按 path/名称模糊查询；文案可在 Data API 编辑弹窗的「文档配置」中修改"
   >
     <Card :bordered="false" class="mb-3">
-      <Form layout="inline" class="gap-y-2" @finish="handleSearch">
-        <FormItem label="路径/名称" name="keyword">
-          <Input
-            v-model:value="query.keyword"
-            allow-clear
-            placeholder="按 apipath 或服务名模糊查询"
-            style="width: 220px"
-            @press-enter="handleSearch"
-          />
-        </FormItem>
-        <FormItem label="数据源" name="tag">
-          <Select
-            v-model:value="query.tag"
-            :options="tagOptions"
-            allow-clear
-            placeholder="全部数据源"
-            style="width: 180px"
-          />
-        </FormItem>
-        <FormItem v-if="isAdmin" label="范围" name="status">
-          <Select
-            v-model:value="query.status"
-            :options="STATUS_OPTIONS"
-            style="width: 150px"
-          />
-        </FormItem>
-        <FormItem>
-          <Space>
-            <Button type="primary" html-type="submit" :loading="loading">
-              <Icon icon="ant-design:search-outlined" class="mr-1" />
-              查询
-            </Button>
-            <Button @click="handleReset">重置</Button>
-            <Button :disabled="!spec" @click="handleDownload">
-              <Icon icon="ant-design:download-outlined" class="mr-1" />
-              下载 swagger.json
-            </Button>
-          </Space>
-        </FormItem>
-      </Form>
+      <div class="docs-toolbar">
+        <Form :model="query" layout="inline" class="gap-y-2" @finish="handleSearch">
+          <FormItem label="路径/名称" name="keyword">
+            <Input
+              v-model:value="query.keyword"
+              allow-clear
+              placeholder="按 apipath 或服务名模糊查询"
+              style="width: 220px"
+              @press-enter="handleSearch"
+            />
+          </FormItem>
+          <FormItem label="数据源" name="tag">
+            <Select
+              v-model:value="query.tag"
+              :options="tagOptions"
+              allow-clear
+              placeholder="全部数据源"
+              style="width: 180px"
+            />
+          </FormItem>
+          <FormItem v-if="isAdmin" label="范围" name="status">
+            <Select v-model:value="query.status" :options="STATUS_OPTIONS" style="width: 150px" />
+          </FormItem>
+          <FormItem>
+            <Space>
+              <Button type="primary" html-type="submit">查询</Button>
+              <Button @click="handleReset">重置</Button>
+            </Space>
+          </FormItem>
+        </Form>
+        <Button :disabled="!spec" :loading="loading" @click="handleDownload">
+          <Icon icon="ant-design:download-outlined" class="mr-1" />
+          下载 swagger.json
+        </Button>
+      </div>
     </Card>
 
     <Card :bordered="false" class="mb-3" title="我的文档 Key（免登录获取 swagger.json）">
@@ -495,6 +490,15 @@
 </script>
 
 <style lang="less" scoped>
+  /* 搜索区与其它列表页对齐：左侧筛选表单，右侧页面级动作按钮 */
+  .docs-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
   .mono {
     font-family: consolas, monospace;
   }
