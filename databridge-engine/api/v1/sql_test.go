@@ -63,6 +63,11 @@ func TestSQLExecValidate(t *testing.T) {
 		{"DROP TABLE PURGE 拒绝", []string{"DROP TABLE t PURGE"}, true, "白名单"},
 		{"DROP TABLE 无表名拒绝", []string{"DROP TABLE"}, true, "白名单"},
 		{"DROP USER 拒绝", []string{"DROP USER scott"}, true, "白名单"},
+		{"MERGE INTO 允许（v1.15 Oracle 幂等刷新）", []string{"MERGE INTO t s USING (SELECT 1 AS id) d ON (s.id = d.id) WHEN MATCHED THEN UPDATE SET s.a = d.a WHEN NOT MATCHED THEN INSERT (id, a) VALUES (d.id, d.a)"}, false, ""},
+		{"MERGE INTO 带 DELETE 分支拒绝", []string{"MERGE INTO t s USING (SELECT 1 AS id) d ON (s.id = d.id) WHEN MATCHED THEN UPDATE SET s.a = d.a DELETE WHERE s.a IS NULL"}, false, "DELETE 分支"},
+		{"MERGE 缺 INTO 拒绝", []string{"MERGE t s USING x"}, false, "白名单"},
+		{"COMMENT ON 允许（v1.15 Oracle 建表注释）", []string{"CREATE TABLE t (a INT)", "COMMENT ON TABLE t IS 'ADS | domain=d'", "COMMENT ON COLUMN t.a IS '数量'"}, false, ""},
+		{"COMMENT 缺 ON 拒绝", []string{"COMMENT TABLE t IS 'x'"}, false, "白名单"},
 		{"分号拼接拒绝", []string{"SELECT 1; SELECT 2"}, false, "多语句"},
 		{"空语句拒绝", []string{"  "}, false, "不能为空"},
 	}

@@ -106,11 +106,18 @@ func (r *SQLQueryRequest) Validate() error {
 }
 
 // Validate exec 守卫：每条语句首关键字 ∈ {CREATE TABLE, TRUNCATE TABLE, INSERT INTO,
-// ALTER TABLE(仅 ADD 列), DROP TABLE(仅单表)}；DELETE/UPDATE/GRANT 等一律拒绝。
+// ALTER TABLE(仅 ADD 列), DROP TABLE(仅单表), MERGE INTO(禁 DELETE 分支), COMMENT ON}；
+// DELETE/UPDATE/GRANT 等一律拒绝。
 //
 // DROP TABLE 是 v1.13 为「建模删除平台建的表」开的口子，收得比其它动词更紧：
 // 只认 `DROP TABLE [IF EXISTS] <单个表名>`，多表逗号、CASCADE/PURGE、任何尾巴字符都不放行
 // （分号多语句已在 normalizeSQL 挡掉）。表名合法性仍由 Node 侧标识符白名单保证。
+//
+// MERGE INTO 是 v1.15 给 Oracle 目标的幂等刷新开的口子（Oracle 无 ON DUPLICATE KEY）：
+// 只放行 UPDATE + INSERT 两个分支，带 DELETE 子句（WHEN MATCHED ... DELETE WHERE）一律拒绝。
+//
+// COMMENT ON 同 v1.15：Oracle 没有内联 COMMENT，建模「生成表」的表/列注释是拆开的 COMMENT ON
+// 语句，整批下发时被白名单挡掉过（建表 400 且一批不落库）。它只写数据字典、不触碰任何行数据。
 func (r *SQLExecRequest) Validate() error {
 	if err := validateSQLConnEndpoint(r.Endpoint); err != nil {
 		return err
@@ -125,14 +132,19 @@ func (r *SQLExecRequest) Validate() error {
 		switch {
 		case strings.HasPrefix(head, "CREATE TABLE"),
 			strings.HasPrefix(head, "TRUNCATE TABLE"),
-			strings.HasPrefix(head, "INSERT INTO"):
+			strings.HasPrefix(head, "INSERT INTO"),
+			strings.HasPrefix(head, "COMMENT ON"):
 		case strings.HasPrefix(head, "ALTER TABLE") && strings.Contains(head, " ADD "):
+		case strings.HasPrefix(head, "MERGE INTO"):
+			if strings.Contains(head, " DELETE ") {
+				return fmt.Errorf("statements[%d]: MERGE INTO 不允许 DELETE 分支（只放行更新与插入）", i)
+			}
 		case dropTablePattern.MatchString(text):
 			if !r.AllowDrop {
 				return fmt.Errorf("statements[%d]: DROP TABLE 需要请求体显式 allowDrop=true（仅建模删除平台自建表时下发）", i)
 			}
 		default:
-			return fmt.Errorf("statements[%d]: 首关键字不在白名单 {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD, DROP TABLE}，当前为 %q", i, firstWords(head, 3))
+			return fmt.Errorf("statements[%d]: 首关键字不在白名单 {CREATE TABLE, TRUNCATE TABLE, INSERT INTO, ALTER TABLE ADD, DROP TABLE, MERGE INTO, COMMENT ON}，当前为 %q", i, firstWords(head, 3))
 		}
 		cleaned = append(cleaned, text)
 	}
