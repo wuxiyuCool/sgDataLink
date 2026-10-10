@@ -18,7 +18,10 @@ const cronMatcher = require('../utils/cronMatcher');
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const WRITE_MODES = ['overwrite', 'append', 'upsert'];
+const ALIGNS = ['model', 'time'];
 const CLEAN_TYPES = ['filter', 'fill', 'rename', 'dedup'];
+/** 时间宽表的对齐键列名（也是 upsert 主键）；rename 规则可以用源时间列名改它 */
+const STAT_PERIOD = 'stat_period';
 const DIM_TARGET_TYPES = {
   BIGINT: 'BIGINT',
   INT: 'INT',
@@ -83,11 +86,22 @@ const validateTaskShape = async (data) => {
   if (!metricIds.length) throw paramInvalid('metricIds 至少 1 个');
   const writeMode = data.writeMode || 'overwrite';
   if (!WRITE_MODES.includes(writeMode)) throw paramInvalid(`writeMode ∈ ${WRITE_MODES.join('|')}`);
-  // 目标库方言决定清洗规则与写入模式是否可表达（方言层 §6.4）：Oracle 空串等价 NULL、无 ON DUPLICATE KEY UPDATE
+  // 对齐模式（契约 1.15）：model=全部指标同挂一个源模型（可带非时间维度）；time=跨同源模型按时间粒度拼宽表
+  const align = data.align || 'model';
+  if (!ALIGNS.includes(align)) throw paramInvalid(`align ∈ ${ALIGNS.join('|')}`);
+  const timeGrain = data.timeGrain ? String(data.timeGrain).toLowerCase() : '';
+  if (align === 'time') {
+    if ((data.dimensionColumnIds || []).length) {
+      throw paramInvalid('时间宽表只按时间对齐：需要按地区等非时间维度切分请改用同模型模式（align=model）');
+    }
+    if (!timeGrain) throw paramInvalid(`align=time 必须指定 timeGrain ∈ ${dialect.GRAINS.join('|')}`);
+    dialect.grainRank(timeGrain); // 非法档位由方言层给可读报错
+  }
+  // 目标库方言决定清洗规则与写入模式是否可表达（方言层 §6.4）：Oracle 空串等价 NULL、幂等走 MERGE INTO
   const targetDs = data.targetDatasourceId ? await datasourceRepository.getById(data.targetDatasourceId) : null;
   const dl = dialect.dialectOfSource(targetDs || 'mysql');
-  if (writeMode === 'upsert' && !dl.supports.upsertOnDuplicate) {
-    throw paramInvalid(`${dl.type} 目标表一期不支持 upsert（需 MERGE INTO，未实现），请改用 overwrite 或 append`);
+  if (writeMode === 'upsert' && !dl.supports.upsert) {
+    throw paramInvalid(`${dl.type} 目标不支持 upsert 写入，请改用 overwrite 或 append`);
   }
   const rules = Array.isArray(data.cleanRules) ? data.cleanRules : [];
   rules.forEach((rule, index) => {
@@ -108,45 +122,73 @@ const validateTaskShape = async (data) => {
   if (data.scheduleCron && !cronMatcher.isSupportedCron(data.scheduleCron)) {
     throw paramInvalid('scheduleCron 需为 6 位 Quartz 子集（秒 分 时 日 月 周）');
   }
-  const targetTable = String(data.targetTable || '').trim();
+  // 目标建模表（契约 1.15）：表名与数据源以模型为准，任务侧不再自己定表名，也不自动建表/ALTER
+  const targetModelId = data.targetModelId || '';
+  let targetTable = String(data.targetTable || '').trim();
+  if (targetModelId) {
+    const targetModel = await metricModelRepository.getById(targetModelId);
+    if (!targetModel || targetModel.delFlag) throw paramInvalid(`目标模型不存在: ${targetModelId}`);
+    if (targetModel.status === 'draft') {
+      throw paramInvalid(`目标模型「${targetModel.name}」是草稿，请先在数据建模页启用`);
+    }
+    if (targetModel.tableStatus === 'failed') {
+      throw paramInvalid(
+        `目标模型「${targetModel.name}」的物理表还没建成功（${targetModel.tableMsg || '建表失败'}），请先在建模页重试`
+      );
+    }
+    if (data.targetDatasourceId && String(data.targetDatasourceId) !== String(targetModel.datasourceId)) {
+      throw paramInvalid(`目标数据源必须与目标模型的数据源一致（${targetModel.datasourceId}）`);
+    }
+    targetTable = targetModel.tableName;
+  } else if (!targetTable) {
+    throw paramInvalid('请选目标建模表（targetModelId），或手工指定 targetTable 走旧的自动建表模式');
+  }
   if (!IDENT.test(targetTable)) throw paramInvalid('targetTable 非法（标识符白名单）');
   const status = data.status || 'online';
   if (!['online', 'offline'].includes(status)) throw paramInvalid('status ∈ online|offline');
-  return { name, metricIds, writeMode, rules, targetTable, status };
+  return { name, metricIds, writeMode, rules, targetTable, targetModelId, align, timeGrain, status };
 };
 
-/**
- * 组物化计划：全部指标 compileMetricExpr 后必须同 modelId == sourceModelId。
- * @returns {selectItems:[{target,sql}], fromTable, timeColumn, datasourceId, dims:[{target,sql,source,type}], whereExtra, metricCols, dimCols}
- */
-const buildPlan = async (task, now = new Date()) => {
-  const source = await metricModelRepository.getById(task.sourceModelId);
-  if (!source || source.delFlag) throw paramInvalid(`源模型不存在: ${task.sourceModelId}`);
-  // 草稿模型的表结构未确认，不能拿来做物化（契约 1.13）
-  if (source.status === 'draft') throw paramInvalid(`源模型「${source.name}」是草稿，请先在数据建模页启用`);
+/** 清洗规则按列名归堆：fill→COALESCE 兜底值，rename→目标列名，filter→原样进 WHERE */
+const groupRules = (rules = []) => {
   const fillBy = new Map();
   const renameBy = new Map();
   const filters = [];
-  (task.cleanRules || []).forEach((rule) => {
+  rules.forEach((rule) => {
     if (rule.type === 'fill')
       fillBy.set(rule.column, rule.value === undefined || rule.value === null ? '' : String(rule.value));
     if (rule.type === 'rename') renameBy.set(rule.column, rule.to);
     if (rule.type === 'filter') filters.push(rule.sql);
   });
+  return { fillBy, renameBy, filters };
+};
 
-  const modelIds = new Set();
-  let timeColumn = '';
-  let datasourceId = '';
-  const metricItems = [];
+/** 逐指标编译为裸聚合表达式（顺序执行：报错要指向第一个越界指标） */
+const compileTaskMetrics = async (metricIds) => {
+  const items = [];
   // eslint-disable-next-line no-restricted-syntax
-  for (const metricId of task.metricIds) {
+  for (const metricId of metricIds) {
     // eslint-disable-next-line no-await-in-loop
     const compiled = await metricCompilerService.compileMetricExpr(metricId);
-    modelIds.add(compiled.modelId);
-    timeColumn = timeColumn || compiled.timeColumn;
-    datasourceId = datasourceId || compiled.datasourceId;
-    metricItems.push({ target: compiled.code, sql: compiled.expr, type: typeOfMetric(compiled.expr) });
+    items.push({ ...compiled, type: typeOfMetric(compiled.expr) });
   }
+  return items;
+};
+
+/**
+ * 同模型计划（align=model，一期口径）：全部指标同挂 sourceModelId，可按任意维度分组。
+ */
+const buildModelPlan = async (task, compiled, dateRange) => {
+  const source = await metricModelRepository.getById(task.sourceModelId);
+  if (!source || source.delFlag) throw paramInvalid(`源模型不存在: ${task.sourceModelId}`);
+  // 草稿模型的表结构未确认，不能拿来做物化（契约 1.13）
+  if (source.status === 'draft') throw paramInvalid(`源模型「${source.name}」是草稿，请先在数据建模页启用`);
+  const { fillBy, renameBy, filters } = groupRules(task.cleanRules);
+
+  const modelIds = new Set(compiled.map((item) => item.modelId));
+  const timeColumn = (compiled.find((item) => item.timeColumn) || {}).timeColumn || '';
+  const datasourceId = (compiled.find((item) => item.datasourceId) || {}).datasourceId || '';
+  const metricItems = compiled.map((item) => ({ target: item.code, sql: item.expr, type: item.type }));
   if (modelIds.size > 1 || (modelIds.size === 1 && !modelIds.has(source.id))) {
     throw paramInvalid(`任务指标必须全部挂在源模型 ${task.sourceModelId} 上（当前涉及 ${[...modelIds].join(',')}）`);
   }
@@ -171,10 +213,11 @@ const buildPlan = async (task, now = new Date()) => {
     });
   }
 
-  const dateRange = resolveDateRange(task.timePreset, now);
   return {
+    align: 'model',
     selectItems: [...dimItems, ...metricItems],
     fromTable: source.tableName,
+    fromTables: [source.tableName],
     timeColumn,
     datasourceId,
     dims: dimItems,
@@ -185,47 +228,219 @@ const buildPlan = async (task, now = new Date()) => {
 };
 
 /**
- * 生成执行语句序列（CREATE 目标表 → overwrite 时 TRUNCATE → INSERT..SELECT[ON DUP]）。
- * 所有方言差异（标识符引用、类型、日期字面量、IF NOT EXISTS、upsert 语法）一律问 dialect 层。
+ * 时间宽表计划（align=time，契约 1.15）：指标可跨同源模型，按时间粒度截断对齐。
+ * 每个模型一个分组（各自的时间列/表名），唯一的对齐键是截断后的时间（stat_period）。
+ */
+const buildTimePlan = async (task, compiled, dateRange) => {
+  const { fillBy, renameBy, filters } = groupRules(task.cleanRules);
+  if (fillBy.size) throw paramInvalid('时间宽表没有可填充的维度列（需要填充兜底值请改用同模型模式，或删掉 fill 规则）');
+  const datasourceIds = new Set(compiled.map((item) => String(item.datasourceId)));
+  if (datasourceIds.size > 1) {
+    throw paramInvalid(`时间宽表要求全部指标同数据源（当前涉及 ${[...datasourceIds].join(',')}）`);
+  }
+  const { datasourceId } = compiled[0];
+  if (String(task.targetDatasourceId) !== String(datasourceId)) {
+    throw paramInvalid('物化要求目标数据源与指标同源（单连接 INSERT..SELECT，契约 1.12 红线）');
+  }
+  // 只能向粗对齐：日→月是再聚合（正确），月→日是无中生有（同一值摊到当月每一天，静默错算）
+  const targetRank = dialect.grainRank(task.timeGrain);
+  const tooFine = compiled.filter((item) => dialect.grainRank(item.timeGrain) > targetRank);
+  if (tooFine.length) {
+    throw paramInvalid(
+      `目标粒度 ${task.timeGrain} 比指标更细：${tooFine
+        .map((item) => `${item.code}(${item.timeGrain})`)
+        .join(',')}；请放宽 timeGrain 或把这些指标的源粒度改细`
+    );
+  }
+
+  const grouped = new Map();
+  compiled.forEach((item) => {
+    const entry = grouped.get(item.modelId) || { metrics: [], timeColumns: new Set() };
+    entry.metrics.push({ target: item.code, sql: item.expr, type: item.type });
+    if (item.timeColumn) entry.timeColumns.add(item.timeColumn);
+    grouped.set(item.modelId, entry);
+  });
+
+  const groups = [];
+  // eslint-disable-next-line no-restricted-syntax
+  for (const [modelId, entry] of grouped) {
+    // eslint-disable-next-line no-await-in-loop
+    const model = await metricModelRepository.getById(modelId);
+    if (!model || model.delFlag) throw paramInvalid(`源模型不存在: ${modelId}`);
+    if (model.status === 'draft') throw paramInvalid(`源模型「${model.name}」是草稿，请先在数据建模页启用`);
+    if (entry.timeColumns.size > 1) {
+      throw paramInvalid(`模型「${model.name}」内指标的时间列不一致（${[...entry.timeColumns].join(',')}），无法按时间对齐`);
+    }
+    const timeColumn = [...entry.timeColumns][0] || model.timeColumn || '';
+    if (!timeColumn) throw paramInvalid(`模型「${model.name}」未配置时间列，无法按时间对齐`);
+    groups.push({
+      modelId: model.id,
+      modelName: model.name,
+      fromTable: model.tableName,
+      timeColumn,
+      metrics: entry.metrics,
+    });
+  }
+
+  // 对齐键名：rename 规则只对时间列生效（宽表只有一个对齐键，不给多个目标名）
+  const timeColumns = new Set(groups.map((g) => g.timeColumn));
+  const outside = [...renameBy.keys()].filter((col) => !timeColumns.has(col));
+  if (outside.length) {
+    throw paramInvalid(
+      `时间宽表只对齐时间列，rename 非时间列无效（可改时间列的目标名，或改用同模型模式）: ${outside.join(',')}`
+    );
+  }
+  const aliases = new Set([...renameBy.values()].map((to) => String(to || '').trim()));
+  if (aliases.size > 1) throw paramInvalid('时间宽表只有一个对齐键，rename 时间列不能给出多个目标名');
+  const statCol = aliases.size ? [...aliases][0] : STAT_PERIOD;
+  if (!IDENT.test(statCol)) throw paramInvalid(`时间列目标名非法（标识符白名单）: ${statCol}`);
+
+  const metrics = groups.reduce((acc, g) => acc.concat(g.metrics), []);
+  return {
+    align: 'time',
+    groups,
+    statCol,
+    timeGrain: task.timeGrain,
+    selectItems: [{ target: statCol, sql: null }, ...metrics],
+    fromTable: groups[0].fromTable,
+    fromTables: groups.map((g) => g.fromTable),
+    timeColumn: groups[0].timeColumn,
+    datasourceId,
+    dims: [{ target: statCol, sql: null, source: '(时间)', type: 'VARCHAR(32)' }],
+    metrics,
+    filters,
+    dateRange,
+  };
+};
+
+/**
+ * 组物化计划（align 决定形状，契约 1.15 §A）。
+ * @returns {{align, selectItems, fromTable, fromTables, timeColumn, datasourceId, dims, metrics, filters, dateRange, groups?, statCol?, timeGrain?}}
+ */
+const buildPlan = async (task, now = new Date()) => {
+  const compiled = await compileTaskMetrics(task.metricIds);
+  const dateRange = resolveDateRange(task.timePreset, now);
+  if (task.align === 'time') return buildTimePlan(task, compiled, dateRange);
+  return buildModelPlan(task, compiled, dateRange);
+};
+
+/**
+ * 目标建模表是否真有 ETL 留痕列。
+ * 表结构权威在建模页（契约 1.15 §C：任务不自动 ALTER），所以留痕列只能「有就写、没有就跳」，
+ * 否则每次运行都撞 Unknown column。自动建表的存量任务按二期行为始终带。
+ */
+const resolveEtlColumn = async (task, dl) => {
+  if (!task.targetModelId) return dl.etlColumn;
+  const model = await metricModelRepository.getById(task.targetModelId);
+  const hit = ((model || {}).columns || []).find((c) => String(c.columnName).toUpperCase() === dl.etlColumn.toUpperCase());
+  return hit ? hit.columnName : '';
+};
+
+/** 同模型模式：单表 SELECT 聚合（一期形状） */
+const buildModelSelect = (plan, dl, etlColumn) => {
+  const selectItems = [
+    ...plan.dims.map((d) => `${dl.normalize(d.sql)} AS ${dl.ident(d.target)}`),
+    ...plan.metrics.map((m) => `${dl.normalize(m.sql)} AS ${dl.ident(m.target)}`),
+  ];
+  const whereParts = plan.filters.map((f) => `(${dl.normalize(f)})`);
+  const timePart = dl.timeFilter(plan.timeColumn, plan.dateRange);
+  if (timePart) whereParts.push(timePart);
+  // GROUP BY 必须重复表达式：Oracle 不支持 GROUP BY 1/别名
+  const groupBy = plan.dims.length ? ` GROUP BY ${plan.dims.map((d) => dl.normalize(d.sql)).join(', ')}` : '';
+  if (etlColumn) selectItems.push(`${dl.nowExpr} AS ${dl.ident(etlColumn)}`);
+  return {
+    cols: [...plan.dims.map((d) => d.target), ...plan.metrics.map((m) => m.target), ...(etlColumn ? [etlColumn] : [])],
+    keys: plan.dims.map((d) => d.target),
+    selectSql: `SELECT ${selectItems.join(', ')} FROM ${dl.sourceTable(plan.fromTable)} t${
+      whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''
+    }${groupBy}`,
+  };
+};
+
+/**
+ * 时间宽表：每模型一个聚合子查询（时间截断为对齐键），再按「时间全集 LEFT JOIN 各子查询」拼宽。
+ * 基表用 UNION 出的时间全集而不是拿某张表当基准——基准表当期无数据时整行会丢（契约 1.15 §A）。
+ * MySQL 5.7 无 FULL OUTER JOIN，故两库统一这个形状。
+ */
+const buildTimeSelect = (plan, dl, etlColumn) => {
+  const statCol = dl.ident(plan.statCol);
+  const groupAlias = (index) => `dbr_g${index + 1}`;
+  const subs = plan.groups.map((group) => {
+    const trunc = dl.dateTrunc(`t.${group.timeColumn}`, plan.timeGrain);
+    const whereParts = [dl.timeFilter(group.timeColumn, plan.dateRange)]
+      .concat(plan.filters.map((f) => `(${dl.normalize(f)})`))
+      .filter(Boolean);
+    const items = [`${trunc} AS ${statCol}`].concat(
+      group.metrics.map((m) => `${dl.normalize(m.sql)} AS ${dl.ident(m.target)}`)
+    );
+    return `SELECT ${items.join(', ')} FROM ${dl.sourceTable(group.fromTable)} t${
+      whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''
+    } GROUP BY ${trunc}`;
+  });
+  // 各子查询指标个数不同，UNION 只取对齐键一列（列数必须一致）
+  const universe = plan.groups
+    .map((group, index) => `SELECT ${statCol} FROM (${subs[index]}) dbr_u${index + 1}`)
+    .join(' UNION ');
+  const aliasByMetric = new Map();
+  plan.groups.forEach((group, index) => {
+    group.metrics.forEach((m) => aliasByMetric.set(m.target, groupAlias(index)));
+  });
+  const selectItems = [`u.${statCol} AS ${statCol}`].concat(
+    plan.metrics.map((m) => `${aliasByMetric.get(m.target)}.${dl.ident(m.target)} AS ${dl.ident(m.target)}`)
+  );
+  if (etlColumn) selectItems.push(`${dl.nowExpr} AS ${dl.ident(etlColumn)}`);
+  const joins = plan.groups
+    .map(
+      (group, index) => ` LEFT JOIN (${subs[index]}) ${groupAlias(index)} ON u.${statCol} = ${groupAlias(index)}.${statCol}`
+    )
+    .join('');
+  return {
+    cols: [plan.statCol, ...plan.metrics.map((m) => m.target), ...(etlColumn ? [etlColumn] : [])],
+    keys: [plan.statCol],
+    selectSql: `SELECT ${selectItems.join(', ')} FROM (${universe}) u${joins}`,
+  };
+};
+
+/**
+ * 生成执行语句序列（自动建表时 CREATE → overwrite 时 TRUNCATE → INSERT..SELECT / MERGE）。
+ * 所有方言差异（标识符引用、类型、日期字面量、IF NOT EXISTS、幂等写法）一律问 dialect 层。
  */
 const buildStatements = async (task, plan) => {
   const dl = dialect.dialectOfSource(await datasourceRepository.getById(task.targetDatasourceId));
-  if (task.writeMode === 'upsert' && !dl.supports.upsertOnDuplicate) dl.upsertTail([]); // 统一由方言层给拒因
-  const { dims, metrics } = plan;
-  const cols = [...dims.map((d) => d.target), ...metrics.map((m) => m.target), dl.etlColumn];
-  const selectTail = dims
-    .map((d) => `${dl.normalize(d.sql)} AS ${dl.ident(d.target)}`)
-    .concat(
-      metrics.map((m) => `${dl.normalize(m.sql)} AS ${dl.ident(m.target)}`),
-      [dl.nowExpr]
-    )
-    .join(', ');
-  const whereParts = [...plan.filters.map((f) => `(${dl.normalize(f)})`)];
-  const timePart = dl.timeFilter(plan.timeColumn, plan.dateRange);
-  if (timePart) whereParts.push(timePart);
-  const groupBy = dims.length ? ` GROUP BY ${dims.map((d) => dl.normalize(d.sql)).join(', ')}` : '';
-  const selectSql = `SELECT ${selectTail} FROM ${dl.sourceTable(plan.fromTable)} t${
-    whereParts.length ? ` WHERE ${whereParts.join(' AND ')}` : ''
-  }${groupBy}`;
+  const etlColumn = await resolveEtlColumn(task, dl);
+  const built = plan.align === 'time' ? buildTimeSelect(plan, dl, etlColumn) : buildModelSelect(plan, dl, etlColumn);
+  const { cols, keys, selectSql } = built;
 
   const statements = [];
   if (!task.targetModelId) {
-    // 自动目标表：维度列 + 指标列 + ETL 时间列；upsert 需要维度主键
+    // 自动目标表（仅存量任务）：维度列 + 指标列 + ETL 时间列；upsert 需要对齐列做主键
     const defs = [
-      ...dims.map((d) => `${dl.ident(d.target)} ${dl.columnType(d.type)} NOT NULL`),
-      ...metrics.map((m) => `${dl.ident(m.target)} ${dl.columnType(m.type)} DEFAULT 0 NOT NULL`),
-      `${dl.ident(dl.etlColumn)} ${dl.columnType('DATETIME')}`,
+      ...plan.dims.map((d) => `${dl.ident(d.target)} ${dl.columnType(d.type)} NOT NULL`),
+      // 指标列允许 NULL：当期没数落 NULL，DEFAULT 0 会被下游读成「真的是零」（契约 1.15 §D）
+      ...plan.metrics.map((m) => `${dl.ident(m.target)} ${dl.columnType(m.type)} NULL`),
     ];
+    if (etlColumn) defs.push(`${dl.ident(etlColumn)} ${dl.columnType('DATETIME')}`);
     if (task.writeMode === 'upsert') {
-      if (!dims.length) throw paramInvalid('upsert 模式必须配置至少一个维度列作为主键');
-      defs.push(`PRIMARY KEY (${dims.map((d) => dl.ident(d.target)).join(', ')})`);
+      if (!keys.length) throw paramInvalid('upsert 模式必须配置至少一个维度列作为主键');
+      defs.push(`PRIMARY KEY (${keys.map((k) => dl.ident(k)).join(', ')})`);
     }
     statements.push(dl.createTable({ table: task.targetTable, defs }));
   }
   if (task.writeMode === 'overwrite') statements.push(dl.clearTarget(task.targetTable));
-  let insert = `INSERT INTO ${dl.table(task.targetTable)} (${cols.map((c) => dl.ident(c)).join(', ')}) ${selectSql}`;
-  if (task.writeMode === 'upsert') insert += dl.upsertTail(metrics.map((m) => m.target));
-  statements.push(insert);
+  if (task.writeMode === 'upsert') {
+    statements.push(
+      dl.upsertStatement({
+        table: task.targetTable,
+        columns: cols,
+        keys,
+        selectSql,
+        updateCols: plan.metrics.map((m) => m.target),
+        etlColumn,
+      })
+    );
+  } else {
+    statements.push(`INSERT INTO ${dl.table(task.targetTable)} (${cols.map((c) => dl.ident(c)).join(', ')}) ${selectSql}`);
+  }
   return statements;
 };
 
@@ -235,7 +450,75 @@ const previewPlan = async (data, now = new Date()) => {
   const task = { ...data, ...shape };
   const plan = await buildPlan(task, now);
   const statements = await buildStatements(task, plan);
-  return { statements, dateRange: plan.dateRange, fromTable: plan.fromTable };
+  return {
+    statements,
+    dateRange: plan.dateRange,
+    fromTable: plan.fromTable,
+    fromTables: plan.fromTables,
+    align: plan.align,
+    timeGrain: plan.timeGrain || null,
+    statCol: plan.statCol || null,
+  };
+};
+
+const TYPE_CLASS = {
+  VARCHAR: 'str',
+  CHAR: 'str',
+  TEXT: 'str',
+  INT: 'num',
+  BIGINT: 'num',
+  DECIMAL: 'num',
+  DATE: 'date',
+  DATETIME: 'date',
+  TIMESTAMP: 'date',
+};
+
+const classOfType = (raw) => TYPE_CLASS[dialect.parseColumnType(raw).family] || 'str';
+
+/**
+ * 目标建模表结构比对（契约 1.15 §C）：宽表需要的列必须在模型字段里，类型族要兼容。
+ * 只报错不补齐——任务侧不自动建表、不自动 ALTER，否则表结构权威又漏回任务侧。
+ * @returns {{model, matched, missingColumns, mismatchColumns}|null} 自动建表的存量任务返回 null
+ */
+const validateTargetModelShape = async (task, plan) => {
+  if (!task.targetModelId) return null;
+  const model = await metricModelRepository.getById(task.targetModelId);
+  if (!model || model.delFlag) throw paramInvalid(`目标模型不存在: ${task.targetModelId}`);
+  const byName = new Map((model.columns || []).map((c) => [String(c.columnName).toUpperCase(), c]));
+  const need = [
+    ...plan.dims.map((d) => ({ name: d.target, type: d.type, kind: '维度' })),
+    ...plan.metrics.map((m) => ({ name: m.target, type: m.type, kind: '指标' })),
+  ];
+  const missingColumns = [];
+  const mismatchColumns = [];
+  need.forEach((col) => {
+    const actual = byName.get(String(col.name).toUpperCase());
+    if (!actual) {
+      missingColumns.push({ name: col.name, kind: col.kind, suggestType: col.type });
+      return;
+    }
+    if (classOfType(actual.dataType) !== classOfType(col.type)) {
+      mismatchColumns.push({ name: col.name, kind: col.kind, expected: col.type, actual: actual.dataType });
+    }
+  });
+  return {
+    model,
+    matched: !missingColumns.length && !mismatchColumns.length,
+    missingColumns,
+    mismatchColumns,
+  };
+};
+
+/** 结构不符时的可读拒因（保存期 40001；结构化清单由 target-schema 回显给界面） */
+const describeTargetGap = (check) => {
+  const parts = [];
+  if (check.missingColumns.length)
+    parts.push(`目标建模表缺列：${check.missingColumns.map((c) => `${c.name}(${c.suggestType})`).join('、')}`);
+  if (check.mismatchColumns.length)
+    parts.push(
+      `列类型不兼容：${check.mismatchColumns.map((c) => `${c.name} 需要 ${c.expected}，表上是 ${c.actual}`).join('、')}`
+    );
+  return `${parts.join('；')}。请到「数据建模」页给目标模型补列/改类型（任务不会自动 ALTER）`;
 };
 
 /**
@@ -248,6 +531,8 @@ const previewTargetSchema = async (data, now = new Date()) => {
   const plan = await buildPlan(task, now);
   const ds = await datasourceRepository.getById(task.targetDatasourceId);
   const dl = dialect.dialectOfSource(ds);
+  const check = await validateTargetModelShape(task, plan);
+  const etlColumn = await resolveEtlColumn(task, dl);
   const [model, metrics] = await Promise.all([metricModelRepository.getById(task.sourceModelId), metricRepository.list()]);
   const bizBy = new Map(((model || {}).columns || []).map((c) => [c.columnName, c.bizName || '']));
   const nameBy = new Map(active(metrics).map((m) => [m.code, m.name]));
@@ -255,8 +540,8 @@ const previewTargetSchema = async (data, now = new Date()) => {
     ...plan.dims.map((d) => ({
       name: dl.ident(d.target).replace(/`/g, ''),
       type: dl.columnType(d.type),
-      source: '维度',
-      comment: bizBy.get(d.source) || '',
+      source: plan.align === 'time' ? '时间' : '维度',
+      comment: plan.align === 'time' ? `${plan.timeGrain} 粒度对齐键` : bizBy.get(d.source) || '',
     })),
     ...plan.metrics.map((m) => ({
       name: dl.ident(m.target).replace(/`/g, ''),
@@ -265,25 +550,41 @@ const previewTargetSchema = async (data, now = new Date()) => {
       comment: nameBy.get(m.target) || '',
     })),
   ];
-  if (!task.targetModelId) {
+  if (etlColumn) {
     columns.push({
-      name: dl.ident(dl.etlColumn).replace(/`/g, ''),
+      name: dl.ident(etlColumn).replace(/`/g, ''),
       type: dl.columnType('DATETIME'),
       source: '留痕',
       comment: '本次物化时间（系统列）',
     });
   }
   const statements = await buildStatements(task, plan);
+  const built = plan.align === 'time' ? buildTimeSelect(plan, dl, etlColumn) : buildModelSelect(plan, dl, etlColumn);
   return {
     dialect: dl.type,
     table: task.targetTable,
     autoCreate: !task.targetModelId,
+    align: plan.align,
+    timeGrain: plan.timeGrain || null,
+    groups: plan.groups || [],
     writeMode: task.writeMode,
-    primaryKeys: task.writeMode === 'upsert' ? plan.dims.map((d) => d.target) : [],
+    primaryKeys: task.writeMode === 'upsert' ? built.keys : [],
+    targetModel: check ? { id: check.model.id, name: check.model.name, tableStatus: check.model.tableStatus || '' } : null,
+    matched: check ? check.matched : true,
+    missingColumns: check ? check.missingColumns : [],
+    mismatchColumns: check ? check.mismatchColumns : [],
     columns,
     createSql: statements.find((sql) => /^CREATE TABLE/i.test(sql)) || null,
-    insertSql: statements.find((sql) => /^INSERT INTO/i.test(sql)) || null,
+    insertSql: statements.find((sql) => /^(INSERT INTO|MERGE INTO)/i.test(sql)) || null,
   };
+};
+
+/** 保存期结构闸门：目标建模表缺列/类型不符直接 40001 */
+const assertTargetModelShape = async (task) => {
+  const plan = await buildPlan(task, new Date());
+  const check = await validateTargetModelShape(task, plan);
+  if (check && !check.matched) throw paramInvalid(describeTargetGap(check));
+  return plan;
 };
 
 const queryTasks = (filter = {}, options = {}) =>
@@ -320,8 +621,10 @@ const saveTask = async (data, existing = null, operator = '') => {
     dimensionColumnIds: Array.isArray(data.dimensionColumnIds) ? data.dimensionColumnIds : [],
     cleanRules: shape.rules,
     timePreset: data.timePreset || null,
+    align: shape.align,
+    timeGrain: shape.timeGrain || '',
     targetDatasourceId: data.targetDatasourceId,
-    targetModelId: data.targetModelId || '',
+    targetModelId: shape.targetModelId,
     targetTable: shape.targetTable,
     writeMode: shape.writeMode,
     upsertKeys: Array.isArray(data.upsertKeys) ? data.upsertKeys : [],
@@ -330,8 +633,10 @@ const saveTask = async (data, existing = null, operator = '') => {
     remark: data.remark === undefined && existing ? existing.remark : data.remark || '',
     createBy: existing ? existing.createBy : operator,
   };
-  // 保存前跑一次计划生成，把配置错误挡在保存期（同源/角色/主键等）
+  // 保存前跑一次计划生成，把配置错误挡在保存期（同源/角色/粒度/主键等）
   await buildStatements({ ...payload }, await buildPlan({ ...payload }, new Date()));
+  // 目标建模表结构比对（契约 1.15 §C）：缺列/类型不符只报错，界面走 target-schema 拿结构化清单
+  await assertTargetModelShape({ ...payload });
   if (existing) return metricTaskRepository.update(existing.id, payload);
   return metricTaskRepository.create(payload);
 };
@@ -436,9 +741,12 @@ const listSchedulable = async () =>
 
 module.exports = {
   WRITE_MODES,
+  ALIGNS,
+  STAT_PERIOD,
   validateTaskShape,
   buildPlan,
   buildStatements,
+  validateTargetModelShape,
   previewPlan,
   previewTargetSchema,
   queryTasks,

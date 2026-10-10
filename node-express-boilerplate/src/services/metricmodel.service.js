@@ -12,6 +12,8 @@ const metricTaskRepository = require('../repositories/metrictask.repository');
 // 只引仓储不引 metricdim.service：后者依赖本服务的 getModel，互相 require 会成环
 const metricDimValueRepository = require('../repositories/metricdimvalue.repository');
 const metricDomainRepository = require('../repositories/metricdomain.repository');
+// 只引仓储不引 metricmodelcategory.service：后者依赖本文件的 LAYERS，互相 require 会成环
+const metricModelCategoryRepository = require('../repositories/metricmodelcategory.repository');
 const datasourceRepository = require('../repositories/datasource.repository');
 const metricExecService = require('./metricExec.service');
 const dataQuery = require('../db/dataQuery');
@@ -95,6 +97,22 @@ const getDatasourceOrFail = async (datasourceId) => {
   return ds;
 };
 
+/**
+ * categoryId 硬校验（契约 1.16）：空串＝该层「未分类」；非空必须指向未删分类且与模型同层。
+ * 单个创建/编辑动作没有「部分成功」可言，所以一律 40001（批量归类才走逐条点名的 assign）。
+ * @returns {Promise<string>} 归一后的 categoryId（'' 表示未分类）
+ */
+const assertCategory = async (categoryId, layer) => {
+  const id = String(categoryId === undefined || categoryId === null ? '' : categoryId).trim();
+  if (!id) return '';
+  const category = await metricModelCategoryRepository.getById(id);
+  if (!category || category.delFlag) throw paramInvalid(`分类不存在: ${id}`);
+  if (category.layer !== layer) {
+    throw paramInvalid(`分类「${category.name}」属 ${category.layer}，模型属 ${layer}：跨层归类被拒`);
+  }
+  return id;
+};
+
 /** 同数据源下表名不得重复登记（未删除的模型间比较），冲突 40904 */
 const assertTableFree = async ({ datasourceId, tableName, excludeId }) => {
   const models = active(await metricModelRepository.list());
@@ -118,7 +136,10 @@ const buildDdl = (domain, layer, tableName, columns, source) => {
   const lines = columns.map((column) => {
     const comment = column.bizName || column.remark ? String(column.bizName || column.remark) : '';
     const inline = dl.type === 'mysql' && comment ? ` COMMENT '${esc(comment)}'` : '';
-    return `  ${dl.ident(column.columnName)} ${dl.columnType(column.dataType)} NOT NULL${inline}`;
+    // 度量列可空：指标宽表里「当期没数」要落 NULL 而不是 0（契约 1.15 §D），
+    // 全 NOT NULL 的 ADS 表会让物化任务在第一个空期次就整条失败
+    const nullable = column.role === 'measure' && !column.isKey;
+    return `  ${dl.ident(column.columnName)} ${dl.columnType(column.dataType)} ${nullable ? 'NULL' : 'NOT NULL'}${inline}`;
   });
   const keys = columns.filter((column) => column.isKey).map((column) => dl.ident(column.columnName));
   if (keys.length) lines.push(`  PRIMARY KEY (${keys.join(', ')})`);
@@ -157,8 +178,10 @@ const composeTableName = (domain, layer, name) => {
 };
 
 /**
- * 读取归一：`table_status` 是 1.13 补的可空列，补列前建的模型为 NULL。
- * 引用表本就存在于源库 → exists；界面建表未走过生成表 → none。
+ * 读取归一：`table_status` 是 1.13 补的可空列、`category_id` 是 1.16 补的可空列，
+ * 补列前建的模型读回来是 NULL（MySQL）或根本没有这个键（内存版旧对象），界面会拿到 undefined。
+ * - tableStatus：引用表本就存在于源库 → exists；界面建表未走过生成表 → none。
+ * - categoryId：空串＝该层「未分类」，与新建模型的默认值同形。
  */
 const normalizeTableStatus = (model) => {
   if (!model) return model;
@@ -166,12 +189,20 @@ const normalizeTableStatus = (model) => {
     ...model,
     tableStatus: model.tableStatus || (model.createType === 'ddl' ? 'none' : 'exists'),
     tableMsg: model.tableMsg || '',
+    categoryId: model.categoryId || '',
   };
 };
 
 const queryModels = async (filter = {}, options = {}) => {
+  const { categoryId, ...rest } = filter;
+  const filters = { ...rest, delFlag: false };
+  // categoryId=none（契约 1.16）＝该范围内的未分类：函数谓词同时吃掉空串与旧库补列出的 NULL。
+  // SQL 表达不了这种谓词 —— sqlStore 遇函数值自动整表回退到内存过滤器，
+  // memoryStore.matchOne 原生支持函数谓词，两驱动同语义（管理后台量级下开销可忽略）。
+  if (categoryId === 'none') filters.categoryId = (value) => !value;
+  else if (categoryId) filters.categoryId = categoryId;
   const page = await metricModelRepository.page({
-    filters: { ...filter, delFlag: false },
+    filters,
     keyword: options.keyword,
     sort: options.sort,
     page: options.page,
@@ -197,6 +228,8 @@ const createModel = async (data, operator = '') => {
   const createType = data.createType || 'reference';
   if (!['reference', 'ddl'].includes(createType)) throw paramInvalid('createType ∈ reference|ddl');
   if (!LAYERS.includes(data.layer)) throw paramInvalid(`layer ∈ ${LAYERS.join('|')}`);
+  // 分类只是元数据归组（契约 1.16）：先把归属校验掉，免得白跑一趟真实拉列
+  const categoryId = await assertCategory(data.categoryId, data.layer);
   const domain = await getDomainOrFail(data.domainId);
   const ds = await getDatasourceOrFail(data.datasourceId);
   // 引用表必须指名已有物理表；界面建表可留空，按「域前缀_分层_名称」自动命名（与 preview-ddl 同口径）
@@ -228,6 +261,7 @@ const createModel = async (data, operator = '') => {
     datasourceId: ds.id,
     domainId: domain.id,
     layer: data.layer,
+    categoryId,
     tableName,
     createType,
     // 界面建表默认落草稿：确认字段无误并「启用」后才允许生成物理表（契约 1.13）
@@ -250,6 +284,13 @@ const updateModel = async (id, patch) => {
   const next = { ...patch };
   if (next.layer && !LAYERS.includes(next.layer)) throw paramInvalid(`layer ∈ ${LAYERS.join('|')}`);
   if (next.status && !STATUSES.includes(next.status)) throw paramInvalid(`status ∈ ${STATUSES.join('|')}`);
+  // 分类归属（契约 1.16）：按「改后的层」校验同层；换层却没带新 categoryId 时，
+  // 原分类若不属于新层直接 40001（宁可让调用方显式处理，也不静默清空/留下跨层成员）
+  if (next.categoryId !== undefined) {
+    next.categoryId = await assertCategory(next.categoryId, next.layer || existing.layer);
+  } else if (next.layer && next.layer !== existing.layer && existing.categoryId) {
+    await assertCategory(existing.categoryId, next.layer);
+  }
   if (next.columns) {
     const ds = await datasourceRepository.getById(existing.datasourceId);
     next.columns = assertColumns(next.columns, ds && ds.type);
@@ -287,7 +328,7 @@ const updateModel = async (id, patch) => {
   }
   const updated = await metricModelRepository.update(
     id,
-    ['name', 'layer', 'tableName', 'timeColumn', 'status', 'remark', 'columns', 'tableDdl', 'tableMsg']
+    ['name', 'layer', 'tableName', 'timeColumn', 'status', 'remark', 'categoryId', 'columns', 'tableDdl', 'tableMsg']
       .filter((key) => next[key] !== undefined)
       .reduce((acc, key) => ({ ...acc, [key]: next[key] }), {})
   );

@@ -49,7 +49,9 @@ const baseKeys = {
     .allow(null),
   targetDatasourceId: Joi.string().trim().max(64),
   targetModelId: Joi.string().trim().max(64).allow(''),
-  targetTable: Joi.string().trim().max(128),
+  targetTable: Joi.string().trim().max(128).allow(''),
+  align: Joi.string().valid('model', 'time').allow(''),
+  timeGrain: Joi.string().valid('day', 'week', 'month', 'quarter', 'year').allow(''),
   writeMode: Joi.string().valid('overwrite', 'append', 'upsert'),
   upsertKeys: Joi.array().items(Joi.string().trim().max(64)).max(20),
   scheduleCron: Joi.string().trim().max(64).allow(''),
@@ -81,7 +83,7 @@ const createTask = {
       sourceModelId: baseKeys.sourceModelId.required(),
       metricIds: baseKeys.metricIds.required(),
       targetDatasourceId: baseKeys.targetDatasourceId.required(),
-      targetTable: baseKeys.targetTable.required(),
+      // targetTable 不再硬性必填：选了目标建模表时表名以模型为准（契约 1.15），两者至少要有一个由服务层校验
     })
     .required(),
 };

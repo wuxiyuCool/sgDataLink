@@ -280,10 +280,12 @@ const compileMetric = async (metricId, options = {}) => {
 /**
  * M4 物化内嵌用：把指标编译为「裸聚合表达式 + 作用域」（不拼 SELECT）。
  * 跨模型 COMPOSITE 直接拒绝——清洗任务要求全部指标落在同一源表上。
- * @returns {expr, modelId, datasourceId, timeColumn, dimensionScopes}
+ * @returns {expr, modelId, datasourceId, timeColumn, timeGrain, dimensionScopes}
  */
 const compileMetricExpr = async (metricId) => {
   const metric = await metricService.getActiveMetric(metricId);
+  // 源粒度声明在指标上（契约 1.15 §B）：老指标没有这个键，按最细的 day 处理，行为不变
+  const timeGrain = (metric.defineParams || {}).timeGrain || 'day';
   if (metric.type !== 'COMPOSITE') {
     const leaf = await resolveLeaf(metric.id, new Set());
     return {
@@ -291,6 +293,7 @@ const compileMetricExpr = async (metricId) => {
       modelId: leaf.modelId,
       datasourceId: leaf.datasourceId,
       timeColumn: leaf.timeColumn,
+      timeGrain,
       dimensionScopes: leaf.allowedDimensions ? [leaf.allowedDimensions] : [],
       code: metric.code,
     };
@@ -299,7 +302,7 @@ const compileMetricExpr = async (metricId) => {
   if (merged.expr === null || !merged.scope.modelId) {
     throw paramInvalid(`跨模型复合指标 ${metric.code} 一期无法物化进同表汇总任务（METRIC-DEV §6.3 规则4）`);
   }
-  return { expr: merged.expr, ...merged.scope, code: metric.code };
+  return { expr: merged.expr, ...merged.scope, timeGrain, code: metric.code };
 };
 
 module.exports = {

@@ -31,6 +31,8 @@ const listModels = {
       layer: Joi.string().valid(...LAYERS),
       datasourceId: Joi.string().trim().max(64),
       status: Joi.string().valid(...STATUSES),
+      /** 契约 1.16：按分类精确筛；字面量 none＝该范围内未分类（服务端翻成空值谓词，不是 id） */
+      categoryId: Joi.string().trim().max(64).allow(''),
       keyword: Joi.string().trim().max(64).allow(''),
       sort: Joi.string()
         .trim()
@@ -59,6 +61,8 @@ const createModel = {
       columns: Joi.array().items(column).max(500),
       timeColumn: Joi.string().trim().max(64).allow(''),
       status: Joi.string().valid(...STATUSES),
+      /** 契约 1.16：归属的分类（mcat-），空串/null＝该层未分类；同层校验在 service（跨层 40001） */
+      categoryId: Joi.string().trim().max(64).allow('', null),
       remark: Joi.string().trim().max(512).allow('', null),
     })
     .required(),
@@ -75,6 +79,8 @@ const updateModel = {
         .pattern(/^[A-Za-z_][A-Za-z0-9_.]{0,63}$/),
       timeColumn: Joi.string().trim().max(64).allow(''),
       status: Joi.string().valid(...STATUSES),
+      /** 契约 1.16：可改列；空串＝移出回未分类，跨层由 service 40001 */
+      categoryId: Joi.string().trim().max(64).allow('', null),
       remark: Joi.string().trim().max(512).allow('', null),
       columns: Joi.array().items(column).max(500),
     })

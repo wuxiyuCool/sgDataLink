@@ -8,6 +8,7 @@ const metricDomainRepository = require('../repositories/metricdomain.repository'
 const metricModelRepository = require('../repositories/metricmodel.repository');
 const metricDepRepository = require('../repositories/metricdep.repository');
 const metricQueryLogRepository = require('../repositories/metricquerylog.repository');
+const datasourceRepository = require('../repositories/datasource.repository');
 const metricService = require('./metric.service');
 
 const PLAZA_LIMIT_MAX = 500;
@@ -74,15 +75,19 @@ const locateRoot = (byId, domainId) => {
  */
 const getPlaza = async (filter = {}) => {
   const limit = Math.min(Math.max(parseInt(filter.limit, 10) || PLAZA_DEFAULT_LIMIT, 1), PLAZA_LIMIT_MAX);
-  const [domains, metrics, models, edges, queryLogs] = await Promise.all([
+  const [domains, metrics, models, edges, queryLogs, datasources] = await Promise.all([
     metricDomainRepository.list(),
     metricRepository.list(),
     metricModelRepository.list(),
     metricDepRepository.listAll().catch(() => []),
     metricQueryLogRepository.recent(new Date(Date.now() - HOT_WINDOW_MS).toISOString(), 5000).catch(() => []),
+    datasourceRepository.list().catch(() => []),
   ]);
   const byId = new Map(active(domains).map((domain) => [String(domain.id), domain]));
   const modelNameById = new Map(active(models).map((model) => [String(model.id), model.name]));
+  // 卡片带数据源：界面据此判断「勾选的指标跨数据源」——时间宽表要求同源，提前拦住比保存期报错友好
+  const dsIdByModel = new Map(active(models).map((model) => [String(model.id), String(model.datasourceId || '')]));
+  const dsNameById = new Map(active(datasources).map((ds) => [String(ds.id), ds.name]));
   // 被引用数：dep 边 child_id 出现次数（parent 引用 child，所以 child 才是"被引用"的一方）
   const referencedBy = new Map();
   active(edges).forEach((edge) => {
@@ -130,6 +135,8 @@ const getPlaza = async (filter = {}) => {
     }
     total += 1;
     const id = String(metric.id);
+    const cardModelId = String(metric.modelId || (metric.defineParams || {}).modelId || '');
+    const cardDsId = dsIdByModel.get(cardModelId) || '';
     sections.get(located.root.id).items.push({
       id,
       code: metric.code,
@@ -143,8 +150,10 @@ const getPlaza = async (filter = {}) => {
       owner: metric.owner || '',
       domainId: metric.domainId,
       domainPath: located.path,
-      modelId: metric.modelId || (metric.defineParams || {}).modelId || '',
-      modelName: modelNameById.get(String(metric.modelId || (metric.defineParams || {}).modelId)) || '',
+      modelId: cardModelId,
+      modelName: modelNameById.get(cardModelId) || '',
+      datasourceId: cardDsId,
+      datasourceName: dsNameById.get(cardDsId) || '',
       referencedBy: referencedBy.get(id) || 0,
       hot7d: hot7d.get(id) || 0,
       updatedAt: metric.updatedAt,

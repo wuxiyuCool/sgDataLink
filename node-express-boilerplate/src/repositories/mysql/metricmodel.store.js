@@ -22,6 +22,8 @@ const store = defineStore({
     datasourceId: {},
     domainId: {},
     layer: {},
+    /** 建模分层树的分类（契约 1.16）：空串＝该层未分类；旧库自动补列为 NULL，service 读时归一 */
+    categoryId: {},
     tableName: {},
     createType: {},
     tableDdl: { type: 'text' },
@@ -123,6 +125,7 @@ const create = async (data) => {
   const record = {
     createType: 'reference',
     layer: 'DWD',
+    categoryId: '',
     status: 'online',
     version: 1,
     timeColumn: '',

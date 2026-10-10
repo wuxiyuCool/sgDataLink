@@ -411,7 +411,7 @@ CREATE TABLE IF NOT EXISTS `databridge_id_seq` (
 
 -- =============================================================================
 -- 指标中心（契约 1.12；实施规格 docs/METRIC-DEV.md §5）
--- ID 前缀：dom- mdl- met- mver- mtk- mtr- mterm- mex- mlg-（model_column/metric_dep/
+-- ID 前缀：dom- mdl- mcat- met- mver- mtk- mtr- mterm- mex- mlg-（model_column/metric_dep/
 -- metric_setting 无字符串 id，用自然键）。
 -- 枚举列（layer/type/status 等）不加 DB 约束，由 service 层按契约枚举校验（与既有表一致）。
 -- metric.code 唯一键全库终身制：软删不释放 code，被引用的指标删除由 service 层 40903 拦截。
@@ -445,6 +445,7 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_model` (
   `datasource_id` VARCHAR(64)  NOT NULL,
   `domain_id`     VARCHAR(64)  NOT NULL,
   `layer`         VARCHAR(8)   NOT NULL COMMENT 'ODS | DIM | DWD | DWS | ADS',
+  `category_id`   VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '契约 1.16：建模分层树的分类节点（mcat-），空串＝该层未分类；旧库补列为 NULL，服务端读时归一成空串',
   `table_name`    VARCHAR(128) NOT NULL,
   `create_type`   VARCHAR(16)  NOT NULL COMMENT 'reference 引用已有表 | ddl 界面建表',
   `table_ddl`     TEXT         NULL COMMENT 'create_type=ddl 时的建表语句留档',
@@ -463,7 +464,8 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_model` (
   PRIMARY KEY (`seq`),
   UNIQUE KEY `uk_metricmodel_id` (`id`),
   KEY `idx_metricmodel_ds_table` (`datasource_id`, `table_name`),
-  KEY `idx_metricmodel_domain` (`domain_id`)
+  KEY `idx_metricmodel_domain` (`domain_id`),
+  KEY `idx_metricmodel_category` (`category_id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `databridge_metric_model_column` (
@@ -479,6 +481,26 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_model_column` (
   `remark`      VARCHAR(512) NOT NULL DEFAULT '',
   PRIMARY KEY (`seq`),
   UNIQUE KEY `uk_metricmodelcol` (`model_id`, `column_name`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 建模分层树的「分类」节点（契约 1.16 / V11 四期）：全局按层的归组节点，与指标域正交。
+-- 树上层的 5 个根（ODS|DIM|DWD|DWS|ADS）由 service 的 LAYERS 常量虚拟化生成，不落库、不可增删改名；
+-- 分类只动元数据，不参与物理表命名，任何分类操作零 DDL。
+CREATE TABLE IF NOT EXISTS `databridge_metric_model_category` (
+  `seq`         BIGINT       NOT NULL AUTO_INCREMENT,
+  `id`          VARCHAR(64)  NOT NULL COMMENT 'mcat- 前缀',
+  `name`        VARCHAR(64)  NOT NULL COMMENT '同层内大小写不敏感唯一（service 校验），跨层同名允许',
+  `layer`       VARCHAR(8)   NOT NULL COMMENT 'ODS | DIM | DWD | DWS | ADS；创建后不可改（= 树上的挂载位置）',
+  `description` VARCHAR(512) NOT NULL DEFAULT '' COMMENT '分类口径说明，界面节点副标题与 tooltip',
+  `sort`        INT          NOT NULL DEFAULT 0 COMMENT '同层内排序，tree 的 children 按 sort asc 再 createdAt asc',
+  `del_flag`    TINYINT(1)   NOT NULL DEFAULT 0,
+  `create_by`   VARCHAR(64)  NOT NULL DEFAULT '',
+  `created_at`  DATETIME(3)  NULL,
+  `updated_at`  DATETIME(3)  NULL,
+  `extra`       JSON         NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `uk_metriccategory_id` (`id`),
+  KEY `idx_metriccategory_layer` (`layer`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `databridge_metric_metric` (
@@ -549,10 +571,12 @@ CREATE TABLE IF NOT EXISTS `databridge_metric_task` (
   `dimension_column_ids` JSON         NULL COMMENT 'GROUP BY 的模型字段 id 数组',
   `clean_rules`          JSON         NULL COMMENT '清洗规则数组 filter/dedup/fill/rename（METRIC-DEV §7.2.2）',
   `time_preset`          JSON         NULL COMMENT '{mode:BETWEEN|RECENT, unit:DAY|WEEK|MONTH, period}',
+  `align_mode`           VARCHAR(8)   NOT NULL DEFAULT 'model' COMMENT 'model=同模型聚合 | time=跨同源模型按时间粒度拼宽表(v1.15)',
+  `time_grain`           VARCHAR(16)  NOT NULL DEFAULT '' COMMENT 'align=time 的目标粒度 day|week|month|quarter|year(v1.15)',
   `target_datasource_id` VARCHAR(64)  NOT NULL,
   `target_model_id`      VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '已存在的 ADS 模型；空=运行时自动建表',
   `target_table`         VARCHAR(128) NOT NULL DEFAULT '',
-  `write_mode`           VARCHAR(16)  NOT NULL DEFAULT 'overwrite' COMMENT 'overwrite | append | upsert(仅mysql)',
+  `write_mode`           VARCHAR(16)  NOT NULL DEFAULT 'overwrite' COMMENT 'overwrite | append | upsert(mysql ON DUP / oracle MERGE INTO)',
   `upsert_keys`          JSON         NULL,
   `schedule_cron`        VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '空=手动；Quartz 6 位，格式同契约 1.2',
   `status`               VARCHAR(8)   NOT NULL DEFAULT 'online' COMMENT 'online | offline(暂停调度)',

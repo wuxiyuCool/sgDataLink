@@ -51,6 +51,7 @@ const create = (data) => {
   const record = {
     createType: 'reference',
     layer: 'DWD',
+    categoryId: '',
     status: 'online',
     version: 1,
     timeColumn: '',

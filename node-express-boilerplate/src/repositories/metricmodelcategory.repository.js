@@ -1,11 +1,14 @@
 /**
- * 清洗汇总任务仓储（内存实现，契约 1.12 §7.2）。
+ * 建模分层树「分类」仓储（内存实现，契约 1.16 / V11 四期）。
+ * 分类是全局按层的实体（一个分类属于且只属于一个 layer），与指标域 domain_id 那条轴正交；
+ * 树上的 5 个分层根由 services/metricmodelcategory.service.js 的 LAYERS 常量虚拟化生成，不落库。
+ * 软删（delFlag），删分类时名下模型的降级动作在 service 层。
  */
 const { createMemoryStore, queryList, filterList, nowIso } = require('./memoryStore');
 
-const KEYWORD_FIELDS = ['name'];
+const KEYWORD_FIELDS = ['name', 'description'];
 
-const store = createMemoryStore({ prefix: 'mtk-', startId: 14000 });
+const store = createMemoryStore({ prefix: 'mcat-', startId: 20000 });
 
 const list = () => store.all();
 
@@ -14,7 +17,7 @@ const find = (query = {}) =>
     filters: query.filters || {},
     keyword: query.keyword,
     keywordFields: KEYWORD_FIELDS,
-    sort: query.sort || 'createdAt:asc',
+    sort: query.sort || 'sort:asc',
   });
 
 const page = (query = {}) =>
@@ -32,23 +35,9 @@ const getById = (id) => store.get(id);
 const create = (data) => {
   const timestamp = nowIso();
   const record = {
-    domainId: '',
-    metricIds: [],
-    dimensionColumnIds: [],
-    cleanRules: [],
-    timePreset: null,
-    align: 'model',
-    timeGrain: '',
-    targetModelId: '',
-    targetTable: '',
-    writeMode: 'overwrite',
-    upsertKeys: [],
-    scheduleCron: '',
-    status: 'online',
-    lastStatus: 'idle',
-    lastRunAt: null,
+    description: '',
+    sort: 0,
     delFlag: false,
-    remark: '',
     createBy: '',
     ...data,
     id: data.id || store.nextId(),
@@ -70,4 +59,4 @@ const count = () => store.size();
 
 const memoryImpl = { list, find, page, getById, create, update, delete: deleteById, count, clear: store.clear };
 
-module.exports = require('./facade').pickImpl('metrictask', memoryImpl);
+module.exports = require('./facade').pickImpl('metricmodelcategory', memoryImpl);

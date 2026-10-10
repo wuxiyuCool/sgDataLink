@@ -277,11 +277,46 @@ const buildTimeFilter = (dateLiteral) => (timeColumn, dateRange) => {
   return `${col} <= ${dateLiteral(assertDate('dateRange.end', dateRange.end))}`;
 };
 
+/* ---------------- 时间粒度（指标宽表按时间对齐；只能向粗对齐） ---------------- */
+
+/** 由细到粗；宽表目标粒度必须 ≥ 各指标声明的源粒度，否则会把一个月值摊到 30 天（静默错算） */
+const GRAINS = ['day', 'week', 'month', 'quarter', 'year'];
+
+const grainRank = (grain) => {
+  const index = GRAINS.indexOf(String(grain || '').toLowerCase());
+  if (index < 0) throw paramInvalid(`timeGrain ∈ ${GRAINS.join('|')}，当前: ${grain || '空'}`);
+  return index;
+};
+
+/** 参与对齐的多个源粒度里最粗的那一档（空列表按 day） */
+const coarsestGrain = (grains = []) => {
+  const ranks = grains.map(grainRank);
+  return GRAINS[ranks.length ? Math.max(...ranks) : 0];
+};
+
+const MYSQL_TRUNC = {
+  day: "DATE_FORMAT(%s, '%Y-%m-%d')",
+  week: 'YEARWEEK(%s, 3)',
+  month: "DATE_FORMAT(%s, '%Y-%m')",
+  quarter: "CONCAT(YEAR(%s), '-Q', QUARTER(%s))",
+  year: "DATE_FORMAT(%s, '%Y')",
+};
+
+const ORACLE_TRUNC = {
+  day: `TO_CHAR(%s, 'YYYY-MM-DD')`,
+  week: `TO_CHAR(%s, 'IYYY-IW')`,
+  month: `TO_CHAR(%s, 'YYYY-MM')`,
+  quarter: `TO_CHAR(%s, 'YYYY-"Q"Q')`,
+  year: `TO_CHAR(%s, 'YYYY')`,
+};
+
+const buildDateTrunc = (map) => (expr, grain) => map[GRAINS[grainRank(grain)]].replace(/%s/g, expr);
+
 /* ---------------- 方言定义 ---------------- */
 
 const MYSQL = {
   type: 'mysql',
-  supports: { createIfNotExists: true, upsertOnDuplicate: true, emptyStringIsNull: false },
+  supports: { createIfNotExists: true, upsertOnDuplicate: true, upsert: true, emptyStringIsNull: false },
   dual: '',
   nowExpr: 'NOW()',
   etlColumn: '_etl_time',
@@ -310,16 +345,29 @@ const MYSQL = {
       '表名',
       table
     )} WHERE ${MYSQL.ident(column)} IS NOT NULL GROUP BY ${MYSQL.ident(column)} ORDER BY dim_hits DESC LIMIT ${limit}`,
-  upsertTail: (updateCols) =>
-    ` ON DUPLICATE KEY UPDATE ${updateCols.map((col) => `\`${col}\` = VALUES(\`${col}\`)`).join(', ')}, \`${
-      MYSQL.etlColumn
-    }\` = ${MYSQL.nowExpr}`,
+  /**
+   * 幂等刷新的 UPDATE 尾巴。
+   * etlColumn 由调用方按「目标表到底有没有这一列」传入（传空串则不写留痕列）——
+   * 目标结构权威在建模页，任务侧不能凭空写一个表上不存在的列。
+   */
+  upsertTail: (updateCols, etlColumn = MYSQL.etlColumn) => {
+    const parts = updateCols.map((col) => `${MYSQL.ident(col)} = VALUES(${MYSQL.ident(col)})`);
+    if (etlColumn) parts.push(`${MYSQL.ident(etlColumn)} = ${MYSQL.nowExpr}`);
+    return ` ON DUPLICATE KEY UPDATE ${parts.join(', ')}`;
+  },
+  dateTrunc: buildDateTrunc(MYSQL_TRUNC),
+  /** 幂等刷新：MySQL 用 INSERT .. ON DUPLICATE KEY UPDATE（留痕列在 tail 里统一写） */
+  upsertStatement: ({ table, columns, selectSql, updateCols, etlColumn = MYSQL.etlColumn }) =>
+    `INSERT INTO ${MYSQL.table(table)} (${columns.map((c) => MYSQL.ident(c)).join(', ')}) ${selectSql}${MYSQL.upsertTail(
+      updateCols,
+      etlColumn
+    )}`,
 };
 
 const ORACLE = {
   type: 'oracle',
-  // 无 IF NOT EXISTS（12cR2 起才有）、无 ON DUPLICATE（需 MERGE INTO）、空串等价 NULL
-  supports: { createIfNotExists: false, upsertOnDuplicate: false, emptyStringIsNull: true },
+  // 无 IF NOT EXISTS（12cR2 起才有）、幂等刷新走 MERGE INTO、空串等价 NULL
+  supports: { createIfNotExists: false, upsertOnDuplicate: false, upsert: true, emptyStringIsNull: true },
   dual: ' FROM DUAL',
   nowExpr: 'SYSDATE',
   // 非引号标识符必须字母开头，`_ETL_TIME` 会 ORA-00911 → 目标表 ETL 列改叫 ETL_TIME
@@ -350,7 +398,24 @@ const ORACLE = {
       column
     )} ORDER BY DIM_HITS DESC) dbr_page WHERE ROWNUM <= ${limit}`,
   upsertTail: () => {
-    throw paramInvalid('oracle 目标表一期不支持 upsert（需 MERGE INTO，未实现），请改用 overwrite 或 append');
+    throw paramInvalid('oracle 幂等刷新走 MERGE INTO（不用 upsertTail），请调用 upsertStatement');
+  },
+  dateTrunc: buildDateTrunc(ORACLE_TRUNC),
+  /**
+   * 幂等刷新：Oracle 无 ON DUPLICATE KEY，用 MERGE INTO 目标 USING (本次 SELECT)。
+   * 别名保持大写无引号（与非引号标识符口径一致），UPDATE 分支不含主键。
+   * etlColumn 由调用方按目标表实际列传入（空串=两分支都不写留痕列）。
+   */
+  upsertStatement: ({ table, columns, keys, selectSql, updateCols, etlColumn = ORACLE.etlColumn }) => {
+    const target = ORACLE.table(table);
+    const on = keys.map((key) => `s.${ORACLE.ident(key)} = d.${ORACLE.ident(key)}`).join(' AND ');
+    const updates = updateCols.map((col) => `s.${ORACLE.ident(col)} = d.${ORACLE.ident(col)}`);
+    if (etlColumn) updates.push(`s.${ORACLE.ident(etlColumn)} = ${ORACLE.nowExpr}`);
+    const inserts = columns.map((col) => ORACLE.ident(col)).join(', ');
+    const values = columns.map((col) => `d.${ORACLE.ident(col)}`).join(', ');
+    return `MERGE INTO ${target} s USING (${selectSql}) d ON (${on}) WHEN MATCHED THEN UPDATE SET ${updates.join(
+      ', '
+    )} WHEN NOT MATCHED THEN INSERT (${inserts}) VALUES (${values})`;
   },
 };
 
@@ -371,6 +436,9 @@ module.exports = {
   DIALECT_TOKENS,
   ORACLE_TYPE_MAP,
   COLUMN_FAMILIES,
+  GRAINS,
+  grainRank,
+  coarsestGrain,
   assertDate,
   assertTargetIdent,
   parseColumnType,

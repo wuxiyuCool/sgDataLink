@@ -9,7 +9,7 @@ const { metricModelService, metricExecService, metricDimService } = require('../
  */
 
 const getModels = catchAsync(async (req, res) => {
-  const filter = pick(req.query, ['domainId', 'layer', 'datasourceId', 'status']);
+  const filter = pick(req.query, ['domainId', 'layer', 'datasourceId', 'status', 'categoryId']);
   const options = pick(req.query, ['keyword', 'page', 'size', 'sort']);
   pageResult(res, await metricModelService.queryModels(filter, options));
 });

@@ -19,6 +19,8 @@ module.exports.schedulerService = require('./scheduler.service');
 // 指标中心（契约 1.12）
 module.exports.metricDomainService = require('./metricdomain.service');
 module.exports.metricModelService = require('./metricmodel.service');
+// 建模分层树与分类（契约 1.16）
+module.exports.metricModelCategoryService = require('./metricmodelcategory.service');
 module.exports.metricSettingService = require('./metricsetting.service');
 module.exports.metricDashboardService = require('./metricdashboard.service');
 module.exports.metricService = require('./metric.service');

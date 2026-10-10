@@ -18,6 +18,7 @@ const lineageRoute = require('./lineage.route');
 const metricRoute = require('./metric.route');
 const metricDomainRoute = require('./metricdomain.route');
 const metricModelRoute = require('./metricmodel.route');
+const metricModelCategoryRoute = require('./metricmodelcategory.route');
 const metricSettingRoute = require('./metricsetting.route');
 const metricDashboardRoute = require('./metricdashboard.route');
 const metricTaskRoute = require('./metrictask.route');
@@ -105,6 +106,11 @@ const defaultRoutes = [
   {
     path: '/metric-models',
     route: metricModelRoute,
+  },
+  {
+    // 建模分层树的分类（契约 1.16）：与 /metric-models 是不同的挂载段，互不影响匹配
+    path: '/metric-model-categories',
+    route: metricModelCategoryRoute,
   },
   {
     path: '/metric-settings',

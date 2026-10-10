@@ -41,6 +41,8 @@ const ID_SEQUENCES = [
   { prefix: 'mdv-', startId: 19000, table: 'databridge_metric_dimvalue' },
   { prefix: 'mex-', startId: 17000, table: 'databridge_metric_example' },
   { prefix: 'mlg-', startId: 18000, table: 'databridge_metric_query_log' },
+  // 建模分层树的分类（契约 1.16）；另起 20xxx 段，避免与上面任何号段相撞
+  { prefix: 'mcat-', startId: 20000, table: 'databridge_metric_model_category' },
 ];
 
 /**
@@ -64,6 +66,7 @@ require('../repositories/mysql/docaccesslog.store');
 // 指标中心（契约 1.12）；metricsetting 是 bespoke kv 仓储，不经 defineStore、无需列校验
 require('../repositories/mysql/metricdomain.store');
 require('../repositories/mysql/metricmodel.store');
+require('../repositories/mysql/metricmodelcategory.store');
 require('../repositories/mysql/metric.store');
 require('../repositories/mysql/metricversion.store'); // metricdep 为自然键 bespoke 仓储，不经 defineStore
 require('../repositories/mysql/metrictask.store');

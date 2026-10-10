@@ -36,6 +36,7 @@ const MYSQL_STORES = {
   // 指标中心（契约 1.12）
   metricdomain: () => require('./mysql/metricdomain.store'),
   metricmodel: () => require('./mysql/metricmodel.store'),
+  metricmodelcategory: () => require('./mysql/metricmodelcategory.store'),
   metric: () => require('./mysql/metric.store'),
   metricsetting: () => require('./mysql/metricsetting.store'),
   metricdep: () => require('./mysql/metricdep.store'),
