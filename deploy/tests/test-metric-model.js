@@ -76,6 +76,8 @@ const cleanup = async () => {
     // （历史缺陷：code=RUN 无后缀时 LIKE RUN_% 匹配不到；套件中途崩溃也会残留）
     ["DELETE FROM databridge_metric_domain WHERE (code LIKE 'mtd%' OR code LIKE 'msq%' OR code LIKE 'mtk%' OR code LIKE 'm5c%' OR (code LIKE 'mt%' AND code NOT LIKE 'mtd%' AND code NOT LIKE 'mtk%')) AND code <> ? AND code NOT LIKE 'dm%' AND id NOT IN (SELECT domain_id FROM databridge_metric_model) AND id NOT IN (SELECT domain_id FROM databridge_metric_metric)", [`${RUN}x`]],
     ['DELETE FROM databridge_metric_domain WHERE code LIKE ?', [`${RUN}%`]],
+    // 分层树分类（契约 1.16）：本套件建的分类都带 RUN 前缀，段尾软删过，这里连软删行一起清掉
+    ['DELETE FROM databridge_metric_model_category WHERE name LIKE ?', [`${RUN}%`]],
     ['DELETE FROM databridge_metric_setting WHERE setting_key = ?', ['llm.model']],
     // 注意：若真库已配真实 embed 独立端点/密钥，跑本测试会清掉（与 llm.model 同风险，重配即可）
     ["DELETE FROM databridge_metric_setting WHERE setting_key IN ('llm.embed.baseUrl','llm.embed.apiKey')", []],
@@ -348,6 +350,203 @@ const main = async () => {
     body: { domainId: rootId, layer: 'DWS', name: 'order_daily', columns: newCols },
   })
   check('英文名保留语义后缀', (asciiPreview.json.result || {}).tableName === `${RUN}_root_dws_order_daily`)
+
+  console.log('== 建模分层树与分类 ==')
+  // 本段全程只动元数据：分类增删改 + 模型归类都不产 DDL，建的 ddl 模型也不调 create-table（不落物理表）。
+  // 自建分类/模型一律 ${RUN} 前缀，段尾显式删除 + cleanup() 兜底，绝不拿平台真实资产当样本。
+  const layersOf = (r) => ((r.json || {}).result || {}).layers || []
+  const layerOf = (r, name) => layersOf(r).find((l) => l.layer === name) || {}
+  const nodeOf = (r, layer, id) => ((layerOf(r, layer).children || []).find((n) => n.id === id) || {})
+  // 真库里可能已有别的分类（如 seed 的「交易域」），排序断言只看本段自己建的那几个节点
+  const runNodes = (r, layer) => (layerOf(r, layer).children || []).filter((n) => String(n.name).startsWith(RUN))
+  const itemsOf = (r) => (((r.json || {}).result || {}).items || [])
+  const idsOf = (items) => items.map((m) => m.id).join(',')
+  const tree0 = await req('/metric-model-categories/tree', { token })
+  const base = { DWD: layerOf(tree0, 'DWD'), DIM: layerOf(tree0, 'DIM') }
+  check('无 token /metric-model-categories/tree → 401', (await req('/metric-model-categories/tree')).status === 401)
+  check('tree 5 个分层根恒定出现 + 中文 label（对齐前端 LAYER_OPTIONS）+ total=分类数',
+    tree0.status === 200 && layersOf(tree0).length === 5
+      && layersOf(tree0).map((l) => l.layer).join() === 'ODS,DIM,DWD,DWS,ADS'
+      && layersOf(tree0).map((l) => l.label).join() === '贴源层,维度层,明细层,汇总层,应用层'
+      && tree0.json.result.total === layersOf(tree0).reduce((s, l) => s + (l.children || []).length, 0),
+  tree0.text.slice(0, 300))
+  check('一个分类都没有的分层也回 children:[] / modelCount:0（界面无需兜底空层）',
+    (layerOf(tree0, 'ODS').children || []).length === 0 && layerOf(tree0, 'ODS').modelCount === 0
+      && layerOf(tree0, 'ODS').uncategorized === 0, tree0.text.slice(0, 200))
+
+  const badCatLayer = await req('/metric-model-categories', { method: 'POST', token, body: { name: `${RUN}_坏层`, layer: 'ODSX' } })
+  check('分类非法 layer → 400/40001', badCatLayer.status === 400 && badCatLayer.json.code === 40001, badCatLayer.text.slice(0, 160))
+  const noNameCat = await req('/metric-model-categories', { method: 'POST', token, body: { layer: 'DWD' } })
+  check('分类 name 必填 → 400/40001', noNameCat.status === 400 && noNameCat.json.code === 40001, noNameCat.text.slice(0, 160))
+  const longDescCat = await req('/metric-model-categories', {
+    method: 'POST', token, body: { name: `${RUN}_长描述`, layer: 'DWD', description: 'x'.repeat(513) },
+  })
+  check('分类 description >512 → 400/40001', longDescCat.status === 400 && longDescCat.json.code === 40001, longDescCat.text.slice(0, 160))
+
+  const catDwd = await req('/metric-model-categories', {
+    method: 'POST', token,
+    body: { name: `${RUN}_trade`, layer: 'DWD', description: '交易域：订单/访问等明细事实', sort: 2 },
+  })
+  check('创建分类（mcat- 前缀 + 中文口径说明落库）',
+    catDwd.status === 200 && /^mcat-/.test(((catDwd.json || {}).result || {}).id || '')
+      && catDwd.json.result.description === '交易域：订单/访问等明细事实' && catDwd.json.result.sort === 2,
+  catDwd.text.slice(0, 240))
+  const catDwdId = (catDwd.json.result || {}).id
+  const dupCat = await req('/metric-model-categories', { method: 'POST', token, body: { name: `${RUN}_TRADE`, layer: 'DWD' } })
+  check('同层重名（大小写不敏感）→ 40001', dupCat.status === 400 && dupCat.json.code === 40001 && /同名分类/.test(dupCat.text), dupCat.text.slice(0, 200))
+  const catDim = await req('/metric-model-categories', {
+    method: 'POST', token, body: { name: `${RUN}_trade`, layer: 'DIM', description: '维度登记：码表与主数据' },
+  })
+  check('跨层同名允许（分类是全局按层，同层才判重）', catDim.status === 200 && catDim.json.result.id !== catDwdId, catDim.text.slice(0, 200))
+  const catDimId = (catDim.json.result || {}).id
+  const catSort1 = await req('/metric-model-categories', { method: 'POST', token, body: { name: `${RUN}_sort1`, layer: 'DWD', sort: 1 } })
+  const catSort1Id = ((catSort1.json || {}).result || {}).id
+  const catSort1b = await req('/metric-model-categories', { method: 'POST', token, body: { name: `${RUN}_sort1b`, layer: 'DWD', sort: 1 } })
+  const catSort1bId = ((catSort1b.json || {}).result || {}).id
+  const treeSorted = await req('/metric-model-categories/tree', { token })
+  const sortedSorts = (layerOf(treeSorted, 'DWD').children || []).map((n) => n.sort)
+  check('children 按 sort:asc 再 createdAt:asc（同 sort 谁先建谁在前）',
+    runNodes(treeSorted, 'DWD').map((n) => n.name).join() === `${RUN}_sort1,${RUN}_sort1b,${RUN}_trade`
+      && sortedSorts.every((v, i) => i === 0 || sortedSorts[i - 1] <= v),
+  JSON.stringify((layerOf(treeSorted, 'DWD').children || []).map((n) => `${n.name}:${n.sort}`)))
+
+  const mkCatModel = async (suffix, layer, extra = {}) => {
+    const res = await req('/metric-models', {
+      method: 'POST', token,
+      body: {
+        name: `${RUN}_${suffix}`, datasourceId: dsId, domainId: rootId, layer,
+        createType: 'ddl', tableName: `${RUN}_cat_${suffix}`, columns: newCols, ...extra,
+      },
+    })
+    return { id: ((res.json || {}).result || {}).id, res }
+  }
+  const mA = await mkCatModel('a', 'DWD')
+  const mB = await mkCatModel('b', 'DWD')
+  const mC = await mkCatModel('c', 'DIM')
+  check('分层树用例模型就绪（DWD×2 + DIM×1，不调 create-table 因此零物理表）',
+    Boolean(mA.id && mB.id && mC.id), `${mA.id}|${mB.id}|${mC.id}`)
+
+  const mCDetail = (await req(`/metric-models/${mC.id}`, { token })).json.result || {}
+  check('模型详情 categoryId 归一为空串（不是 undefined）',
+    Object.prototype.hasOwnProperty.call(mCDetail, 'categoryId') && mCDetail.categoryId === '', JSON.stringify(mCDetail).slice(0, 200))
+  const refDetail = (await req(`/metric-models/${refId}`, { token })).json.result || {}
+  check('旧行（自动补列为 NULL）读时也归一成空串', refDetail.categoryId === '', JSON.stringify(refDetail.categoryId))
+  const listNorm = await req(`/metric-models?domainId=${rootId}&size=200`, { token })
+  check('列表行同样归一（每个 item 的 categoryId 都是字符串）',
+    itemsOf(listNorm).length > 0 && itemsOf(listNorm).every((m) => typeof m.categoryId === 'string'),
+  JSON.stringify(itemsOf(listNorm).map((m) => m.categoryId)))
+
+  const mD = await mkCatModel('d', 'DWD', { categoryId: catDwdId })
+  check('createModel 带 categoryId：创建即归类并回读',
+    Boolean(mD.id) && ((mD.res.json || {}).result || {}).categoryId === catDwdId, mD.res.text.slice(0, 200))
+  const crossCreate = await req('/metric-models', {
+    method: 'POST', token,
+    body: { name: `${RUN}_bad`, datasourceId: dsId, domainId: rootId, layer: 'ADS', createType: 'ddl', tableName: `${RUN}_cat_bad`, columns: newCols, categoryId: catDwdId },
+  })
+  check('createModel 跨层 categoryId → 40001（ADS 模型不进 DWD 分类）',
+    crossCreate.status === 400 && crossCreate.json.code === 40001 && /跨层/.test(crossCreate.text), crossCreate.text.slice(0, 220))
+
+  const treeC = await req('/metric-model-categories/tree', { token })
+  check('分层根 modelCount/uncategorized 随模型增减（计数口径＝全量未删除模型）',
+    layerOf(treeC, 'DWD').modelCount === base.DWD.modelCount + 3
+      && layerOf(treeC, 'DWD').uncategorized === base.DWD.uncategorized + 2,
+  JSON.stringify({ before: base.DWD, after: layerOf(treeC, 'DWD') }))
+  check('分类节点 modelCount 只数自己名下的模型',
+    nodeOf(treeC, 'DWD', catDwdId).modelCount === 1 && nodeOf(treeC, 'DWD', catSort1Id).modelCount === 0,
+  JSON.stringify((layerOf(treeC, 'DWD').children || []).map((n) => `${n.name}:${n.modelCount}`)))
+  const byCat = await req(`/metric-models?categoryId=${catDwdId}&size=200`, { token })
+  check('categoryId 精确筛', itemsOf(byCat).length === 1 && itemsOf(byCat)[0].id === mD.id, idsOf(itemsOf(byCat)))
+  const noneDwd = await req('/metric-models?layer=DWD&categoryId=none&size=200', { token })
+  check('categoryId=none 筛出未分类（与树上 uncategorized 同数，且不把已归类的捞进来）',
+    itemsOf(noneDwd).length === layerOf(treeC, 'DWD').uncategorized
+      && itemsOf(noneDwd).every((m) => !m.categoryId)
+      && itemsOf(noneDwd).some((m) => m.id === mA.id) && !itemsOf(noneDwd).some((m) => m.id === mD.id),
+  idsOf(itemsOf(noneDwd)))
+  const noneRoot = await req(`/metric-models?domainId=${rootId}&categoryId=none&size=500`, { token })
+  check('none 谓词在 MySQL 整表回退路径也认得 NULL 旧行', itemsOf(noneRoot).some((m) => m.id === refId), idsOf(itemsOf(noneRoot)).slice(0, 200))
+
+  const assignCross = await req('/metric-model-categories/assign', {
+    method: 'POST', token, body: { categoryId: catDwdId, modelIds: [mA.id, mB.id, mC.id, 'mdl-nope-9999'] },
+  })
+  const ares = (assignCross.json || {}).result || {}
+  check('assign 跨层/缺模型都不整批失败，HTTP 恒 200', assignCross.status === 200 && assignCross.json.code === 0, assignCross.text.slice(0, 200))
+  check('assign 的 assigned/failed 与逐条 results 对齐', ares.assigned === 2 && ares.failed === 2 && (ares.results || []).length === 4, JSON.stringify(ares).slice(0, 300))
+  check('跨层那条被点名：message 说清分类层与模型层', (() => {
+    const hit = (ares.results || []).find((r) => r.id === mC.id) || {}
+    return hit.ok === false && /跨层/.test(hit.message || '') && /DIM/.test(hit.message || '') && /DWD/.test(hit.message || '')
+  })(), JSON.stringify(ares).slice(0, 300))
+  check('不存在的模型也被点名', (() => {
+    const hit = (ares.results || []).find((r) => r.id === 'mdl-nope-9999') || {}
+    return hit.ok === false && /不存在/.test(hit.message || '')
+  })(), JSON.stringify(ares).slice(0, 300))
+  const treeAssigned = await req('/metric-model-categories/tree', { token })
+  check('归类后分类计数与未分类桶同步归位', nodeOf(treeAssigned, 'DWD', catDwdId).modelCount === 3
+    && layerOf(treeAssigned, 'DWD').uncategorized === base.DWD.uncategorized, JSON.stringify(layerOf(treeAssigned, 'DWD')))
+  const unassign = await req('/metric-model-categories/assign', { method: 'POST', token, body: { categoryId: '', modelIds: [mB.id] } })
+  check('categoryId 空串＝移出回未分类', unassign.status === 200 && unassign.json.result.assigned === 1
+    && ((await req(`/metric-models/${mB.id}`, { token })).json.result || {}).categoryId === '', unassign.text.slice(0, 200))
+
+  const crossUpd = await req(`/metric-models/${mA.id}`, { method: 'PUT', token, body: { categoryId: catDimId } })
+  check('updateModel 跨层 categoryId → 40001', crossUpd.status === 400 && crossUpd.json.code === 40001 && /跨层/.test(crossUpd.text), crossUpd.text.slice(0, 220))
+  check('被拒后模型归属不变（不是先写后拒）',
+    ((await req(`/metric-models/${mA.id}`, { token })).json.result || {}).categoryId === catDwdId)
+  const sameUpd = await req(`/metric-models/${mC.id}`, { method: 'PUT', token, body: { categoryId: catDimId } })
+  check('updateModel 同层归类成功并落库', sameUpd.status === 200 && (sameUpd.json.result || {}).categoryId === catDimId
+    && ((await req(`/metric-models/${mC.id}`, { token })).json.result || {}).categoryId === catDimId, sameUpd.text.slice(0, 200))
+
+  const putLayer = await req(`/metric-model-categories/${catDwdId}`, { method: 'PUT', token, body: { name: `${RUN}_trade2`, layer: 'ADS' } })
+  check('PUT /metric-model-categories/:id 带 layer → 40001（换层请新建分类再批量归类）',
+    putLayer.status === 400 && putLayer.json.code === 40001 && /新建分类/.test(putLayer.text), putLayer.text.slice(0, 220))
+  const putCat = await req(`/metric-model-categories/${catSort1Id}`, {
+    method: 'PUT', token, body: { name: `${RUN}_sort1改`, description: '改过的口径说明', sort: 9 },
+  })
+  const treePut = await req('/metric-model-categories/tree', { token })
+  const putSorts = (layerOf(treePut, 'DWD').children || []).map((n) => n.sort)
+  check('PUT 只改 name/description/sort 也生效，children 随之重排（sort 9 落到末位）',
+    putCat.status === 200 && putCat.json.result.description === '改过的口径说明'
+      && runNodes(treePut, 'DWD').map((n) => n.name).join() === `${RUN}_sort1b,${RUN}_trade,${RUN}_sort1改`
+      && putSorts.every((v, i) => i === 0 || putSorts[i - 1] <= v),
+  JSON.stringify((layerOf(treePut, 'DWD').children || []).map((n) => `${n.name}:${n.sort}`)))
+  const putMissing = await req('/metric-model-categories/mcat-not-exist', { method: 'PUT', token, body: { name: `${RUN}_孤儿` } })
+  check('改不存在的分类 → 404/40401', putMissing.status === 404 && putMissing.json.code === 40401, putMissing.text.slice(0, 160))
+
+  const treeBeforeDel = await req('/metric-model-categories/tree', { token })
+  const inCatIds = itemsOf(await req(`/metric-models?categoryId=${catDwdId}&size=200`, { token })).map((m) => m.id)
+  const delCat = await req(`/metric-model-categories/${catDwdId}`, { method: 'DELETE', token })
+  const moved = (delCat.json || {}).result || {}
+  check('删除分类＝软删 + 名下模型自动降级，movedModels 报出搬走的模型数',
+    delCat.status === 200 && moved.deleted === true && moved.movedModels === inCatIds.length && inCatIds.length >= 2,
+  `${delCat.text.slice(0, 160)} | moved=${inCatIds.length}`)
+  const noneAfterDel = await req('/metric-models?layer=DWD&categoryId=none&size=500', { token })
+  check('降级后的模型重新出现在未分类桶（none 里）',
+    inCatIds.every((id) => itemsOf(noneAfterDel).some((m) => m.id === id)), idsOf(itemsOf(noneAfterDel)))
+  const treeAfterDel = await req('/metric-model-categories/tree', { token })
+  check('已删分类不在树上，分层根 modelCount 不变、uncategorized 接手了名下模型',
+    !(layerOf(treeAfterDel, 'DWD').children || []).some((n) => n.id === catDwdId)
+      && layerOf(treeAfterDel, 'DWD').modelCount === layerOf(treeBeforeDel, 'DWD').modelCount
+      && layerOf(treeAfterDel, 'DWD').uncategorized === layerOf(treeBeforeDel, 'DWD').uncategorized + moved.movedModels,
+  JSON.stringify({ before: layerOf(treeBeforeDel, 'DWD'), after: layerOf(treeAfterDel, 'DWD') }))
+  const assignDeleted = await req('/metric-model-categories/assign', { method: 'POST', token, body: { categoryId: catDwdId, modelIds: [mA.id] } })
+  check('已删分类不可再归类（逐条点名 分类不存在，仍 200）',
+    assignDeleted.status === 200 && assignDeleted.json.result.failed === 1
+      && /分类不存在/.test(((assignDeleted.json.result.results || [])[0] || {}).message || ''), assignDeleted.text.slice(0, 220))
+
+  // 段尾自清理：本段建的分类与模型全部删掉（分类软删会把名下模型退回未分类，再软删模型）
+  // eslint-disable-next-line no-restricted-syntax
+  for (const id of [catDimId, catSort1Id, catSort1bId]) {
+    // eslint-disable-next-line no-await-in-loop
+    await req(`/metric-model-categories/${id}`, { method: 'DELETE', token })
+  }
+  // eslint-disable-next-line no-restricted-syntax
+  for (const id of [mA.id, mB.id, mC.id, mD.id]) {
+    // eslint-disable-next-line no-await-in-loop
+    await req(`/metric-models/${id}`, { method: 'DELETE', token })
+  }
+  const treeFinal = await req('/metric-model-categories/tree', { token })
+  check(`本段分类/模型清理干净（树上不再有 ${RUN} 前缀节点，且 modelCount=uncategorized+各分类计数）`,
+    layersOf(treeFinal).every((l) => (l.children || []).every((n) => !String(n.name).startsWith(RUN)))
+      && layersOf(treeFinal).every((l) => l.modelCount === l.uncategorized + (l.children || []).reduce((s, n) => s + n.modelCount, 0)),
+  treeFinal.text.slice(0, 240))
 
   console.log('== 首页概览 ==')
   const dash = await req('/metric-dashboard', { token })

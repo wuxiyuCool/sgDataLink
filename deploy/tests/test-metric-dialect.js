@@ -194,8 +194,26 @@ const main = async () => {
   check('oracle 源表名大写', oInsert.includes('FROM HR_PROD_MATERIAL t'))
   check('oracle 聚合里的 NVL 已归一', oInsert.includes('COALESCE(t.material_weight, 0)') && !oInsert.includes('NVL('), oInsert)
 
-  const upsertReject = await throwsWith(() => taskService.buildStatements(taskFixture('upsert'), buildPlanFixture()), 'MERGE')
-  check('oracle upsert 明确拒绝而不是产出坏 SQL', upsertReject.ok, upsertReject.msg)
+  // 契约 1.15 §D：Oracle 的幂等刷新由「保存期拒绝」改为 MERGE INTO（此前只会产出 MySQL 尾巴）
+  const oUpsert = await taskService.buildStatements(taskFixture('upsert'), buildPlanFixture())
+  const oMerge = oUpsert[oUpsert.length - 1]
+  check(
+    'oracle upsert 产出 MERGE INTO（ON 全部主键 + UPDATE 不含主键 + INSERT 全列）',
+    /^MERGE INTO TEST_1_GK s USING \(SELECT/i.test(oMerge)
+    && /ON \(s\.PRODUCE_LINE = d\.PRODUCE_LINE AND s\.PRODUCE_DT = d\.PRODUCE_DT\)/.test(oMerge)
+    && /WHEN MATCHED THEN UPDATE SET s\.GK1 = d\.GK1, s\.GK2 = d\.GK2, s\.ETL_TIME = SYSDATE/.test(oMerge)
+    && /WHEN NOT MATCHED THEN INSERT \(PRODUCE_LINE, PRODUCE_DT, GK1, GK2, ETL_TIME\) VALUES \(d\.PRODUCE_LINE/.test(oMerge)
+    && !/ON DUPLICATE/.test(oMerge),
+    oMerge
+  )
+  check('MERGE 的 SELECT 里留痕列带别名（否则 d.ETL_TIME 无引用目标 ORA-00904）', /SYSDATE AS ETL_TIME/.test(oMerge), oMerge.slice(0, 240))
+  check('oracle 粒度截断走 TO_CHAR（不是 DATE_FORMAT）', o.dateTrunc('t.dt', 'month') === "TO_CHAR(t.dt, 'YYYY-MM')"
+    && o.dateTrunc('t.dt', 'quarter') === "TO_CHAR(t.dt, 'YYYY-\"Q\"Q')" && m.dateTrunc('t.dt', 'week') === 'YEARWEEK(t.dt, 3)',
+  o.dateTrunc('t.dt', 'quarter'))
+  check('粒度只能向粗：粗档排名更大', dialect.grainRank('month') > dialect.grainRank('day')
+    && dialect.coarsestGrain(['day', 'quarter', 'month']) === 'quarter', String(dialect.coarsestGrain(['day', 'quarter', 'month'])))
+  const fineGrain = await throwsWith(async () => o.dateTrunc('t.dt', 'hour'), 'timeGrain')
+  check('目录外粒度档位被方言层挡掉', fineGrain.ok, fineGrain.msg)
   const fillReject = await throwsWith(
     () => taskService.validateTaskShape({ ...taskFixture('overwrite'), cleanRules: [{ type: 'fill', column: 'PRODUCE_LINE', value: '' }] }),
     '空串等价 NULL'

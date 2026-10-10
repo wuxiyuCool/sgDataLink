@@ -2,9 +2,14 @@
  * 资产：域 dmtrade + 引用模型 dm_order_dwd（物理表 dm_order_src，刷近 45 天数据）
  *       指标 dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额 / dm_unit 件单价(复合=amt/cnt)
  *       任务 dm_region_sum 按地区汇总(overwrite) / dm_region_daily 地区日汇总(upsert+定时)，并各执行一次留运行记录
+ *       宽表演示（契约 1.15）：dm_visit_src 访问明细 + 指标 dm_uv + 建模表 dm_wide_month +
+ *         任务「月度指标宽表」= 订单模型与访问模型的指标按月截断对齐拼一张表（upsert+每月 1 日 03:00 定时）；
+ *         访问数据只铺近 20 天，所以较早月份的 dm_uv 落 NULL，是「当期没数落 NULL 不是 0」的活样本
  *       示例指标库 ex_*：15 条覆盖原子(MEASURE 四种聚合/FIELD 手写表达式/带 filterSql)、
  *         派生(继承基底+过滤、+时间预设)、复合(四则/比率/NULLIF 防除零/CASE 分档/跨方言函数)
  *         与 dataFormat 三种显示格式，caliber 字段即配置说明书，供界面抄作业
+ *       建模分层树（契约 1.16）：分类 交易域(DWD)/应用出数(ADS)/维度登记(DIM,空节点)/汇总层预留(DWS,空节点)，
+ *         订单+访问明细归「交易域」、已建表与宽表归「应用出数」，渠道日报(草稿) 故意留在 ADS 的未分类桶里
  * 幂等：重复执行=刷新数据 + 复用已有对象；数据源复用库里第一个启用的 mysql 数据源。
  * 跑法（cwd=node-express-boilerplate）：
  *   set -a; source .env; set +a
@@ -287,6 +292,150 @@ const main = async () => {
       remark: 'seed 演示任务：近 14 天固定区间（BETWEEN）按地区+日期 upsert，含补空清洗规则',
     });
   }
+
+  // —— V11 三期演示（契约 1.15）：跨模型「时间宽表」——
+  // 两个模型（订单/访问）同数据源、各自不同时间列，按月对齐拼进一张建模表；
+  // 故意只给最近 20 天铺访问数据，宽表里较早那个月的 dm_uv 就会是 NULL（不是 0），
+  // 这正是「当期没数落 NULL」的活样本，任务页与建模页都能拿它讲清语义。
+  await db.run(
+    `CREATE TABLE IF NOT EXISTS dm_visit_src (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      site VARCHAR(32), uv BIGINT, visit_date DATE
+    ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4`
+  );
+  await db.run('DELETE FROM dm_visit_src');
+  const visitRows = [];
+  for (let d = 0; d < 20; d += 1) {
+    for (let i = 0; i < 4; i += 1) {
+      visitRows.push(`('门户${i + 1}',${80 + ((d * 11 + i * 7) % 240)},'${DAY(d)}')`);
+    }
+  }
+  await db.run(`INSERT INTO dm_visit_src (site, uv, visit_date) VALUES ${visitRows.join(',')}`);
+  console.log(`dm_visit_src 写入 ${visitRows.length} 行（近 20 天，更早的月份故意没数）`);
+
+  const visitList = await req(token, '/metric-models?keyword=dm_visit_src');
+  let visitModel = (visitList.json.result.items || []).find((m) => m.tableName === 'dm_visit_src');
+  if (!visitModel) {
+    const created = await req(token, '/metric-models', {
+      method: 'POST',
+      body: {
+        name: '访问明细(DWD)', datasourceId: mysqlDs.id, domainId: domain.id,
+        layer: 'DWD', tableName: 'dm_visit_src', createType: 'reference',
+        remark: '宽表演示源②：与订单明细不同表、不同时间列（visit_date），用来演示跨模型按时间对齐',
+      },
+    });
+    visitModel = created.json.result;
+  }
+  const uv = await mkMetric({
+    code: 'dm_uv',
+    name: '访客数',
+    alias: ['访问量', 'UV'],
+    defineType: 'MEASURE',
+    defineParams: { modelId: visitModel.id, measureColumn: 'uv', agg: 'sum', timeColumn: 'visit_date' },
+    unit: '人',
+    caliber: '宽表演示指标：挂在访问明细模型上（与订单额/订单数不同模型），只靠月份对齐拼进同一张宽表',
+  });
+
+  const wideList = await req(token, '/metric-models?keyword=dm_wide_month');
+  let wideModel = (wideList.json.result.items || []).find((m) => m.tableName === 'dm_wide_month');
+  if (!wideModel) {
+    const created = await req(token, '/metric-models', {
+      method: 'POST',
+      body: {
+        name: '交易演示·月度指标宽表(ADS)', datasourceId: mysqlDs.id, domainId: domain.id,
+        layer: 'ADS', tableName: 'dm_wide_month', createType: 'ddl', timeColumn: 'stat_period',
+        remark: '宽表演示目标表：任务只写建模页已启用的表，缺列会红字点名并要求来这里补列（平台不自动 ALTER）',
+        columns: [
+          { columnName: 'stat_period', bizName: '统计月份', dataType: 'VARCHAR(32)', role: 'dimension', isKey: true },
+          { columnName: 'dm_amt', bizName: '订单额', dataType: 'DECIMAL(24,6)', role: 'measure' },
+          { columnName: 'dm_cnt', bizName: '订单数', dataType: 'BIGINT', role: 'measure' },
+          { columnName: 'dm_uv', bizName: '访客数', dataType: 'DECIMAL(24,6)', role: 'measure' },
+          { columnName: '_etl_time', bizName: '物化时间', dataType: 'DATETIME', role: 'time' },
+        ],
+      },
+    });
+    wideModel = created.json.result;
+  }
+  if (wideModel.status !== 'online') {
+    await req(token, `/metric-models/${wideModel.id}`, { method: 'PUT', body: { status: 'online' } });
+  }
+  const wideNow = await req(token, `/metric-models/${wideModel.id}`, {});
+  if ((wideNow.json.result || {}).tableStatus !== 'created') {
+    const res = await req(token, `/metric-models/${wideModel.id}/create-table`, { method: 'POST' });
+    const r = res.json.result || {};
+    console.log(res.status === 200 && r.tableStatus === 'created'
+      ? 'dm_wide_month 生成表成功（度量列可空，供空期次落 NULL）'
+      : `dm_wide_month 生成表未完成：${r.tableMsg || JSON.stringify(res.json).slice(0, 200)}`);
+  }
+  const wideTask = await req(token, '/metric-tasks?keyword=' + encodeURIComponent('月度指标宽表'));
+  let wideTaskRow = ((wideTask.json.result || {}).items || []).find((t) => t.targetTable === 'dm_wide_month');
+  const wideBody = {
+    name: '交易演示·月度指标宽表（跨模型按时间对齐）',
+    domainId: domain.id,
+    sourceModelId: modelId,
+    metricIds: [amt.id, cnt.id, uv.id],
+    dimensionColumnIds: [],
+    align: 'time',
+    timeGrain: 'month',
+    writeMode: 'upsert',
+    targetModelId: wideModel.id,
+    targetDatasourceId: mysqlDs.id,
+    timePreset: { mode: 'BETWEEN', start: DAY(60), end: DAY(0) },
+    scheduleCron: '0 0 3 1 * ?',
+    status: 'online',
+    remark: 'seed 演示任务（契约 1.15）：订单模型的订单额/订单数 + 访问模型的访客数，按月截断对齐拼成宽表；对齐键 stat_period 即 upsert 主键，某月没访问数据时 dm_uv 落 NULL',
+  };
+  if (wideTaskRow) {
+    await req(token, `/metric-tasks/${wideTaskRow.id}`, { method: 'PUT', body: wideBody });
+  } else {
+    const created = await req(token, '/metric-tasks', { method: 'POST', body: wideBody });
+    wideTaskRow = created.json.result;
+    if (!wideTaskRow) console.log(`宽表任务创建失败：${JSON.stringify(created.json).slice(0, 240)}`);
+  }
+  if (wideTaskRow && wideTaskRow.id) {
+    const run = await req(token, `/metric-tasks/${wideTaskRow.id}/run`, { method: 'POST' });
+    const r = run.json.result || {};
+    console.log(`宽表任务【${wideTaskRow.name}】(${wideTaskRow.id}) 已执行，状态 ${r.status}，写入 ${r.writeRows} 行`);
+  }
+
+  // ===== 建模分层树演示（契约 1.16 / V11 四期）：5 个分层根是虚拟的，下面挂可建可删的「分类」 =====
+  // 分类全局按层（不隶属指标域），模型单归属；未归类的那些留在各层的「未分类」桶里，界面上看得见。
+  const mkCategory = async (name, layer, description, sort) => {
+    const tree = await req(token, '/metric-model-categories/tree');
+    const root = (((tree.json || {}).result || {}).layers || []).find((l) => l.layer === layer) || { children: [] };
+    const hit = (root.children || []).find((c) => c.name === name);
+    if (hit) return hit;
+    const created = await req(token, '/metric-model-categories', {
+      method: 'POST',
+      body: { name, layer, description, sort },
+    });
+    if (created.status !== 200) throw new Error(`创建分类 ${name}(${layer}) 失败: ${JSON.stringify(created.json).slice(0, 200)}`);
+    return created.json.result;
+  };
+  const catTrade = await mkCategory('交易域', 'DWD', '明细事实：一行一笔订单/一次访问，粒度最细，指标都从这里取数', 1);
+  const catDim = await mkCategory('维度登记', 'DIM', '码表与主数据（地区、门店、状态码值），给指标提供分组维度与业务名', 2);
+  const catAds = await mkCategory('应用出数', 'ADS', '对外的汇总表与指标宽表，清洗汇总任务的物化目标都落在这一层', 1);
+  const catDws = await mkCategory('汇总层预留', 'DWS', '按主题预聚合的宽口径表；当前是空节点（演示：分类可以先建、模型后归类）', 9);
+  const assignModels = async (category, modelIds, label) => {
+    if (!modelIds.length) return;
+    const res = await req(token, '/metric-model-categories/assign', {
+      method: 'POST',
+      body: { categoryId: category.id, modelIds },
+    });
+    const r = (res.json || {}).result || {};
+    console.log(res.status === 200 && r.failed === 0
+      ? `${label} 已归类 ${r.assigned} 个模型 → ${category.layer}/${category.name}(${category.id})`
+      : `${label} 归类异常：${JSON.stringify(r).slice(0, 240)}`);
+  };
+  await assignModels(catTrade, [modelId, visitModel.id], '交易域');
+  await assignModels(catAds, [builtModel.id, wideModel.id], '应用出数');
+  console.log(`空分类节点演示：${catDim.layer}/${catDim.name}、${catDws.layer}/${catDws.name}（modelCount=0 也要在树上出现）`);
+  // 渠道日报(草稿) 故意不归类：留在 ADS 的「未分类」桶里，点树上那个虚拟子节点（?layer=ADS&categoryId=none）就能捞到它
+  const finalTree = await req(token, '/metric-model-categories/tree');
+  const fmtNode = (n) => `${n.name}(${n.modelCount})`;
+  (((finalTree.json || {}).result || {}).layers || []).forEach((l) => {
+    console.log(`树 ${l.layer} ${l.label}：模型 ${l.modelCount}，未分类 ${l.uncategorized}，分类 [${(l.children || []).map(fmtNode).join('、')}]`);
+  });
 
   console.log('\nseed-metric-demo 完成。问数示例：昨天的订单额 / 按地区看最近7天实收额 / 昨天的件单价');
   process.exit(0);

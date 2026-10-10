@@ -173,6 +173,9 @@ const main = async () => {
   const card = (section.items || []).find((m) => m.code === `${RUN}_camt`) || {}
   check('选域时含子孙域并成节', plaza.status === 200 && section.id === domId && (section.total || 0) >= 1, plaza.text.slice(0, 220))
   check('卡片带口径/模型名/被引用数/热度', card.name === '码值订单额' && card.modelName === '联调码值模型' && card.referencedBy === 0 && typeof card.hot7d === 'number', JSON.stringify(card).slice(0, 260))
+  // v1.15：卡片带数据源，广场勾指标建宽表要当场拦跨源
+  check('卡片带 datasourceId/datasourceName（宽表同源拦截用）', card.datasourceId === dsId
+    && typeof card.datasourceName === 'string' && card.datasourceName.length > 0, JSON.stringify({ d: card.datasourceId, n: card.datasourceName }))
   check('卡片带域面包屑 path', Array.isArray(card.domainPath) && card.domainPath.includes('联调码值域'), JSON.stringify(card.domainPath))
   const kwPlaza = await req(`/metrics/plaza?keyword=${encodeURIComponent('片区金额')}`, { token })
   const hitCode = `${RUN}_camt`
