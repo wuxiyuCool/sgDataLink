@@ -1,5 +1,5 @@
-/* 1.9.4 swagger 文档中心 + 登录日志后端冒烟（memory 模式 :3011） */
-const BASE = 'http://127.0.0.1:3001/api/v1'
+/* 1.9.4 swagger 文档中心 + 登录日志后端冒烟（memory 模式；BASE 可覆盖，如 :3002 临时实例） */
+const BASE = process.env.BASE || 'http://127.0.0.1:3001/api/v1'
 let pass = 0
 let fail = 0
 const check = (name, cond, extra = '') => {

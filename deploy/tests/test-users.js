@@ -1,7 +1,7 @@
 /**
  * 契约 1.11 用户与鉴权安全用例（memory 模式，ADMIN_INIT_PASSWORD=testpass123 启动）。
  */
-const BASE = 'http://127.0.0.1:3001/api/v1';
+const BASE = process.env.BASE || 'http://127.0.0.1:3001/api/v1';
 const results = [];
 const check = (name, pass, detail) => {
   results.push({ name, pass });
@@ -49,6 +49,31 @@ const call = async (path, { method = 'GET', token, body } = {}) => {
   check('创建用户成功(用户名归一小写)', created.code === 0 && created.result.username === 'tester1' && created.result.mustChangePassword === true);
   const dup = await call('/users', { method: 'POST', token, body: { username: 'tester1', password: 'test1234' } });
   check('重复用户名 40001', dup.code === 40001, dup.message);
+
+  // 5b. 列表筛选（role/status/keyword 必须真的参与过滤——曾经 listUsers 把它们平铺传给
+  //     仓储，而仓储只认 query.filters，结果界面角色/状态下拉静默失效、列表照旧全量返回）
+  const onlyUser = await call('/users?role=user', { token });
+  check(
+    'role=user 只回普通用户',
+    onlyUser.code === 0 && onlyUser.result.items.length >= 1 && onlyUser.result.items.every((u) => u.role === 'user'),
+    JSON.stringify((onlyUser.result || {}).items || [])
+  );
+  const onlyAdmin = await call('/users?role=admin', { token });
+  check(
+    'role=admin 不含刚建的 tester1',
+    onlyAdmin.code === 0 &&
+      onlyAdmin.result.items.every((u) => u.role === 'admin') &&
+      !onlyAdmin.result.items.some((u) => u.username === 'tester1')
+  );
+  const noneDisabled = await call('/users?status=disabled', { token });
+  check('status=disabled 此刻应为空集', noneDisabled.code === 0 && noneDisabled.result.items.length === 0);
+  const byNick = await call('/users?keyword=' + encodeURIComponent('测试员'), { token });
+  check(
+    'keyword 命中昵称',
+    byNick.code === 0 && byNick.result.items.length === 1 && byNick.result.items[0].username === 'tester1'
+  );
+  const combo = await call('/users?role=user&status=disabled', { token });
+  check('role+status 组合筛为空集', combo.code === 0 && combo.result.items.length === 0);
 
   // 6. 普通用户越权面
   const tLogin = await call('/auth/login', { method: 'POST', body: { username: 'tester1', password: 'test1234' } });
