@@ -231,3 +231,168 @@ metric-chat 依赖内网 LLM 网关：`llm.model` 必须是网关白名单内的
 
 **⚠️ 与本轮改动强绑定的配置项**：`ENGINE_SHARED_SECRET` 必须已在 admin/engine 两侧注入
 （见上文 v9 必做节），否则 `create-table` 会被引擎以未鉴权拒绝。
+
+## 本次 V11 三期（指标宽表物表 + 目标建模表 + Oracle MERGE，契约 1.15）
+
+**改动范围**：engine + admin 必发（`/sql/exec` 白名单多了两个动词，两侧镜像必须同版本，
+否则 Oracle 幂等任务会稳定报 40001）；web 按 §5 走预打包产物。
+
+- `engine`：exec 白名单新增 **`MERGE INTO`**（Oracle 幂等刷新，正文含 ` DELETE ` 一律拒，只放行
+  UPDATE+INSERT 两分支）与 **`COMMENT ON`**。后者是一期遗留的真 bug：Oracle 无内联 COMMENT，
+  「界面建表」把表/列注释拆成 `COMMENT ON` 与 CREATE 一批下发，白名单不认 → `Validate()` 阶段
+  整批 400、一条不落库，所以 **v1.13 起「界面建表」在真 Oracle 上从未成功过一次**（此前只验过 DDL 文本）。
+- `admin`：① 任务新增 `align`（`model` 缺省／`time` 时间宽表）与 `timeGrain`，落库列
+  `databridge_metric_task.align_mode` / `time_grain`，**由 `init.js` 自动 ALTER 补可空列，无需手工迁移**
+  （旧行读出来是 NULL → 按 `model` 处理，存量任务行为不变）；② 方言层新增 `GRAINS/grainRank/coarsestGrain`、
+  `dateTrunc`、`upsertStatement`，`supports.upsertOnDuplicate` 改为通用 `supports.upsert`
+  （Oracle 不再在保存期拒绝 upsert，改出 `MERGE INTO`）；③ `validateTargetModelShape`：目标建模表缺列/
+  类型不兼容 → 保存期 40001（结构化清单走 `target-schema` 的 `missingColumns`/`mismatchColumns`/`matched`/
+  `groups`/`targetModel`），**任务不自动建表也不自动 ALTER**；④ 指标可声明 `defineParams.timeGrain`
+  （JSON 列内的键，无表结构变更）；⑤ `metricmodel.buildDdl` 的**度量列改为 `NULL`**（否则宽表空期次
+  物化会整条失败）；⑥ 留痕列按目标表实际列「有则写、无则跳」。
+- `web`：任务弹窗加「对齐模式」单选 + 「目标时间粒度」+ 目标表二选一（选建模表／自动建表·存量）、
+  缺列红字与「去建模页补列」直达（`/metric/models?columnsFor=<id>` 自动开字段弹窗）、多模型分组展示、
+  Oracle 的 upsert 不再置灰；指标广场卡片加「＋宽表」多选与「勾的指标建宽表」入口（跳任务页自动开弹窗）；
+  任务列表加「对齐」列；任务/建模/广场三页使用指南同步。
+
+**回归门禁（2026-10-10 本地真库全绿）**：**metric-wide 75**（新套件：粒度/维度/清洗规则/跨源八类闸门、
+草稿目标模型、缺列与类型族两条 40001、`align/timeGrain` 落库回读、语句形状（截断+`GROUP BY` 重复表达式
++时间全集 UNION+LEFT JOIN+不出 CREATE）、真执行空期次落 NULL、upsert 幂等、留痕列有则跳、
+`align=model` 不回退、**Oracle 真库 MERGE 两段**（模型模式两次 run 行数不涨 ⇒ UPDATE 分支命中；
+时间宽表模式 `TO_CHAR`/`TO_DATE` 语句被真 Oracle 接受执行）、Oracle 生成表首次真库验通）/
+metric-dialect **71**（原「oracle upsert 明确拒绝」用例已按契约改为断言产出 MERGE，并加 dateTrunc/粒度档位用例）/
+metric-model 62 / metric-base 40 / metric-compile 60 / metric-task 34（逐字节证明同模型模式没退化）/
+metric-sql 24 / dataflow-engine 21；engine `go test ./api/v1` 通过（新增 MERGE/COMMENT 允许与拒绝用例）。
+metric-dimvalue 36/1：唯一失败是内网 LLM 网关上游 DNS 解析失败（`Name or service not known`），属外部依赖，非平台链路。
+
+**跑回归的环境要求**：`test-metric-wide` 的 Oracle 段默认用元库里登记的 `ds-1158`
+（`TEST_ORACLE_DS=<id>` 覆盖，`TEST_ORACLE_DS=` 空串跳过；数据源不存在/禁用时自动 skip 并打印原因）。
+所有 `test-metric-*` 都要按头注把 `TEST_DS_HOST/USER/PASS/DB` 一并导出（`TEST_DS_PASS=$MYSQL_PASSWORD`），
+否则会踩「`!text.includes('')` 恒 false」这类断言自伤。Oracle 段只在**平台自建的 `MW…` 表**上写入，
+业务表全程只读，结束按「模型删除 + dropTable」清理（回归跑完已核对目标库无 `MW` 前缀残留）。
+
+**上线后演示资产**：生产 admin 上再跑一次 `seed-metric-demo.js`（同上命令）即新增
+「访问明细(DWD) `dm_visit_src` + 指标 `dm_uv` + ADS 建模表 `dm_wide_month` + 任务 月度指标宽表」，
+其中 2026-08 的 `dm_uv` 是 NULL，正好当「空期次落 NULL 不是 0」的讲解样本（会真建一张
+`dm_wide_month`，属预期演示资产）。
+
+**回滚说明**：`align_mode`/`time_grain` 是可空新列，旧代码不读，回滚 admin 镜像不影响存量任务；
+但**回滚 engine 镜像会让 Oracle 的 MERGE 与 Oracle 生成表再次被白名单拒绝**（不伤 MySQL 链路），
+如需回滚请连同 admin 一起退到上一版。
+
+## 本次 V11 四期（建模分层树 + 分类，契约 1.16）
+
+**改动范围**：只发 **admin + web**（engine 一行没动；三期那版 engine 镜像继续用）。
+两侧 admin 镜像必须同版本：新表与补列是启动时自动迁移的，旧镜像不认识 `category_id` 也只是不读它。
+
+- `admin`：① 新表 `databridge_metric_model_category`（`mcat-`，`name/layer/description/sort/del_flag`，
+  `idx_metriccategory_layer`）由 `db/init.js` 启动自动建；② `databridge_metric_model` 加
+  `category_id VARCHAR(64) NOT NULL DEFAULT ''` + `idx_metricmodel_category`——旧库走 `init.js` 自动补列时
+  得到的是 **`VARCHAR(255) NULL`**（补列器恒定拼 NULL、字符串列兜底 255），与 schema 不同形但**不影响功能**：
+  服务端 `normalizeTableStatus` 把 `null`/缺失统一读成 `''`。要把线上列型收敛成人话版，可重复执行
+  `ALTER TABLE databridge_metric_model MODIFY category_id VARCHAR(64) NOT NULL DEFAULT ''`
+  + `UPDATE databridge_metric_model SET category_id='' WHERE category_id IS NULL`（可选，非上线必需）；
+  ③ 新路由组 `/metric-model-categories`（`GET /tree`、`POST /`、`PUT|DELETE /:id`、`POST /assign`，
+  注意 `/tree`、`/assign` 排在 `/:id` 之前）；④ `GET /metric-models` 新增 `categoryId` 筛选（`none`=未分类，
+  走函数谓词 + sqlStore 整表回退，内存/MySQL 同语义）；⑤ `createModel/updateModel` 收 `categoryId`
+  并硬校验「分类存在未删 + 与模型同层」，换层不带新分类 → 40001；⑥ 删分类 = 软删 + 名下模型自动降级
+  未分类（回 `movedModels`）。**分层树的「层」不落库**：5 个根由 `LAYERS` 常量虚拟生成，不参与任何写操作。
+- `web`：数据建模页改成**左「分层树」右列表**——树是 `全部模型 → 5 个分层根 → 分类（+每层「未分类」节点）`，
+  节点带模型计数、分类描述做副标题与 Tooltip；树顶部新建分类，节点上编辑/删除（删除的二次确认文案按
+  `movedModels` 报「N 个建模将退回未分类，不会删除建模本身」）。列表加「分类」列与行多选 →「批量归类」
+  （跨层的模型逐条点名、其余照常成功）。新弹窗 `CategoryModal.vue`（vben BasicModal）里**层级编辑态锁死**；
+  `ModelModal.vue` 的分类下拉随所选层联动（换层自动清空并要求重选）。`guides.ts` 建模页说明卡补分层树段落。
+
+**回归门禁（2026-10-10 本地真库全绿）**：metric-model **62 → 100**（新增 38 条分类段落：非法 layer、
+同层重名与跨层同名、tree 五根恒定/排序/`modelCount`/`uncategorized`、`categoryId` 与 `none` 筛选、
+`assign` 正常归类 + 跨层逐条点名（HTTP 恒 200、`assigned/failed` 计数）、模型详情与列表 `categoryId`
+归一为 `""` 而非 `undefined`、`updateModel` 跨层 40001、`PUT /:id` 带 `layer` 40001、删除后 `movedModels`
+与模型真的回到未分类）；复跑非回归：metric-base **40** / metric-compile **60** / metric-dialect **71** /
+metric-task **34** / metric-sql **24** / metric-dimvalue **38** / metric-wide **75** / dataflow-engine **21**，
+engine `go test ./api/v1` 通过（本轮未改引擎代码）。另用 `DB_DRIVER=memory` 单跑过分类服务，两驱动语义一致。
+跑法照旧必须导出 `TEST_DS_*`（`TEST_DS_PASS=$MYSQL_PASSWORD`）。
+
+**上线后演示资产**：生产 admin 再跑一次 `seed-metric-demo.js` 会补 4 个分类——
+DWD「交易域」（订单明细+访问明细）、ADS「应用出数」（渠道日报已建表+月度宽表）、
+DIM「维度登记」与 DWS「汇总层预留」**故意留空**（演示"分类先建、模型后归类"），
+并把「渠道日报(草稿)」留在 ADS 的**未分类**桶里当样本。
+
+**回滚说明**：`category_id` 是可空/带默认的新列，旧代码不读；新表旧代码不查。回滚 admin 镜像后
+分类数据静静躺着不影响任何链路，界面上的树会退化成纯列表。**唯一要留意的是删过的分类**：
+降级动作已经把模型置成未分类，这不可逆（要恢复归类得重新手工归类）。
+
+---
+
+## 本次 V11 发布操作单（三期宽表 + 四期分层树 + 筛选修复，镜像 tag `v11` / 标签 `V11`）
+
+**改动范围＝三镜像全重建**（不要只发 web）：
+
+- `engine`：`/sql/exec` 白名单新增 `MERGE INTO` 与 `COMMENT ON`。**不回滚它就不算发完**——
+  admin 侧 Oracle 幂等任务与 Oracle「生成表」都依赖这两个动词，engine 停在 v10 会让它们稳定 40001。
+- `admin`：新表 `databridge_metric_model_category` + 模型列 `category_id` + 任务列 `align_mode`/`time_grain`
+  （全部由 `db/init.js` 启动时自动建表/补可空列，**不需要手工迁移**）；新路由组 `/metric-model-categories`；
+  方言层 `dateTrunc`/`GRAINS`/`upsertStatement`；`listUsers` 筛选修复。
+- `web`：任务弹窗双栏、广场勾指标建宽表、建模页分层树（左树右表 + 分类管理 + 批量归类）、
+  文档中心搜索区统一、三处「组件没 import」的隐形按钮修复。
+
+**回归门禁（2026-10-10 本地真库全绿，16 个套件）**：
+metric-model **100** / metric-wide **75**（新）/ metric-dialect **71** / metric-compile **60** /
+metric-base **40** / metric-task **34** / metric-sql **24** / metric-dimvalue **38** /
+metric-chat **19**（10 问命中 8）/ dataflow-engine **21** / chat-api **19** / dockey **31** /
+forward **19** / parse-curl ALL PASS / users **38**（新 5 条筛选断言）/ swagger **40**；
+engine `go test ./api/v1` 通过。
+跑法注意：① metric 系列必须导出 `TEST_DS_*`（`TEST_DS_PASS=$MYSQL_PASSWORD`），否则「口令不回显」那条会假失败；
+② `users`/`swagger` 是 **memory 模式**套件，另起 `DB_DRIVER=memory ADMIN_INIT_PASSWORD=testpass123 PORT=3002 node -r dotenv/config src/index.js`
+再用 `BASE=http://127.0.0.1:3002/api/v1 node ../deploy/tests/<suite>.js` 跑（本轮已把这两个套件的 BASE 改成可覆盖），跑完关掉临时实例，别动用户的 :3001。
+
+**发版命令**：
+
+```bash
+# 本地（Windows Git Bash）：产物已随本次提交入库，重打只在改了前端时才需要
+cd D:/code/code/go/dataLink
+bash deploy/build-web-dist.sh                      # 产出 deploy/web-dist/web-dist.tar.gz
+git add -f deploy/web-dist/web-dist.tar.gz
+git commit -m "release: web dist v11 生产包（时间宽表 + 建模分层树 + 筛选修复）"
+git tag V11
+git push                                           # origin 配了双 pushurl：GitHub + 内网 Gitea 一次到位
+git push origin V11                                # 标签单独推
+
+# master-01（有 docker + kubectl，能出网或走 squid 223:3128）
+cd /path/to/dataLink && git fetch origin && git checkout main && git pull
+ONLY=admin,engine,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v11
+# → 三镜像推 Harbor 10.45.34.167:5000/datalink/{admin,engine,web}:v11，并回写 kustomization newTag
+
+# K8s 生效（该集群 kubectl 不支持 -k，用 set image）
+kubectl -n databridge set image deploy/databridge-admin  admin=10.45.34.167:5000/datalink/admin:v11
+kubectl -n databridge set image deploy/databridge-engine engine=10.45.34.167:5000/datalink/engine:v11
+kubectl -n databridge set image deploy/databridge-web    web=10.45.34.167:5000/datalink/web:v11
+kubectl -n databridge rollout status deploy/databridge-admin
+kubectl -n databridge rollout status deploy/databridge-engine
+kubectl -n databridge rollout status deploy/databridge-web
+```
+
+**上线后验证（按顺序，任一步不过就别往下走）**：
+
+1. `kubectl -n databridge logs deploy/databridge-admin | tail` 看启动日志有没有「自动补列」成功、无 FATAL；
+   新表 `databridge_metric_model_category` 与三列（`category_id`/`align_mode`/`time_grain`）由 init 建/补齐。
+2. 浏览器 Ctrl+F5（web 是静态产物，缓存不刷新会看到旧界面）→ 指标中心：
+   数据建模左侧出现分层树（5 个分层根 + 分类 + 未分类）；任务管理「对齐」列能区分同模型/时间宽表；
+   指标广场卡片右上可勾选并跳任务页自动开弹窗。
+3. **每页的「查询」按钮都要真发请求**（本轮修的就是点了没反应）：F12 Network 里能看到带
+   `layer=`/`categoryId=`/`lastStatus=`/`role=` 的请求。
+4. 生产 admin 再跑一次 `seed-metric-demo.js` 铺演示资产（宽表任务 + 4 个分类），见 docs/METRIC-DEMO.md。
+5. `ENGINE_SHARED_SECRET` 是否真落到 Pod（engine 日志不应再有「无鉴权过渡态」WARN）——
+   `kubectl set image` **不会**带出清单里新增的 env，必须按本文「⚠️ v9 必做」那节 `kubectl patch deploy` 追加，
+   且**先补 Secret 的 key 再 patch**，否则 Pod 卡 CreateContainerConfigError。
+
+**可选的列型收敛**（不影响功能，想让人工核对的 DDL 与 schema 一致再做）：
+
+```sql
+ALTER TABLE databridge_metric_model MODIFY category_id VARCHAR(64) NOT NULL DEFAULT '';
+UPDATE databridge_metric_model SET category_id = '' WHERE category_id IS NULL;
+```
+
+**回滚**：三镜像一起 `kubectl set image ... :v10`（admin 与 engine 不要分开退——v11 的 Oracle 链路
+依赖 engine 的 MERGE/COMMENT 白名单，退回 v10 admin + 留 v11 engine 没问题，反之会让 Oracle 任务 40001）。
+新表/新列都是"旧代码不读"的加法，回滚不需要清库；唯一不可逆的是**删分类带来的归类信息丢失**
+（模型会静静躺在「未分类」里，需要人工重新归类）。
