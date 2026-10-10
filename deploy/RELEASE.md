@@ -396,3 +396,43 @@ UPDATE databridge_metric_model SET category_id = '' WHERE category_id IS NULL;
 依赖 engine 的 MERGE/COMMENT 白名单，退回 v10 admin + 留 v11 engine 没问题，反之会让 Oracle 任务 40001）。
 新表/新列都是"旧代码不读"的加法，回滚不需要清库；唯一不可逆的是**删分类带来的归类信息丢失**
 （模型会静静躺在「未分类」里，需要人工重新归类）。
+
+## admin 依赖基座镜像（一次性接入；之后 admin 构建零外网）
+
+**要解决的问题**：master-01 没有直连外网，`node-express-boilerplate/Dockerfile` 里那层
+`yarn install` 每次都要穿 squid 代理拉 27 个包；一旦代理抖动或 docker 层缓存被 prune，
+打包就卡在 `Fetching packages... There appears to be trouble with your network connection. Retrying...`，
+而失败的 RUN 层不会留下缓存 → 下次从头再卡一遍。
+
+**做法**（与 web 的 `PREBUILT_WEB` 同一思路：把"要外网的那部分产物"预先放进 Harbor）：
+
+| 文件 | 作用 |
+|------|------|
+| `node-express-boilerplate/Dockerfile.deps` | 只装 `node_modules` 的基座镜像，不含业务源码 |
+| `deploy/admin-deps-tag.sh` | tag 计算：`package.json` + `yarn.lock` 内容哈希（两个脚本共用，保证一致） |
+| `deploy/build-admin-deps.sh` | 构建并推基座到 Harbor；**Harbor 里已有该 tag 就直接跳过** |
+| `node-express-boilerplate/Dockerfile` | 改成 `COPY --from=deps` 取 node_modules，**不再跑 yarn** |
+| `deploy/build-push-harbor.sh` | admin 构建自动带 `--build-arg DEPS_IMAGE=<registry>/admin-deps:<哈希tag>`，并在 Harbor 里查不到该 tag 时提前报错（查不动 tag 列表则跳过预检，交给 docker） |
+
+**首次接入（在 master-01 上跑一次，这一步需要代理）**：
+
+```bash
+cd /root/.../SgDataLink && git pull
+DOCKER_BUILD_OPTS="--build-arg HTTP_PROXY=http://<user>:<pass>@10.45.34.223:3128 --build-arg HTTPS_PROXY=http://<user>:<pass>@10.45.34.223:3128" \
+  bash deploy/build-admin-deps.sh
+```
+
+之后发版就是纯内网：`ONLY=admin,engine,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v<N>`（admin 那步只剩拷源码，秒级）。
+
+**什么时候要重跑基座**：只有 `package.json`/`yarn.lock` 变了（哈希变 → 新 tag → Harbor 里没有 →
+`build-push-harbor.sh` 会拦下来并提示你跑 `build-admin-deps.sh`）。想强制重建（例如升级 `node:18-alpine` 基础镜像）：
+`FORCE=1 bash deploy/build-admin-deps.sh`。
+
+**基座 tag 怎么查**：`bash -c '. deploy/admin-deps-tag.sh; admin_deps_tag .'`（当前依赖下是 `d92537704d8`）。
+
+**代理账号会留在镜像 history 里**：`HTTP_PROXY/HTTPS_PROXY` 是 docker 预定义 build arg，带账号的 URL
+会出现在**基座镜像**的 history 中（业务镜像不再有这个问题，因为构建时不传代理）。基座只推内网 Harbor、
+且该账号本就是仓库文档里的共享代理号；若要把镜像外发，先重建基座并改用 BuildKit secret。
+
+**回退**：万一基座路线出问题，把 `node-express-boilerplate/Dockerfile` 换回上一版（单层 `RUN yarn install`）
+即可，构建脚本对 `DEPS_IMAGE` 的引用只在 admin 分支里，不影响 engine/web。

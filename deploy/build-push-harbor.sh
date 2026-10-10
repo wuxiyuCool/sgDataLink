@@ -14,6 +14,11 @@
 #   本地 bash deploy/build-web-dist.sh（pnpm build + 产物 tar 提交到 deploy/web-dist/）→ git push
 #   服务器 git pull → ONLY=web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh（自动解压 tar 进 prebuilt-dist/）
 #
+# admin 依赖分发（同一思路，绕开内网 yarn install）：
+#   依赖基座镜像 = node-express-boilerplate/Dockerfile.deps，tag 由 package.json+yarn.lock 哈希决定；
+#   只在依赖变更时构建一次：bash deploy/build-admin-deps.sh（这一步才需要外网/squid 代理）
+#   之后业务镜像构建从 Harbor 取 node_modules，全程零外网、秒级。
+#
 # 可覆盖：REGISTRY / PROJECT / ONLY=admin,engine,web / SKIP_BUILD=1(push 模式跳过构建)
 #         OUT_DIR(save 输出目录) / SRC_DIR(load 输入目录)
 #         DOCKER_BUILD_OPTS —— 透传给 docker build 的额外参数。内网构建卡在
@@ -34,6 +39,13 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 MODE="${MODE:-push}"
 
 cd "$(dirname "$0")/.."
+# shellcheck source=./admin-deps-tag.sh
+. deploy/admin-deps-tag.sh
+
+# admin 依赖基座（node_modules 层）：tag 由依赖清单哈希决定，业务镜像构建因此零网络。
+# 基座缺失时先跑一次：bash deploy/build-admin-deps.sh（那一步才需要外网/代理）
+DEPS_TAG="${DEPS_TAG:-$(admin_deps_tag .)}"
+DEPS_IMAGE="$REGISTRY/$PROJECT/admin-deps:$DEPS_TAG"
 
 ctx_dir() {
   case "$1" in
@@ -59,8 +71,31 @@ build_image() {  # $1=服务名 $2=本地tag后缀；web 支持 PREBUILT_WEB=1 �
     echo "==> 构建 web（预构建 dist 模式，跳过 pnpm install）"
     docker build ${DOCKER_BUILD_OPTS:-} -f vue-vben-admin/Dockerfile.prebuilt -t "databridge/web:$2" vue-vben-admin
   else
+    local extra_opts=""
+    if [[ "$1" == admin ]]; then
+      # 依赖基座必须已在 Harbor：否则 docker 会去外网拉，内网机直接卡住。
+      # 但 Harbor 需要认证/不可达时查不到 tag 列表 —— 那种情况只提示、不拦（交给 docker 校验），
+      # 免得把免密配置不同的机器误判成"基座不存在"。
+      local tags_json
+      if [[ -n "$HARBOR_USER" ]]; then
+        tags_json=$(curl -fsSk --connect-timeout 5 -u "$HARBOR_USER:$HARBOR_PASS" \
+          "$SCHEME://$REGISTRY/v2/$PROJECT/admin-deps/tags/list" 2>/dev/null || true)
+      else
+        tags_json=$(curl -fsSk --connect-timeout 5 \
+          "$SCHEME://$REGISTRY/v2/$PROJECT/admin-deps/tags/list" 2>/dev/null || true)
+      fi
+      if [[ -n "$tags_json" ]] && ! echo "$tags_json" | tr -d '[]" \r' | tr ',' '\n' | grep -qx "$DEPS_TAG"; then
+        echo "!! Harbor 里没有 admin 依赖基座 $DEPS_IMAGE" >&2
+        echo "   先在有外网/代理的机器上跑一次（只在依赖变更时需要）：" >&2
+        echo "   bash deploy/build-admin-deps.sh" >&2
+        exit 1
+      fi
+      [[ -n "$tags_json" ]] && echo "==> admin 复用依赖基座 $DEPS_IMAGE" \
+        || echo "==> admin 用依赖基座 $DEPS_IMAGE（Harbor tag 列表不可查，跳过预检）"
+      extra_opts="--build-arg DEPS_IMAGE=$DEPS_IMAGE"
+    fi
     echo "==> 构建 $1 ($(ctx_dir "$1"))"
-    docker build ${DOCKER_BUILD_OPTS:-} -t "databridge/$1:$2" "$(ctx_dir "$1")"
+    docker build ${DOCKER_BUILD_OPTS:-} $extra_opts -t "databridge/$1:$2" "$(ctx_dir "$1")"
   fi
 }
 

@@ -1,9 +1,19 @@
+# syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
-# DataBridge 管理后端 —— mock 版镜像（内存存储，不依赖任何数据库）
-# 构建：docker build -t databridge-admin:mock .
-# 运行：docker run -p 3001:3001 databridge-admin:mock
-# 镜像内允许 yarn install；本地开发请自行安装依赖后 yarn dev（见 README）。
+# DataBridge 管理后端（Node admin）
+#
+# 依赖不再在本镜像里 yarn install，而是从「依赖基座镜像」整份 COPY node_modules：
+#   基座 = node-express-boilerplate/Dockerfile.deps，tag 取 yarn.lock 内容哈希，
+#   构建/推送 = bash deploy/build-admin-deps.sh（只在依赖变更时需要外网/代理）。
+# 这样业务镜像构建完全离线、秒级，且代理账号不会留在镜像 history 里。
+#
+# 本地/有外网机器想一步到位也可以直接构建基座：
+#   docker build -f Dockerfile.deps -t databridge/admin-deps:<tag> .
 # ---------------------------------------------------------------------------
+ARG DEPS_IMAGE=10.45.34.167:5000/datalink/admin-deps:latest
+
+FROM ${DEPS_IMAGE} AS deps
+
 FROM node:18-alpine
 
 # 契约要求：Node >= 18（engineClient 使用全局 fetch）
@@ -13,16 +23,9 @@ ENV NODE_ENV=production \
 
 WORKDIR /usr/src/node-app
 
-# 国内构建走 npmmirror，与 web 镜像保持一致（yarn 1.x 认 npm_config_registry）
-ENV npm_config_registry=https://registry.npmmirror.com
-
-# 先只拷依赖清单，利用层缓存。
-# --ignore-scripts：跳过 prepare(husky) 等脚本；本项目运行时依赖全是纯 JS，无 native 编译。
-# --network-timeout：内网到 registry 抖动时快速报错，不再无限停在 Fetching packages
-COPY package.json yarn.lock ./
-
-RUN yarn install --production --non-interactive --frozen-lockfile --ignore-scripts --network-timeout 120000 \
-  && yarn cache clean
+# 依赖层：来自基座镜像，无网络
+COPY --from=deps /usr/src/node-app/node_modules ./node_modules
+COPY package.json ./
 
 # 再拷源码（.dockerignore 已排除 node_modules / tests / .env）
 COPY . .
