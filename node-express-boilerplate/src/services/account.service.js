@@ -38,6 +38,24 @@ const assertPasswordStrength = (password) => {
   }
 };
 
+/**
+ * 种子管理员的随机口令：必须天然满足 PASSWORD_RULES（≥1 字母 + ≥1 数字）。
+ * 直接 base64url 不行——它的字母表里数字只占 10/64，12 字符全不带数字的概率约 13%，
+ * 会让内存 mock 模式"每启动几次就崩一次"（崩在 assertPasswordStrength）。
+ */
+const generateSeedPassword = () => {
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const digits = '0123456789';
+  const pick = (alphabet) => alphabet[crypto.randomInt(alphabet.length)];
+  const chars = [pick(letters), pick(digits), ...crypto.randomBytes(10).toString('base64url').split('')];
+  // 洗牌，免得字母/数字固定占前两位
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+};
+
 /** 出参收口：永远不带 passwordHash */
 const toSafeUser = (user) =>
   user
@@ -356,8 +374,8 @@ const ensureSeedAdmin = async () => {
   const total = await userRepository.count();
   if (total > 0) return null;
   const fromEnv = String(config.adminInitPassword || '').trim();
-  const generated = fromEnv || crypto.randomBytes(9).toString('base64url');
-  assertPasswordStrength(generated);
+  if (fromEnv) assertPasswordStrength(fromEnv); // 显式配的不合规就该报错，不静默替换
+  const generated = fromEnv || generateSeedPassword();
   const user = await userRepository.create({
     username: 'admin',
     nickname: '系统管理员',
@@ -376,6 +394,7 @@ module.exports = {
   USERNAME_RE,
   toSafeUser,
   assertPasswordStrength,
+  generateSeedPassword,
   login,
   pageLoginLogs,
   DOC_KEY_PREFIX,
