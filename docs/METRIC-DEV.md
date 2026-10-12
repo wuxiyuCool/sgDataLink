@@ -682,7 +682,21 @@ LLM_EMBED_API_KEY=                               # embedding 独立密钥，留�
 8. **批量归类逐条点名**（`POST /metric-model-categories/assign`，`modelIds` ≤500）：跨层的那几条不整批失败，落进 `results[{id,ok,message}]` + `assigned/failed`，HTTP 恒 200，形状沿用 v1.14 `POST /metrics/batch`。理由是真实操作："勾 20 个模型归到一个分类"里混进 2 个别的层的模型，全批回滚会让人重来一遍并怀疑功能；明确点名反而一次就能改对。单个创建/编辑仍走 40001 硬拒——那没有"部分成功"可言。
 9. **红线（新增）**：分类的一切操作（增删改、归类、降级）**只写元数据列，不产一句 DDL、不碰物理表**，也不进 40902/40903 那类资产闸门；否则"归个类"就会变成库侧动作，与红线 12（任务不得改目标表结构）同源失守。
 
+**V11 五期 · 批量派生（2026-10-12，契约 1.18）**：需求是「一个原子指标要按区域、按状态、按渠道各派生一条，一条条点太重复」。
+
+1. **不新开 `POST /metrics/batch-derived`，而是把 batch 的 item 扩成两种形态**。批量接口那三条语义（≤50、逐条走单条 `createMetric`、部分成功回 HTTP 200）本来就是对的，缺的只是「item 只能表达原子形态」；新开一个接口等于把这三条再实现一遍，将来任何一条口径变更都要改两处。判别式：item 带 `defineType` 或 `defineParams` 任一＝**形态 B（单条契约形态，原样透传）**，否则＝**形态 A（扁平列→指标，服务端折算 MEASURE）**，同批可混发（形态 B 能引用同批形态 A 刚建出来的基底，依赖顺序执行）。
+2. **结构错整批 40001、语义错逐条回显，这条分界要守住**。`defineType` 非法、`defineParams` 不是对象、扁平形态缺 `measureColumn/agg`——这些是**报文级**问题（50 条一起错），塞进 `results` 只会让人对着 50 行同一句话数行数；而且那时前 3 条已经落库了，"整批形态不合规"却留下半成品更难看。所以 `createMetricsBatch` 开头 `items.forEach(assertItemShape)` 一遍，不过就一条都不建。反过来，基底不存在、维度越界是**资产级**问题（只有那一条坏），继续逐条拒。
+3. **形态规则写在 service、不写在 Joi**：`batchMetrics` 的 item 只保留报文封顶（长度/枚举/条数），`defineType` 甚至故意放宽成字符串——Joi 的 `alternatives` 只能回「不匹配任何允许的类型」，而这里需要的是「items[3] 是扁平原子形态，缺少 measureColumn/agg（批量派生请带 defineType+defineParams）」这种能照着做的话。占用判定同理（`findCodeOccupant`/`inspectCode` 一份规则，见 v1.17）。
+4. **命名模板只活在界面**：`基底_by_列名`、`按×分×`、码值后缀这些预填全是第①步展开时算好的草稿行，服务端一个字符都不替用户改，也没有"命名规则"配置项。放服务端会把"改个默认命名"变成发版动作，而它本来只是向导里可编辑的一格。
+5. **码值展开的编码后缀取档案 `value` 的 slug，不取中文 `label`**：`^[a-z][a-z0-9_]{2,63}$` 会把中文判非法，标红一片；`label` 只是业务别名，落到名称列。纯中文 value（slug 为空）时按 `v{序号}` 兜底并提示自查可读性。`filterSql` 里的值按 SQL 标准把单引号翻倍转义（`'O''Neil'`），语法探针与真执行都认。
+6. **前端把编码事前校验抽成 `useMetricCodeCheck`（两个批量向导共用）**：这套规则（500ms 防抖、只问受影响 code、占用/批内重复才允许补后缀、已落库行不再算冲突、提交成败留痕）有十来条相互牵制的细节，抄第二份必然漂移；契约里那句「前端不许另写一套占用判定」同样适用于"不许有两份预告逻辑"。抽出时行为逐条对齐，`BatchMetricModal` 只剩界面装配。
+7. **派生链路上"基底用 code 不用 id"这件事现在有四处一致**：单条弹窗下拉以 code 为选项值、批量向导提交 `form.baseCode`、后端报错文案教怎么改（`baseMetricId 要填基底的 code…去指标列表复制「编码」列`）、契约与回归各钉一条。字段名本身带 Id 是历史遗留，不改名（`define_params` JSON 里已存量落库，改名要迁移数据换不来任何正确性）。
+8. **回归（`test-metric-batch-derived.js` 新套件 24 条）**：形态 B 按维度（含 expr 服务端补全、继承基底模型、dep 边落库）、按码值（含带转义引号的 filterSql）、维度越界与基底误传 id 都是**逐条**失败且 HTTP 200、三种形态非法各整批 40001 且点名下标、整批被拒后用 code-check 反证"一条都没建"、A+B 混发引用同批新基底、51 条越界、v1.14 扁平形态零回归（含 timeColumn/filterSql 进 defineParams）。全套复跑：base59 / dialect71 / compile61 / model100 / wide75 / dimvalue38 / task34 / sql24 / batch-derived24 全绿，users38、swagger40 在 memory 实例（`DB_DRIVER=memory PORT=3002 ADMIN_INIT_PASSWORD=…`）下全绿。
+9. **仍未做**：按码值展开时不生成"层级下钻"（父指标→子码值）的依赖关系，各码值派生彼此独立平级；`defineParams.timePreset` 依旧只是单条弹窗上的装饰（编译器不读它），批量派生因此没有提供时间窗口格——要它生效得先决定语义（进 WHERE 还是只作展示默认）。
+10. **浏览器点验揪出的既有 bug（不是本期引入）**：`Steps` 在 ant-design-vue 3.2.20 **没有 `items` prop**（4.x 才有），而 `BatchMetricModal` 一直在写 `<Steps :items="STEP_ITEMS" />` → 渲染出一个**空的 `.ant-steps`**，既不警告也不报错，三步进度条从三期上线起就没显示过。新弹窗照抄了同一行，点验时才看见。两处都改成仓内 `TaskModal.vue` 的写法（`const Step = Steps.Step` + `<Step v-for>`）。**教训：antd 的 4.x 文档/示例不能照抄进本仓，模板里每个 prop 先 `node -e "console.log(Object.keys(require('ant-design-vue').Steps.props))"` 点一遍；prop 缺口的典型表现就是"静默失效"，`vue-tsc` 与 eslint 都拦不住。**同时把「按码值」模式的**维度限定列补进第②步表格**（原先只在按维度模式显示）——`dimensions` 会被提交却看不见，等于让用户签一张隐形的字段。
+
 ## 12. 红线汇总（AI 实施时必须遵守）
+
 1. `docs/API.md` 是唯一契约真源：先写契约再实现，三端同步改。
 2. `DB_DRIVER=mysql` 严禁 mock/假数据；memory 演示分支单独隔离。
 3. 引擎无状态，Node 下发含凭据快照；凭据不进日志、不进回报、不落明文运行记录。

@@ -69,6 +69,10 @@
             <Icon icon="ant-design:edit-outlined" class="mr-1" />
             手工新建
           </Button>
+          <Button class="ml-2" @click="handleBatchDerived">
+            <Icon icon="ant-design:fork-outlined" class="mr-1" />
+            批量派生
+          </Button>
           <Button type="primary" class="ml-2" @click="handleBatchFromTable">
             <Icon icon="ant-design:table-outlined" class="mr-1" />
             从表生成指标
@@ -286,6 +290,7 @@
     <MetricModal @register="registerFormModal" @success="reloadAll" />
     <MetricDetailModal @register="registerDetailModal" @success="reloadAll" />
     <BatchMetricModal @register="registerBatchModal" @success="reloadAll" />
+    <BatchDerivedModal @register="registerDerivedModal" @success="reloadAll" />
   </PageWrapper>
 </template>
 
@@ -342,6 +347,7 @@
     formatTime,
   } from '../data'
   import BatchMetricModal from './BatchMetricModal.vue'
+  import BatchDerivedModal from './BatchDerivedModal.vue'
   import MetricDetailModal from './MetricDetailModal.vue'
   import MetricModal from './MetricModal.vue'
 
@@ -360,6 +366,7 @@
   const [registerFormModal, { openModal: openFormModal }] = useModal()
   const [registerDetailModal, { openModal: openDetailModal }] = useModal()
   const [registerBatchModal, { openModal: openBatchModal }] = useModal()
+  const [registerDerivedModal, { openModal: openDerivedModal }] = useModal()
 
   /** 宽表候选（广场卡片勾出来的指标）：带到任务页预填 align=time 的宽表任务 */
   const GRAIN_OPTIONS = [
@@ -541,6 +548,10 @@
 
   function handleBatchFromTable() {
     openBatchModal(true, { domainOptions: domainOptions.value })
+  }
+
+  function handleBatchDerived() {
+    openDerivedModal(true, { domainOptions: domainOptions.value })
   }
 
   /** 广场卡片是精简视图，编辑/详情需要完整定义（expr/defineParams），按 id 取一次详情再开弹窗 */

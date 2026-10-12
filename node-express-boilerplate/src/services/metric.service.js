@@ -586,6 +586,7 @@ const hashCode = (text) => crypto.createHash('md5').update(String(text)).digest(
 
 module.exports = {
   CODE_PATTERN,
+  DEFINED_TYPES,
   REF_PATTERN,
   AGG_FUNCTIONS,
   SCALAR_FUNCTIONS,

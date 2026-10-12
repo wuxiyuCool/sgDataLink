@@ -18,7 +18,7 @@ const getPlaza = catchAsync(async (req, res) => {
   ok(res, await metricPlazaService.getPlaza(pick(req.query, ['domainId', 'type', 'status', 'keyword', 'limit'])));
 });
 
-/** POST /metrics/batch —— 从表批量生成原子指标；部分成功回 200，逐条结果在 results 里 */
+/** POST /metrics/batch —— 批量生成指标（原子/派生两种 item 形态，契约 1.18）；部分成功回 200，逐条结果在 results 里 */
 const createMetricsBatch = catchAsync(async (req, res) => {
   const result = await metricPlazaService.createMetricsBatch(req.body.items, req.user && req.user.username);
   ok(res, result, { message: `创建 ${result.created} 条，失败 ${result.failed} 条` });

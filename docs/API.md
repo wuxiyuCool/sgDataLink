@@ -873,6 +873,20 @@ _C. 边界与不做什么_
 - 界面配套（`BatchMetricModal.vue` 第②步，非契约强制）：进入第②步全量查一次、其后只有**变化过的 code** 进 500ms 防抖重查（不整表刷）；冲突行输入框标红 + 行下小字说明占用者（名称/编码、是否已删除）；「一键补后缀」按钮按 `_2`、`_3`… 递增直到不冲突——**只用当前批内已知的占用集合算后缀，不自动改、点了才改**，补完立刻复查一次，并提示"补完请自查名称是否需要跟着改"（后缀只修编码，指标名可能仍要人工区分）；存在冲突行时「生成指标」不禁用而是弹二次确认（"仍有 N 行编码冲突，提交会被后端逐条拒绝"），拦到那一步就够，不替后端下结论。
 - 回归：`deploy/tests/test-metric-base.js` 的 `== 编码占用事前校验 ==` 段（含「真的先建后删再查」这条——软删占位必须用真实 DELETE 走出来，不许插行伪造）。
 
+**批量派生（v1.18）**：把「同一个原子指标下逐个手工建派生指标」这件重复事并入既有批量接口。不新开 `POST /metrics/batch-derived`——批量接口的三条语义（≤50、逐条走单条校验器、部分成功回 200）已经都在，缺的只是「item 只能表达原子形态」这一条。
+
+- `POST /metrics/batch` 的 item 扩成**两种形态，同一批可混发**：
+  - **形态 A（扁平原子，v1.14 原样）**：`{code,name,domainId,modelId,measureColumn,agg,timeColumn?,filterSql?}`，服务端折算成 `defineType:'MEASURE'`。判别依据：不带 `defineType` 也不带 `defineParams`。
+  - **形态 B（单条契约形态，v1.18 新增）**：item 直接带 `defineType` 和/或 `defineParams`，服务端把 `defineType/defineParams/expr` **原样透传**给 `createMetric`，不折算、不补字段——语义校验（基底存在、派生维度越界、`filterSql` 探针、循环、跨源）与单条创建是同一份代码。批量派生走的就是这条：
+    `{code,name,domainId,defineType:'METRIC',defineParams:{baseMetricId:'<基底 code>',dimensions:['region'],filterSql?}}`
+- **`baseMetricId` 填基底的 code 不是 id**（字段名带 Id 是历史遗留，见 1.12 DERIVED 口径）；`expr` 可留空，DERIVED 由服务端补成 `${基底code}`。
+- **形态 B 的结构检查是报文级的，整批 40001**（不塞进逐条 results）：`defineType` 出现则必须 ∈ `MEASURE|FIELD|METRIC`，`defineParams` 出现则必须是对象。报错信息带 `items[i]` 下标与两种形态各要什么——结构错了 50 条一起错，逐条回显只会让人对着 50 行同一句话数。形态 A 的 `modelId/measureColumn/agg` 同样在报文级判（缺任一 → 40001 点名下标），不再靠 `createMetric` 事后回 50 条同样的错。
+- `status` 缺省 `'online'` 对两种形态同样生效；其余可选公共字段（`alias/unit/dataFormat/caliber/owner/remark`）两种形态都收。
+- **命名模板在接口层不存在（契约级要求）**：`base_by_region` 这种 code、`按区域分…` 这种 name 全是**界面展开时算好的预填**，服务端只收最终值、一个字符都不替用户改。把模板放服务端会让「改了默认命名规则」变成发版动作，而它本来只是向导里一个输入框。
+- 上限、返回体、顺序执行、无事务、HTTP 恒 200 全部沿用 v1.14，不另立口径（顺序执行对派生同样有意义：B 形态可以引用同批 A 形态刚建出来的基底）。
+- 界面配套（`BatchDerivedModal.vue`，非契约强制）：三步——①选基底指标（只给 online 原子指标）+ 展开方式：**按维度**（列基底模型的角色∈{维度,时间} 的列多选，一列一条 `dimensions:[col]`）/ **按码值**（选一维度列，读该列取值档案（契约 1.14 C），一值一条 `filterSql=t.col='value'`）；②预览 N 条可逐条改 code/name/维度/过滤，复用 v1.17 的 code-check 标红与「一键补后缀」；③逐条结果与「重新提交失败项」。码值场景的 code 后缀取**档案 value 的 slug**（`01`、`east`），不取中文 label——label 只是业务别名，落进编码会把 `^[a-z][a-z0-9_]{2,63}$` 打成非法。
+- 回归：`deploy/tests/test-metric-batch-derived.js`（形态 B 三态：按维度成功、基底传 id 逐条拒、同批混发 A+B；形态非法整批 40001 且不产生任何已建条目）。
+
 **路由**：
 
 | 方法 | 路径 | 说明 |
@@ -888,7 +902,7 @@ _C. 边界与不做什么_
 | POST | `/metric-models/:id/create-table` | 生成表（v1.13）：仅 `createType=ddl` + `status=online`，方言层出 DDL 经 engine 执行；幂等（Oracle 先探 `user_tables`）。返回 `{tableStatus, tableMsg, tableAt, ddl, executed}`；失败也落 `tableStatus=failed` + 原始报错供界面展示与重试 |
 | DELETE | `/metric-models/:id?dropTable=true` | 删除模型（默认只软删）。`dropTable=true` 仅当 `createType=ddl` 且 `tableStatus=created`；`reference` → 40001（引用表平台永不 DROP）。返回 `{id, deleted:true, dropped, dropMsg?}` |
 | GET | `/metrics/plaza` | 指标广场聚合（v1.14）：按根域分节，`domainId` 时含子孙域；只回 online（除非 status=draft/offline/all）；卡片含 `referencedBy`（被引用数）与 `hot7d`（近 7 天问数命中）。见上方 A 节 |
-| POST | `/metrics/batch` | 从表批量生成原子指标（v1.14）：`{items:[...]}` ≤50 条，逐条走单条校验器，返回 `{results:[{index,code,ok,id?/message?}],created,failed}`，HTTP 恒 200。见上方 B 节 |
+| POST | `/metrics/batch` | 批量生成指标（v1.14；v1.18 起 item 支持两种形态）：`{items:[...]}` ≤50 条，扁平原子形态折算 MEASURE、`defineType/defineParams` 形态原样透传（批量派生用），逐条走单条校验器，返回 `{results:[{index,code,ok,id?/message?}],created,failed}`，HTTP 恒 200；形态本身不合规（缺 modelId/measureColumn/agg、`defineType` 非法、`defineParams` 不是对象）→ 整批 40001 点名下标。见上方 B 节与「批量派生」 |
 | GET | `/metrics/code-check?codes=a,b,c` | 编码占用事前校验（v1.17）：≤50 个逗号分隔 code，空列表合法回 `{items:[]}`；逐项回 `{code,available,reason?:invalid\|taken\|duplicate-in-request,takenBy?:{id,name,status,deleted}}`。**判定与保存期同源**（`findCodeOccupant`/`inspectCode` 一份规则），已软删指标同样占位（`takenBy.deleted=true`）。见上方「编码占用事前校验」 |
 | POST | `/metric-models/:id/profile-dimensions` | 维度取值探查（v1.14）：真查目标库（engine `/sql/query` + 方言层 `dimProfileSql`），先基数保护后取 topN，保留人工 label、消失值置 stale；`DB_DRIVER≠mysql` → 40001 |
 | GET/PUT/DELETE | `/metric-models/:id/dimension-values` | 取值档案读/码值业务名登记/清列（v1.14）。GET 只读库内档案不打源库 |

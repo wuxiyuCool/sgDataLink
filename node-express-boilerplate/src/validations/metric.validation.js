@@ -124,7 +124,13 @@ const plaza = {
     .unknown(true),
 };
 
-/** POST /metrics/batch：扁平「列→指标」形态，语义校验交给单条 createMetric */
+/**
+ * POST /metrics/batch（契约 1.18）：item 有扁平原子/单条契约两种形态。
+ * 这里只做报文级封顶（长度、枚举、条数）；「哪种形态缺了哪一格」由 service 的 assertItemShape 判——
+ * 那句要带 items[i] 下标和「该怎么补」，Joi 的 alternatives 只会回一句「不匹配任何允许的类型」。
+ * defineType 在这里故意放宽成字符串，好让 service 那条更具体的提示先出场；defineParams 仍锁对象
+ * （Joi 对数组项的报错本身就带 items[i] 下标，够用）。
+ */
 const batchMetrics = {
   body: Joi.object()
     .keys({
@@ -136,9 +142,10 @@ const batchMetrics = {
               code: baseKeys.code.required(),
               name: baseKeys.name.required(),
               domainId: baseKeys.domainId.required(),
-              modelId: Joi.string().trim().max(64).required(),
-              measureColumn: Joi.string().trim().max(128).required(),
-              agg: Joi.string().valid('sum', 'count', 'count_distinct', 'avg', 'max', 'min').required(),
+              defineType: Joi.string().trim().max(16),
+              modelId: Joi.string().trim().max(64),
+              measureColumn: Joi.string().trim().max(128),
+              agg: Joi.string().valid('sum', 'count', 'count_distinct', 'avg', 'max', 'min'),
               timeColumn: Joi.string().trim().max(128).allow(''),
               filterSql: Joi.string().trim().max(2000).allow(''),
             })

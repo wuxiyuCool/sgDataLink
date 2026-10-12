@@ -526,23 +526,39 @@ export function getMetricPlazaApi(params: MetricPlazaParams) {
   return databridgeHttp.get<MetricPlazaResult>({ url: '/metrics/plaza', params })
 }
 
-/** 批量项是「列 → 指标」的扁平形态，服务端折算成 defineParams */
-export interface MetricBatchItem {
+/** 批量项的公共字段（契约 1.18：两种形态都收这几格） */
+interface MetricBatchBase {
   code: string
   name: string
   domainId: string
-  modelId: string
-  measureColumn: string
-  agg: string
   alias?: string[]
-  timeColumn?: string
-  filterSql?: string
   unit?: string
   dataFormat?: string
   caliber?: string
   owner?: string
   status?: string
 }
+
+/** 形态 A：扁平「列 → 指标」，服务端折算成 defineParams */
+export interface MetricAtomicBatchItem extends MetricBatchBase {
+  modelId: string
+  measureColumn: string
+  agg: string
+  timeColumn?: string
+  filterSql?: string
+}
+
+/**
+ * 形态 B：直接是单条创建契约形态，defineType/defineParams/expr 原样透传给 createMetric。
+ * 批量派生用 defineType='METRIC' + defineParams.baseMetricId（填基底的 **code**，不是 id）。
+ */
+export interface MetricDefineBatchItem extends MetricBatchBase {
+  defineType: 'MEASURE' | 'FIELD' | 'METRIC'
+  defineParams: MetricDefineParams
+  expr?: string | null
+}
+
+export type MetricBatchItem = MetricAtomicBatchItem | MetricDefineBatchItem
 
 export interface MetricBatchResultItem {
   index: number

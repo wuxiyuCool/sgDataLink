@@ -11,6 +11,9 @@ const metricQueryLogRepository = require('../repositories/metricquerylog.reposit
 const datasourceRepository = require('../repositories/datasource.repository');
 const metricService = require('./metric.service');
 
+// defineType 的合法值只有指标服务那一份，批量形态判定不再抄一遍
+const { DEFINED_TYPES } = metricService;
+
 const PLAZA_LIMIT_MAX = 500;
 const PLAZA_DEFAULT_LIMIT = 500;
 const HOT_WINDOW_MS = 7 * 86400000;
@@ -179,18 +182,41 @@ const getPlaza = async (filter = {}) => {
 };
 
 /**
- * 批量项是「列 → 指标」的扁平形态（界面一行一列），这里折算成单条创建契约的 defineParams 形态；
- * 语义校验（聚合规则/循环/跨源/草稿模型闸门）全部交给 createMetric，一处闸门不复制两份。
+ * 批量项的两种形态（契约 1.18）：
+ * A 扁平「列 → 指标」（界面一行一列），这里折算成单条创建契约的 defineParams 形态；
+ * B 已经是单条创建契约形态（带 defineType/defineParams），原样透传——批量派生用的就是这条。
+ * 语义校验（聚合规则/循环/跨源/草稿模型闸门/基底存在）两种形态都交给 createMetric，一处闸门不复制两份。
  */
+const isPayloadShapeItem = (item) => item.defineType !== undefined || item.defineParams !== undefined;
+
+/**
+ * 形态级结构检查：整批 40001 并点名下标。
+ * 这类错是报文级的（50 条一起错），逐条回显只会让人对着同一句话数行数。
+ */
+const assertItemShape = (item, index) => {
+  const at = `items[${index}]`;
+  const types = DEFINED_TYPES.join('|');
+  if (isPayloadShapeItem(item)) {
+    if (item.defineType === undefined) {
+      throw paramInvalid(`${at} 带了 defineParams 却没有 defineType：单条契约形态需 defineType ∈ ${types}`);
+    }
+    if (!DEFINED_TYPES.includes(item.defineType)) {
+      throw paramInvalid(`${at} 的 defineType 非法: ${item.defineType}（应为 ${types}）`);
+    }
+    const dp = item.defineParams;
+    if (dp !== undefined && (dp === null || Array.isArray(dp) || typeof dp !== 'object')) {
+      throw paramInvalid(`${at} 的 defineParams 必须是对象，如 {baseMetricId:'基底code', dimensions:['region']}`);
+    }
+    return;
+  }
+  const missing = ['modelId', 'measureColumn', 'agg'].filter((key) => !item[key]);
+  if (missing.length) {
+    throw paramInvalid(`${at} 是扁平原子形态，缺少 ${missing.join('/')}（批量派生请带 defineType+defineParams）`);
+  }
+};
+
 const toMetricPayload = (item) => {
-  const defineParams = {
-    modelId: item.modelId,
-    measureColumn: item.measureColumn,
-    agg: item.agg,
-  };
-  if (item.timeColumn) defineParams.timeColumn = item.timeColumn;
-  if (item.filterSql) defineParams.filterSql = item.filterSql;
-  return {
+  const shared = {
     code: item.code,
     name: item.name,
     alias: item.alias,
@@ -201,19 +227,34 @@ const toMetricPayload = (item) => {
     owner: item.owner,
     remark: item.remark,
     status: item.status || 'online',
-    defineType: 'MEASURE',
-    defineParams,
   };
+  if (isPayloadShapeItem(item)) {
+    return {
+      ...shared,
+      defineType: item.defineType,
+      defineParams: item.defineParams,
+      expr: item.expr,
+    };
+  }
+  const defineParams = {
+    modelId: item.modelId,
+    measureColumn: item.measureColumn,
+    agg: item.agg,
+  };
+  if (item.timeColumn) defineParams.timeColumn = item.timeColumn;
+  if (item.filterSql) defineParams.filterSql = item.filterSql;
+  return { ...shared, defineType: 'MEASURE', defineParams };
 };
 
 /**
- * POST /metrics/batch：逐条走单条 createMetric。
- * 顺序执行——同批内后一条可以引用前一条，重复 code 也会被第二条拦下。
+ * POST /metrics/batch：先整批判形态（契约 1.18，形态不合规则一条都不建），再逐条走单条 createMetric。
+ * 顺序执行——同批内后一条可以引用前一条（批量派生允许同批先建基底再派生），重复 code 也会被第二条拦下。
  * 无事务：部分成功是常态（界面按条显示），所以 HTTP 层恒成功，成败写在 results 里。
  */
 const createMetricsBatch = async (items = [], operator = '') => {
   if (!Array.isArray(items) || !items.length) throw paramInvalid('items 不能为空');
   if (items.length > BATCH_MAX) throw paramInvalid(`单次批量创建上限 ${BATCH_MAX} 条，请分批提交`);
+  items.forEach(assertItemShape);
   const results = [];
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index] || {};
