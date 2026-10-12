@@ -151,10 +151,24 @@ const batchMetrics = {
     .required(),
 };
 
+/**
+ * GET /metrics/code-check（契约 1.12）：编码占用事前校验。
+ * codes 逗号分隔，条数上限（50）与单码格式都在 service.checkCodes 里判——那里才是保存期同一份规则，
+ * Joi 只兜住报文规模（50×64 + 分隔符），避免「校验规则两处各写一套」。空/缺省＝空列表，合法。
+ */
+const codeCheck = {
+  query: Joi.object()
+    .keys({
+      codes: Joi.string().max(3300).allow('', null),
+    })
+    .unknown(true),
+};
+
 module.exports = {
   listMetrics,
   plaza,
   batchMetrics,
+  codeCheck,
   getMetric,
   createMetric,
   updateMetric,

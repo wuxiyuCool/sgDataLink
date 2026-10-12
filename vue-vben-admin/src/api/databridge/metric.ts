@@ -564,6 +564,39 @@ export function createMetricsBatchApi(items: MetricBatchItem[]) {
   return databridgeHttp.post<MetricBatchResult>({ url: '/metrics/batch', data: { items } })
 }
 
+// ==================== 编码占用事前校验（契约 1.12 / v1.17） ====================
+
+/** 占用者：deleted=true 表示「被已删除指标占用」——编码终身制，同样不可复用 */
+export interface MetricCodeTakenBy {
+  id: string
+  name: string
+  status: string
+  deleted: boolean
+}
+
+/** invalid=格式非法；taken=库里已被占用（含软删）；duplicate-in-request=本次请求里重复出现 */
+export type MetricCodeIssueReason = 'invalid' | 'taken' | 'duplicate-in-request'
+
+export interface MetricCodeCheckItem {
+  code: string
+  available: boolean
+  reason?: MetricCodeIssueReason
+  takenBy?: MetricCodeTakenBy
+}
+
+/**
+ * GET /metrics/code-check：提交前先看编码有没有被占。
+ * 判定与保存期同源（后端 findCodeOccupant/inspectCode 一份规则），前端不再自己比一遍；
+ * 单次 ≤50 个（超出 40001，与批量生成的 50 条同口径），空列表合法回 {items:[]}。
+ * 它只是「预告」，权威仍是保存期：并发下别人先建了同码，提交照样 40001。
+ */
+export function checkMetricCodesApi(codes: string[]) {
+  return databridgeHttp.get<{ items: MetricCodeCheckItem[] }>({
+    url: '/metrics/code-check',
+    params: { codes: codes.join(',') },
+  })
+}
+
 export function getMetricsApi(params: MetricPageParams) {
   return databridgeHttp.get<{ items: MetricItem[]; total: number; page: number; size: number }>({
     url: '/metrics',

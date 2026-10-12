@@ -738,7 +738,7 @@ Mock 触发链路：实例 failed / 管道 lastError / 管道 lagMs 超阈值时
 
 - `code` 全库唯一、`^[a-z][a-z0-9_]{2,63}$`、创建后不可改——是复合公式 `${code}` 引用的锚点。
 - `dataFormat` ∈ `DECIMAL`（默认）| `PERCENT` | `THOUSANDTH`，仅用于展示格式；留空按 DECIMAL 存储。
-- COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF/NVL/IFNULL/DECODE/TRUNC/GREATEST/LEAST/MOD/SUBSTR/SUBSTRING/LENGTH/CONCAT/TO_NUMBER，跨 MySQL/Oracle 通用；公式字符集不含引号故字符串常量不适用），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。校验与编译规则见 METRIC-DEV §6。
+- COMPOSITE 的 `expr` 仅允许 `${code}` 引用 + 数字 + `+ - * / ( )` + CASE WHEN + 白名单标量函数（COALESCE/ROUND/ABS/FLOOR/CEIL/NULLIF/IF/NVL/IFNULL/DECODE/TRUNC/GREATEST/LEAST/MOD/SUBSTR/SUBSTRING/LENGTH/CONCAT/TO_NUMBER，跨 MySQL/Oracle 通用；公式字符集不含引号故字符串常量不适用），禁聚合/表名/列名/子查询；DERIVED 用「继承基底指标 + 维度限定 + 业务过滤 + 时间预设」（`defineParams: {baseMetricId, dimensions[], filterSql?, timePreset?}`）。**`baseMetricId` 填基底的 code，不是 id**（字段名带 Id 是历史遗留；传 `met-xxxx` 会 40001，报文会提示改填 code），`expr` 可留空由服务端补成 `${基底code}`。校验与编译规则见 METRIC-DEV §6。
 - **跨库方言：三层处理 + 单一方言层**（`node-express-boilerplate/src/utils/dialect.js`，V10 起）。所有 mysql/oracle 的 SQL 文本差异只从这里出，编译器（`metricCompiler`）、物化任务（`metrictask`）、模型 DDL 预览（`metricmodel`）、数据预览（`metricExec`）、问数落地（`metricChat`）**五个生成点统一接入**，不再各写 `ds.type === 'oracle'` 分支（此前每漏一处就产出一条必失败的语句）：① 语法探针（node-sql-parser）对 mysql/oracle 函数**宽容互认**（实测两方言都能解析 NVL/TO_CHAR/TO_DATE/DECODE/TRUNC/REGEXP_LIKE/`||`），故探针不按方言分支；② 编译期按目标方言**归一改写**：`NVL(`/`IFNULL(` → `COALESCE(`（两库通用），Oracle 目标 additionally `DATE_FORMAT(x,'%Y-%m')` → `TO_CHAR(x,'YYYY-MM')`（掩码表 `%Y %m %d %H %i %s %y %M %D`，含未覆盖 `%码` 时不改写只告警）；③ 无法等价改写的专有写法（Oracle DECODE/NVL2/TO_CHAR/TO_DATE/TO_NUMBER/NUMTODSINTERVAL/REGEXP_LIKE/TRUNC/SYSDATE/ROWNUM，MySQL DATE_FORMAT/STR_TO_DATE/GROUP_CONCAT/SUBSTRING_INDEX/FIND_IN_SET/IF）在 `POST /metrics/validate` 与保存响应里回 **warnings**（不阻断保存）。
 
   方言产物对照（回归见 `deploy/tests/test-metric-dialect.js`，离线不连库）：
@@ -861,6 +861,18 @@ _C. 边界与不做什么_
 - 指标、任务、广场一律不感知分类，本期改动对 v1.14/v1.15 零影响；唯一共享面是 `queryModels` 多了 `categoryId` 过滤。
 - 不做：分类多级嵌套（先验证 层→分类 两级的归组价值）、树内直接展示模型叶子（模型行的操作按钮塞不进树节点）、分类跨层搬移、按分类做权限隔离。
 
+**编码占用事前校验（v1.17）**：批量向导里「编码自动带出默认值 → 看有没有人用过 → 人工加后缀」这条动作链的事前那一环。此前只有提交后才逐条报错，用户要在 50 行的表格里点完才知道哪几条撞码。
+
+- `GET /metrics/code-check?codes=a,b,c`（JWT，整组 `/metrics*` 一致）→ `{items:[{code, available:boolean, reason?, takenBy?}]}`。`codes` 逗号分隔、**单次 ≤50 个**（超出 40001，与 `POST /metrics/batch` 的 50 条同口径）；**空串/缺省是合法的空列表**，回 `{items:[]}`（界面进第②步时一行都还没填也不用先拼参数）。返回**按请求顺序逐项回显**（重复的 code 也按出现次数各回一项），前端按 `code` 建索引即可。
+- `reason` 三值，**优先级 invalid > taken > duplicate-in-request**（一个 code 只给一个原因，因为保存期本来也是逐条挡）：
+  - `invalid`：不匹配 `^[a-z][a-z0-9_]{2,63}$`（与 `CODE_PATTERN` 同一个常量），含空串。
+  - `taken`：已被别的指标占用，带 `takenBy:{id,name,status,deleted}`。**编码终身制**——`uk_metricmetric_code` 是全表唯一键、软删行照样占位，服务层判定也显式「含已删指标」，所以 `deleted:true` 表示**占用者是一条已删除的指标，编码同样不可复用**（界面必须把这句写给人看，否则用户会以为删掉就能重用）。
+  - `duplicate-in-request`：同一个请求里这个 code 出现了 ≥2 次（勾了两列同名度量、或手工复制粘贴）——它此刻在库里可能谁都没占，但提交必被逐条拒，所以**每一次出现都标红**，而不是只标后出现的那条。
+- **校验口径与保存期同源（契约级要求）**：判定只有一个实现——`metric.service.js` 的 `findCodeOccupant()`（全表含软删）+ `inspectCode()`（格式），`validateMetric()` 与 `checkCodes()` 都调它们。前端**不许另写一套**占用判定（连"本地比对已有编码列表"都不算数，那只是一层缓存展示），也不许把 `code-check` 当许可证用：它只是提前预告，**权威永远是保存期**（并发下别人先建了同码，`POST /metrics` 一样 40001）。
+- 一次请求**只读一次全表**（`metricRepository.list()` 后逐项比对），不是 N 次 `WHERE code=?`——50 个码与 1 个码同价，前端可以放心按批问、改动防抖重查。
+- 界面配套（`BatchMetricModal.vue` 第②步，非契约强制）：进入第②步全量查一次、其后只有**变化过的 code** 进 500ms 防抖重查（不整表刷）；冲突行输入框标红 + 行下小字说明占用者（名称/编码、是否已删除）；「一键补后缀」按钮按 `_2`、`_3`… 递增直到不冲突——**只用当前批内已知的占用集合算后缀，不自动改、点了才改**，补完立刻复查一次，并提示"补完请自查名称是否需要跟着改"（后缀只修编码，指标名可能仍要人工区分）；存在冲突行时「生成指标」不禁用而是弹二次确认（"仍有 N 行编码冲突，提交会被后端逐条拒绝"），拦到那一步就够，不替后端下结论。
+- 回归：`deploy/tests/test-metric-base.js` 的 `== 编码占用事前校验 ==` 段（含「真的先建后删再查」这条——软删占位必须用真实 DELETE 走出来，不许插行伪造）。
+
 **路由**：
 
 | 方法 | 路径 | 说明 |
@@ -877,6 +889,7 @@ _C. 边界与不做什么_
 | DELETE | `/metric-models/:id?dropTable=true` | 删除模型（默认只软删）。`dropTable=true` 仅当 `createType=ddl` 且 `tableStatus=created`；`reference` → 40001（引用表平台永不 DROP）。返回 `{id, deleted:true, dropped, dropMsg?}` |
 | GET | `/metrics/plaza` | 指标广场聚合（v1.14）：按根域分节，`domainId` 时含子孙域；只回 online（除非 status=draft/offline/all）；卡片含 `referencedBy`（被引用数）与 `hot7d`（近 7 天问数命中）。见上方 A 节 |
 | POST | `/metrics/batch` | 从表批量生成原子指标（v1.14）：`{items:[...]}` ≤50 条，逐条走单条校验器，返回 `{results:[{index,code,ok,id?/message?}],created,failed}`，HTTP 恒 200。见上方 B 节 |
+| GET | `/metrics/code-check?codes=a,b,c` | 编码占用事前校验（v1.17）：≤50 个逗号分隔 code，空列表合法回 `{items:[]}`；逐项回 `{code,available,reason?:invalid\|taken\|duplicate-in-request,takenBy?:{id,name,status,deleted}}`。**判定与保存期同源**（`findCodeOccupant`/`inspectCode` 一份规则），已软删指标同样占位（`takenBy.deleted=true`）。见上方「编码占用事前校验」 |
 | POST | `/metric-models/:id/profile-dimensions` | 维度取值探查（v1.14）：真查目标库（engine `/sql/query` + 方言层 `dimProfileSql`），先基数保护后取 topN，保留人工 label、消失值置 stale；`DB_DRIVER≠mysql` → 40001 |
 | GET/PUT/DELETE | `/metric-models/:id/dimension-values` | 取值档案读/码值业务名登记/清列（v1.14）。GET 只读库内档案不打源库 |
 | GET | `/metric-models/:id/preview` | 前 20 行真实数据（engine `/sql/query`，失败 50201） |

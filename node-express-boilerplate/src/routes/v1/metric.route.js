@@ -13,9 +13,10 @@ router.use(auth());
 
 router.post('/validate', validate(metricValidation.validateDraft), metricController.validateDraft);
 
-// 广场聚合与批量生成必须在 /:id 之前注册（否则 plaza/batch 会被当成 id）
+// 广场聚合、批量生成与编码事前校验必须在 /:id 之前注册（否则 plaza/batch/code-check 会被当成 id）
 router.get('/plaza', validate(metricValidation.plaza), metricController.getPlaza);
 router.post('/batch', validate(metricValidation.batchMetrics), metricController.createMetricsBatch);
+router.get('/code-check', validate(metricValidation.codeCheck), metricController.checkMetricCodes);
 
 router
   .route('/')

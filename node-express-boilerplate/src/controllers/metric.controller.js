@@ -28,6 +28,17 @@ const getMetric = catchAsync(async (req, res) => {
   ok(res, await metricService.getActiveMetric(req.params.id));
 });
 
+/**
+ * GET /metrics/code-check —— 编码占用事前校验（契约 1.12）。
+ * 逗号分隔的 codes 在这里拆给 service（≤50 与格式判定都在 service，与保存期同源）；
+ * 空串/缺省＝空列表，回 {items:[]}，让批量向导进去那一步不必先拼参数。
+ */
+const checkMetricCodes = catchAsync(async (req, res) => {
+  const raw = req.query.codes === undefined || req.query.codes === null ? '' : String(req.query.codes);
+  const codes = raw.trim() === '' ? [] : raw.split(',');
+  ok(res, await metricService.checkCodes(codes));
+});
+
 const createMetric = catchAsync(async (req, res) => {
   const result = await metricService.createMetric(req.body, req.user && req.user.username);
   ok(res, result, { message: '创建成功' });
@@ -73,6 +84,7 @@ module.exports = {
   getMetrics,
   getPlaza,
   createMetricsBatch,
+  checkMetricCodes,
   getMetric,
   createMetric,
   updateMetric,

@@ -159,6 +159,36 @@ const getActiveMetric = async (id) => {
 
 const findMetricByCode = (metrics, code) => metrics.find((metric) => metric.code === code);
 
+/** 事前校验单次可查的编码上限（与 POST /metrics/batch 的 50 条对齐） */
+const CODE_CHECK_MAX = 50;
+
+/**
+ * 编码占用者查找（编码终身制的唯一判定点）：**全表口径含已软删的指标**——软删不释放 code。
+ * 保存期（validateMetric）与事前校验（checkCodes）都走这里，别再复制第二份判定，
+ * 否则就会出现「事前说可用、提交被拒」这种把权威推给运气的事。
+ */
+const findCodeOccupant = (metrics, code, selfId = null) => {
+  const normalized = String(code || '').trim();
+  if (!normalized) return null;
+  return metrics.find((metric) => metric.id !== selfId && String(metric.code).trim() === normalized) || null;
+};
+
+/** 单码判定：格式非法 → invalid；被占用（含已删）→ taken + 占用者；否则 available。metrics 由调用方一次读全表 */
+const inspectCode = (code, metrics) => {
+  const normalized = String(code || '').trim();
+  if (!CODE_PATTERN.test(normalized)) return { code: normalized, available: false, reason: 'invalid' };
+  const occupant = findCodeOccupant(metrics, normalized);
+  if (occupant) {
+    return {
+      code: normalized,
+      available: false,
+      reason: 'taken',
+      takenBy: { id: occupant.id, name: occupant.name, status: occupant.status, deleted: !!occupant.delFlag },
+    };
+  }
+  return { code: normalized, available: true };
+};
+
 /** 全量校验入口：errors 阻断保存/上线，warnings 只提示（草稿引用草稿等） */
 const validateMetric = async (data, selfId = null) => {
   const errors = [];
@@ -167,7 +197,7 @@ const validateMetric = async (data, selfId = null) => {
   if (!CODE_PATTERN.test(code)) errors.push('code 需匹配 ^[a-z][a-z0-9_]{2,63}$');
 
   const all = await metricRepository.list();
-  const taken = all.find((metric) => metric.code === code && metric.id !== selfId);
+  const taken = findCodeOccupant(all, code, selfId);
   if (taken) errors.push(`code 已被占用（含已删指标，编码终身制）: ${code}(${taken.id})`);
 
   const { defineType } = data;
@@ -224,8 +254,14 @@ const validateMetric = async (data, selfId = null) => {
     const baseCode = parseRefs(data.expr)[0];
     const base =
       findMetricByCode(active(all), defineParams.baseMetricId) || findMetricByCode(all, defineParams.baseMetricId);
-    if (!base) errors.push(`基底指标不存在: baseMetricId=${defineParams.baseMetricId}`);
-    else {
+    if (!base) {
+      // 字段名叫 baseMetricId 但契约要的是基底 code（历史命名），传成 id 时给一句能照着做的话
+      errors.push(
+        /^met-/.test(String(defineParams.baseMetricId || ''))
+          ? `基底指标不存在：baseMetricId 要填基底的 code，不是 id（当前传的是 ${defineParams.baseMetricId}；去指标列表复制「编码」列的值）`
+          : `基底指标不存在: baseMetricId=${defineParams.baseMetricId}`
+      );
+    } else {
       if (base.id === selfId) errors.push('基底指标不能是自己');
       if (baseCode && base.code !== baseCode) errors.push(`expr 引用(${baseCode})与 baseMetricId(${base.code})不一致`);
       if (base.status !== 'online') warnings.push(`基底指标状态 ${base.status}，上线前需先行发布`);
@@ -422,6 +458,31 @@ const queryMetrics = (filter = {}, options = {}) =>
     size: options.size,
   });
 
+/**
+ * 编码占用事前校验（契约 1.12 · GET /metrics/code-check）：批量向导在提交前把撞码/非法行标出来。
+ * 判定与保存期完全同源（inspectCode → findCodeOccupant，全表含软删），一次读表逐码复用，不 N 次查库。
+ * 同批重复的 code 只在「格式合法且没被占用」时才标 duplicate-in-request——
+ * 两处都标（不只标后出现的那条），否则用户勾了同名列两次会看到一绿一红以为没事，改完仍撞。
+ * 空列表合法（回 items:[]），上限 CODE_CHECK_MAX 个（超出 40001，与 batch 的 50 条同口径）。
+ */
+const checkCodes = async (codes = []) => {
+  const asked = (Array.isArray(codes) ? codes : []).map((item) => String(item || '').trim());
+  if (asked.length > CODE_CHECK_MAX) {
+    throw paramInvalid(`单次最多校验 ${CODE_CHECK_MAX} 个编码（当前 ${asked.length} 个）`);
+  }
+  const all = await metricRepository.list();
+  const occurrences = new Map();
+  asked.forEach((item) => occurrences.set(item, (occurrences.get(item) || 0) + 1));
+  const items = asked.map((item) => {
+    const inspected = inspectCode(item, all);
+    if (inspected.available && (occurrences.get(item) || 0) > 1) {
+      return { code: item, available: false, reason: 'duplicate-in-request' };
+    }
+    return inspected;
+  });
+  return { items };
+};
+
 const createMetric = (data, operator) => saveMetric(data, null, operator);
 
 const updateMetric = async (id, patch, operator) => {
@@ -529,9 +590,13 @@ module.exports = {
   AGG_FUNCTIONS,
   SCALAR_FUNCTIONS,
   TREE_MAX_DEPTH,
+  CODE_CHECK_MAX,
   active,
   parseRefs,
   assertSqlFragment,
+  findCodeOccupant,
+  inspectCode,
+  checkCodes,
   validateMetric,
   saveMetric,
   queryMetrics,

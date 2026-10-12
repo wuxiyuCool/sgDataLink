@@ -308,7 +308,6 @@
 
   import {
     createMetricApi,
-    getMetricApi,
     getMetricModelsApi,
     getMetricModelApi,
     getMetricsApi,
@@ -429,6 +428,9 @@
     }
   }
 
+  /** 基底指标下拉以 code 为值（契约：defineParams.baseMetricId 按 code 解析，字段名带 Id 是历史遗留）；顺带缓存一份 code→指标，供维度联动取模型用 */
+  const baseMetricCache = new Map<string, MetricItem>()
+
   async function searchBaseMetrics(keyword: string) {
     try {
       const page = await getMetricsApi({
@@ -438,21 +440,32 @@
         page: 1,
         size: 50,
       })
-      baseMetricOptions.value = (page?.items || []).map((m) => ({
+      const items = page?.items || []
+      items.forEach((m) => baseMetricCache.set(m.code, m))
+      baseMetricOptions.value = items.map((m) => ({
         label: `${m.name}（${m.code}）`,
-        value: m.id,
+        value: m.code,
       }))
     } catch {
       baseMetricOptions.value = []
     }
   }
 
-  async function handleBaseChange(baseId: string) {
+  /** 编辑态回填时手里只有 code，缓存没命中就按 code 精查一次 */
+  async function resolveBaseModelId(code: string) {
+    const cached = baseMetricCache.get(code)
+    if (cached) return cached.modelId || (cached.defineParams || {}).modelId || ''
+    const page = await getMetricsApi({ keyword: code, type: 'ATOMIC', size: 50 })
+    const hit = (page?.items || []).find((m) => m.code === code)
+    if (hit) baseMetricCache.set(code, hit)
+    return (hit && (hit.modelId || (hit.defineParams || {}).modelId)) || ''
+  }
+
+  async function handleBaseChange(baseCode: string) {
     baseDimensionOptions.value = []
-    if (!baseId) return
+    if (!baseCode) return
     try {
-      const base = await getMetricApi(baseId)
-      const modelId = base?.modelId || base?.defineParams?.modelId
+      const modelId = await resolveBaseModelId(baseCode)
       if (!modelId) return
       const detail = await getMetricModelApi(modelId)
       baseDimensionOptions.value = (detail?.columns || [])

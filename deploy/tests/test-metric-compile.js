@@ -139,6 +139,11 @@ const main = async () => {
   check('DERIVED 过滤进 CASE', /COUNT\(CASE WHEN t.amt > 0 THEN t.id END\)/.test((pv3.json.result || {}).sql || ''), (pv3.json.result || {}).sql)
   const pv4 = await req(`/metrics/${derived.id}/preview`, { method: 'POST', token, body: { dimensions: ['status'] } })
   check('越界维度 → 40001', pv4.status === 400 && /限定维度/.test(pv4.text), pv4.text.slice(0, 160))
+  // 字段名叫 baseMetricId 但契约要基底 code；界面一度把下拉的 id 发过来，导致派生指标全存不进（V11 修复）
+  await mkFail({
+    code: `${RUN}_derived_by_id`, name: '误用 id 的派生', defineType: 'METRIC', domainId: dom.json.result.id,
+    defineParams: { baseMetricId: orderCnt.id }, status: 'online',
+  }, 'baseMetricId 传 id → 40001 且报文提示填 code', /要填基底的 code/)
 
   console.log('== 跨模型标量路径 ==')
   const taskCnt = await mk({ code: `${RUN}_task_cnt`, name: '任务数', defineType: 'MEASURE', domainId: dom.json.result.id, defineParams: { modelId: model2.json.result.id, measureColumn: 'id', agg: 'count', timeColumn: 'created_at' }, status: 'online' }, 'ATOMIC 模型2')
