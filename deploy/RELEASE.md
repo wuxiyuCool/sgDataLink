@@ -357,7 +357,8 @@ git tag V11
 git push                                           # origin 配了双 pushurl：GitHub + 内网 Gitea 一次到位
 git push origin V11                                # 标签单独推
 
-# master-01（有 docker + kubectl，能出网或走 squid 223:3128）
+# master-01（有 docker + kubectl；**日常发版不需要外网**——admin 依赖走基座镜像、web 走仓库里的 dist 包，
+# 只有「重建依赖基座」那一次要外网/squid 代理，见文末「admin 依赖基座镜像」一节）
 cd /path/to/dataLink && git fetch origin && git checkout main && git pull
 ONLY=admin,engine,web PREBUILT_WEB=1 bash deploy/build-push-harbor.sh v11
 # → 三镜像推 Harbor 10.45.34.167:5000/datalink/{admin,engine,web}:v11，并回写 kustomization newTag
@@ -414,10 +415,19 @@ UPDATE databridge_metric_model SET category_id = '' WHERE category_id IS NULL;
 | `node-express-boilerplate/Dockerfile` | 改成 `COPY --from=deps` 取 node_modules，**不再跑 yarn** |
 | `deploy/build-push-harbor.sh` | admin 构建自动带 `--build-arg DEPS_IMAGE=<registry>/admin-deps:<哈希tag>`，并在 Harbor 里查不到该 tag 时提前报错（查不动 tag 列表则跳过预检，交给 docker） |
 
-**首次接入（在 master-01 上跑一次，这一步需要代理）**：
+**首次接入（在 master-01 上跑一次，这一步需要外网）**：
+
+先知道一件事：**yarn 1.22 不认代理 URL 里内嵌的账号**（`curl -x http://user:pass@…` 认，yarn 不认），
+所以带凭据的写法会卡在 `Fetching packages... Retrying...`——实测 **978s 能跑完，不是死住**，但很难看。
+两档选择：
 
 ```bash
-cd /root/.../SgDataLink && git pull
+# 首选：在 223 的 squid.conf 给构建机 IP 免认证（acl datalink_build src <ip>/32 + http_access allow），
+#        然后不带凭据：
+DOCKER_BUILD_OPTS="--build-arg HTTP_PROXY=http://10.45.34.223:3128 --build-arg HTTPS_PROXY=http://10.45.34.223:3128" \
+  bash deploy/build-admin-deps.sh
+
+# 只有带账号的代理可用时（会慢，等它跑完）：
 DOCKER_BUILD_OPTS="--build-arg HTTP_PROXY=http://<user>:<pass>@10.45.34.223:3128 --build-arg HTTPS_PROXY=http://<user>:<pass>@10.45.34.223:3128" \
   bash deploy/build-admin-deps.sh
 ```
