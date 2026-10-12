@@ -1,6 +1,7 @@
 /* 指标中心常驻演示资产 seed（真库；压测/浏览器验收/问数演示共用）
  * 资产：域 dmtrade + 引用模型 dm_order_dwd（物理表 dm_order_src，刷近 45 天数据）
  *       指标 dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额 / dm_unit 件单价(复合=amt/cnt)
+ *       派生：dm_paid_east(继承+过滤) + dm_amt_by_region / dm_amt_by_status（模式B：同基底、各勾一个维度）
  *       任务 dm_region_sum 按地区汇总(overwrite) / dm_region_daily 地区日汇总(upsert+定时)，并各执行一次留运行记录
  *       宽表演示（契约 1.15）：dm_visit_src 访问明细 + 指标 dm_uv + 建模表 dm_wide_month +
  *         任务「月度指标宽表」= 订单模型与访问模型的指标按月截断对齐拼一张表（upsert+每月 1 日 03:00 定时）；
@@ -205,6 +206,32 @@ const main = async () => {
     caliber: '派生示例：仅华东地区 PAID 订单金额（指标血缘页可见 华东实收额→实收额 依赖）',
   });
   console.log('指标就绪：', [amt, cnt, paid, unit].map((m) => `${m.code}(${m.id})`).join(' '), '+ dm_paid_east(派生)');
+
+  // —— 派生·模式 B：同一个原子指标按「不同维度」各派生一个独立指标 ——
+  // 维度限定 = 允许分组的白名单（不是粒度开关）：想「分区域订单额」「分状态订单额」各是一个
+  // 有独立编码/口径/血缘的资产就照这里建；只想一个指标多维度看，则在同一条里把维度都勾上（模式 A）。
+  await mkMetric({
+    code: 'dm_amt_by_region',
+    name: '分区域订单额',
+    alias: ['各地区成交额'],
+    defineType: 'METRIC',
+    defineParams: { baseMetricId: 'dm_amt', dimensions: ['region'], timeColumn: 'pay_date' },
+    expr: '${dm_amt}',
+    unit: '元',
+    caliber:
+      '【派生·模式B 按维度拆指标】基底 dm_amt，维度限定只勾 region：试跑/问数按地区分组，勾别的维度会被 40001 拒。与 dm_amt 聚合完全相同（不重复计算），差别只在"允许按哪个维度看 + 独立命名/口径/血缘"。',
+  });
+  await mkMetric({
+    code: 'dm_amt_by_status',
+    name: '分状态订单额',
+    alias: ['按支付状态看成交额'],
+    defineType: 'METRIC',
+    defineParams: { baseMetricId: 'dm_amt', dimensions: ['status'], timeColumn: 'pay_date' },
+    expr: '${dm_amt}',
+    unit: '元',
+    caliber:
+      '【派生·模式B 按维度拆指标】与 dm_amt_by_region 同一个基底，只是维度限定换成 status——两条并排就是"一个原子指标在不同维度下各成一个派生指标"的样板。',
+  });
 
   // —— 示例指标库（ex_ 前缀）：覆盖全部定义方式与常见公式写法，供配置时抄作业 ——
   // 依赖顺序：原子 → 派生 → 复合（复合只能引用 online 指标）

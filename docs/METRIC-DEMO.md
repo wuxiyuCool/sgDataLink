@@ -31,6 +31,7 @@ ADMIN_USER=mtlint01 ADMIN_PASS=<密码> BASE=http://127.0.0.1:3001/api/v1 \
 | dm_amt 订单额 / dm_cnt 订单数 / dm_paid 实收额 | 原子（MEASURE，实收额带 `status='PAID'` 过滤） | 指标广场：原子定义、试跑 |
 | dm_unit 件单价 | 复合 `${dm_amt} / ${dm_cnt}` | 指标广场：公式校验、展开树、血缘、问数树回填 |
 | dm_paid_east 华东实收额 | 派生（基底 dm_paid + `region='华东'`） | 指标广场：派生继承、血缘依赖边 |
+| dm_amt_by_region 分区域订单额 / dm_amt_by_status 分状态订单额 | 派生·**模式 B**：同一个基底 `dm_amt`，各自「维度限定」只勾一个维度（region / status），聚合表达式完全复用 | 指标广场：演示"一个原子指标在不同维度下各成一个独立指标"；试跑时勾越界维度会 40001（白名单生效的活样本） |
 | 交易演示·地区总览 | mtk `dm_region_sum`，overwrite 全量 | 任务管理：写模式 overwrite、成功记录 |
 | 交易演示·地区日汇总 | mtk `dm_region_daily`，upsert+BETWEEN 近14天+cron `0 30 2 * * ?`+fill 补空 | 任务管理：upsert/清洗规则/定时；含 成功→失败→成功 三条运行记录（失败为坏 filter SQL 演示，已修复重跑） |
 
